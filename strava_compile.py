@@ -1,21 +1,3 @@
-"""
-strava_compile.py
-
-Unzips Strava .fit.gz files, parses them, and merges with activities.csv
-into a single enriched CSV.
-
-Usage:
-    python strava_compile.py --archive /path/to/strava_export --csv activities.csv --out enriched.csv
-
-Strava export folder structure expected:
-    export_xxx/
-        activities.csv
-        activities/
-            123456789.fit.gz
-            123456789.gpx.gz   (ignored)
-            ...
-"""
-
 import argparse
 import gzip
 import os
@@ -36,21 +18,50 @@ except ImportError:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def unzip_archive(archive_path: Path, out_dir: Path):
+def find_strava_export(downloads_dir: Path) -> Path:
+    """Find the most recent Strava export zip or folder in Downloads."""
+    # Look for zip files first
+    zips = sorted(downloads_dir.glob("export_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if zips:
+        print(f"Found Strava export zip: {zips[0].name}")
+        return zips[0]
+    # Fall back to extracted folders
+    folders = sorted(
+        [d for d in downloads_dir.iterdir() if d.is_dir() and d.name.startswith("export_")],
+        key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    if folders:
+        print(f"Found Strava export folder: {folders[0].name}")
+        return folders[0]
+    raise FileNotFoundError(
+        f"No Strava export (export_*.zip or export_*/) found in {downloads_dir}"
+    )
+
+
+def find_activities_csv(export_dir: Path) -> Path:
+    """Find activities.csv inside the export folder."""
+    candidate = export_dir / "activities.csv"
+    if candidate.exists():
+        return candidate
+    raise FileNotFoundError(f"activities.csv not found in {export_dir}")
+
+
+def unzip_archive(archive_path: Path, out_dir: Path) -> Path:
     """If the strava export is a .zip, extract it first."""
     if archive_path.suffix == ".zip":
         print(f"Extracting zip archive to {out_dir} ...")
         with zipfile.ZipFile(archive_path, "r") as zf:
             zf.extractall(out_dir)
-        # find the extracted folder
+        # Find the subdirectory that contains activities.csv (the export root)
+        for candidate in sorted(out_dir.rglob("activities.csv")):
+            return candidate.parent
+        # Fall back to first subdir if activities.csv not found yet
         subdirs = [d for d in out_dir.iterdir() if d.is_dir()]
         return subdirs[0] if subdirs else out_dir
-    return archive_path  # already a folder
-
+    return archive_path
 
 def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
-    """Decompress a .fit.gz file, return path to .fit file."""
-    fit_path = dest_dir / gz_path.stem  # removes .gz, leaves .fit
+    fit_path = dest_dir / gz_path.stem
     if not fit_path.exists():
         with gzip.open(gz_path, "rb") as f_in, open(fit_path, "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
@@ -58,11 +69,6 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
 
 
 def parse_fit(fit_path: Path) -> dict:
-    """
-    Parse a .fit file and return aggregated stats as a dict.
-    Pulls from the session message (summary) where possible,
-    falling back to record-level aggregation.
-    """
     stats = {
         "fit_file": fit_path.stem,
         "fit_sport": None,
@@ -82,7 +88,7 @@ def parse_fit(fit_path: Path) -> dict:
         "fit_avg_stride_length": None,
         "fit_training_stress_score": None,
         "fit_record_count": 0,
-        "fit_splits": [],       # list of per-km lap dicts if present
+        "fit_splits": [],
     }
 
     try:
@@ -100,21 +106,21 @@ def parse_fit(fit_path: Path) -> dict:
 
         if name == "session":
             d = {f.name: f.value for f in msg.fields}
-            stats["fit_sport"]           = str(d.get("sport", ""))
-            stats["fit_start_time"]      = str(d.get("start_time", ""))
+            stats["fit_sport"]                 = str(d.get("sport", ""))
+            stats["fit_start_time"]            = str(d.get("start_time", ""))
             dist = d.get("total_distance")
-            stats["fit_total_distance_km"] = round(dist / 1000, 4) if dist else None
-            stats["fit_moving_time_s"]   = d.get("total_timer_time")
-            stats["fit_elapsed_time_s"]  = d.get("total_elapsed_time")
-            stats["fit_avg_speed_mps"]   = d.get("avg_speed")
-            stats["fit_max_speed_mps"]   = d.get("max_speed")
-            stats["fit_avg_heart_rate"]  = d.get("avg_heart_rate")
-            stats["fit_max_heart_rate"]  = d.get("max_heart_rate")
-            stats["fit_avg_cadence"]     = d.get("avg_running_cadence") or d.get("avg_cadence")
-            stats["fit_total_ascent_m"]  = d.get("total_ascent")
-            stats["fit_total_descent_m"] = d.get("total_descent")
-            stats["fit_avg_power"]       = d.get("avg_power")
-            stats["fit_total_calories"]  = d.get("total_calories")
+            stats["fit_total_distance_km"]     = round(dist / 1000, 4) if dist else None
+            stats["fit_moving_time_s"]         = d.get("total_timer_time")
+            stats["fit_elapsed_time_s"]        = d.get("total_elapsed_time")
+            stats["fit_avg_speed_mps"]         = d.get("avg_speed")
+            stats["fit_max_speed_mps"]         = d.get("max_speed")
+            stats["fit_avg_heart_rate"]        = d.get("avg_heart_rate")
+            stats["fit_max_heart_rate"]        = d.get("max_heart_rate")
+            stats["fit_avg_cadence"]           = d.get("avg_running_cadence") or d.get("avg_cadence")
+            stats["fit_total_ascent_m"]        = d.get("total_ascent")
+            stats["fit_total_descent_m"]       = d.get("total_descent")
+            stats["fit_avg_power"]             = d.get("avg_power")
+            stats["fit_total_calories"]        = d.get("total_calories")
             stats["fit_training_stress_score"] = d.get("training_stress_score")
 
         elif name == "lap":
@@ -129,7 +135,6 @@ def parse_fit(fit_path: Path) -> dict:
                 "ascent_m":      d.get("total_ascent"),
                 "descent_m":     d.get("total_descent"),
             }
-            # compute pace min/km
             if lap["dist_km"] and lap["time_s"] and lap["dist_km"] > 0:
                 lap["pace_min_km"] = round(lap["time_s"] / 60 / lap["dist_km"], 3)
             laps.append(lap)
@@ -138,7 +143,7 @@ def parse_fit(fit_path: Path) -> dict:
             record_count += 1
 
     stats["fit_record_count"] = record_count
-    stats["fit_splits"] = json.dumps(laps)  # store as JSON string in CSV
+    stats["fit_splits"] = json.dumps(laps)
     return stats
 
 
@@ -148,24 +153,9 @@ def load_activities_csv(csv_path: Path) -> list[dict]:
 
 
 def extract_activity_id(filename: str) -> str:
-    """Extract numeric activity ID from filename like 123456789.fit or 123456789.fit.gz"""
-    stem = Path(filename).stem  # removes last extension
-    stem = Path(stem).stem      # removes .fit if it was .fit.gz
+    stem = Path(filename).stem
+    stem = Path(stem).stem
     return stem
-
-
-def match_fit_to_activity(activities: list[dict], fit_stats: dict, fit_id: str) -> dict | None:
-    """
-    Try to match a parsed fit file to an activities.csv row by activity ID
-    embedded in the filename (Strava export uses activity ID as filename).
-    Falls back to timestamp matching if needed.
-    """
-    for act in activities:
-        # Strava CSV has a 'Filename' column like activities/123456789.fit.gz
-        fn = act.get("Filename", "")
-        if fit_id in fn:
-            return act
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -174,20 +164,34 @@ def match_fit_to_activity(activities: list[dict], fit_stats: dict, fit_id: str) 
 
 def main():
     parser = argparse.ArgumentParser(description="Compile Strava .fit files with activities.csv")
-    parser.add_argument("--archive", required=True, help="Path to Strava export folder or .zip")
-    parser.add_argument("--csv",     required=True, help="Path to activities.csv")
-    parser.add_argument("--out",     default="enriched_activities.csv", help="Output CSV path")
-    parser.add_argument("--sport",   default="running", help="Filter by sport (running/cycling/all). Default: running")
-    parser.add_argument("--tmp",     default="/tmp/strava_fit", help="Temp dir for decompressed .fit files")
+    parser.add_argument("--downloads", default=str(Path.home() / "Downloads"),
+                        help="Path to Downloads folder (default: ~/Downloads)")
+    parser.add_argument("--archive",   default=None,
+                        help="Override: path to Strava export folder or .zip")
+    parser.add_argument("--csv",       default=None,
+                        help="Override: path to activities.csv")
+    parser.add_argument("--out",       default=None,
+                        help="Override: output CSV path (default: alongside export, named YYYY-MM-DD_strava.csv)")
+    parser.add_argument("--sport",     default="running",
+                        help="Filter by sport (running/cycling/all). Default: running")
+    parser.add_argument("--tmp",       default="/tmp/strava_fit",
+                        help="Temp dir for decompressed .fit files")
     args = parser.parse_args()
 
-    archive_path = Path(args.archive)
-    csv_path = Path(args.csv)
-    out_path = Path(args.out)
+    downloads_dir = Path(args.downloads)
     tmp_dir = Path(args.tmp)
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: extract zip if needed
+    # Step 1: locate export
+    if args.archive:
+        archive_path = Path(args.archive)
+    else:
+        archive_path = find_strava_export(downloads_dir)
+
+    # Determine the output directory (next to the export file/folder)
+    export_parent = archive_path.parent
+
+    # Step 2: extract zip if needed
     if archive_path.suffix == ".zip":
         extract_dir = tmp_dir / "extracted"
         extract_dir.mkdir(exist_ok=True)
@@ -195,23 +199,32 @@ def main():
     else:
         export_dir = archive_path
 
+    # Step 3: locate activities.csv
+    if args.csv:
+        csv_path = Path(args.csv)
+    else:
+        csv_path = find_activities_csv(export_dir)
+
+    # Step 4: determine output path
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        date_str = datetime.today().strftime("%Y-%m-%d")
+        out_path = Path(__file__).parent / f"{date_str}_strava.csv"
+        
     activities_dir = export_dir / "activities"
     if not activities_dir.exists():
-        # some exports have a flat structure
         activities_dir = export_dir
 
     print(f"Looking for .fit.gz files in: {activities_dir}")
 
-    # Step 2: find all .fit.gz files
     fit_gz_files = sorted(activities_dir.glob("*.fit.gz"))
     fit_files    = sorted(activities_dir.glob("*.fit"))
     print(f"Found {len(fit_gz_files)} .fit.gz and {len(fit_files)} .fit files")
 
-    # Step 3: load activities CSV
     activities = load_activities_csv(csv_path)
     print(f"Loaded {len(activities)} rows from {csv_path.name}")
 
-    # Step 4: parse each fit file
     parsed = {}
 
     for gz in fit_gz_files:
@@ -234,7 +247,6 @@ def main():
 
     print(f"Successfully parsed {len(parsed)} .fit files")
 
-    # Step 5: merge with activities CSV
     fit_keys = []
     if parsed:
         sample = next(iter(parsed.values()))
@@ -249,7 +261,6 @@ def main():
         fit_id = extract_activity_id(fn) if fn else ""
         fit_data = parsed.get(fit_id, {})
 
-        # filter by sport
         sport_filter = args.sport.lower()
         act_type = act.get("Activity Type", "").lower()
         fit_sport = fit_data.get("fit_sport", "").lower() if fit_data else ""
@@ -267,7 +278,6 @@ def main():
 
     print(f"Matched {matched}/{len(enriched)} activities to .fit files")
 
-    # Step 6: write output
     if not enriched:
         print("No rows to write. Check your --sport filter or file paths.")
         return
@@ -281,7 +291,6 @@ def main():
     print(f"\nDone. Enriched CSV written to: {out_path}")
     print(f"Rows: {len(enriched)}, Columns: {len(fieldnames)}")
 
-    # Quick summary of new columns added
     new_cols = [k for k in fieldnames if k.startswith("fit_")]
     print(f"\nNew columns from .fit files ({len(new_cols)}):")
     for c in new_cols:
