@@ -1,0 +1,18 @@
+# Generated output CSVs
+*_strava.csv
+enriched_activities.csv
+
+# Strava export zips/folders (don't commit raw data)
+export_*/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db

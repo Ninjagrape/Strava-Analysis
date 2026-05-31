@@ -37,14 +37,12 @@ def find_strava_export(downloads_dir: Path) -> Path:
         f"No Strava export (export_*.zip or export_*/) found in {downloads_dir}"
     )
 
-
 def find_activities_csv(export_dir: Path) -> Path:
     """Find activities.csv inside the export folder."""
     candidate = export_dir / "activities.csv"
     if candidate.exists():
         return candidate
     raise FileNotFoundError(f"activities.csv not found in {export_dir}")
-
 
 def unzip_archive(archive_path: Path, out_dir: Path) -> Path:
     """If the strava export is a .zip, extract it first."""
@@ -67,6 +65,182 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
             shutil.copyfileobj(f_in, f_out)
     return fit_path
 
+# ---------------------------------------------------------------------------
+# Best efforts
+# ---------------------------------------------------------------------------
+
+BEST_EFFORT_DISTANCES = {
+    "400m":  400,
+    "1/2mi": 804.672,
+    "1km":   1_000.0,
+    "1mi":   1_609.344,
+    "2mi":   3_218.69,
+    "5k":    5_000.0,
+    "10k":   10_000.0,
+    "15k":   15_000.0,
+    "10mi":  16_093.4,
+    "20k":   20_000.0,
+    "half":  21_097.5,
+}
+
+def _seconds_to_pace(seconds: float, distance_m: float) -> str:
+    """Convert elapsed seconds over a distance to a M:SS/km pace string."""
+    pace_sec_per_km = seconds / (distance_m / 1000.0)
+    minutes = int(pace_sec_per_km // 60)
+    secs = int(round(pace_sec_per_km % 60))
+    if secs == 60:
+        minutes += 1
+        secs = 0
+    return f"{minutes}:{secs:02d}"
+
+def _best_efforts(records: list[tuple[float, float]]) -> dict:
+    """
+    Sliding window best-effort calculator.
+
+    records: list of (timestamp_epoch_s, cumulative_distance_m), sorted by time.
+    Returns a dict with best_<label>_s and best_<label>_pace for each target.
+    """
+    result = {}
+    if len(records) < 2:
+        for label in BEST_EFFORT_DISTANCES:
+            result[f"best_{label}_s"] = None
+            result[f"best_{label}_pace"] = None
+        return result
+
+    total_dist = records[-1][1] - records[0][1]
+
+    for label, target_m in BEST_EFFORT_DISTANCES.items():
+        if total_dist < target_m:
+            result[f"best_{label}_s"] = None
+            result[f"best_{label}_pace"] = None
+            continue
+
+        best_s = None
+        left = 0
+        n = len(records)
+
+        for right in range(1, n):
+            # Advance left pointer while window covers the target distance
+            while left < right:
+                span_dist = records[right][1] - records[left][1]
+                if span_dist >= target_m:
+                    span_time = records[right][0] - records[left][0]
+                    if span_time > 0 and (best_s is None or span_time < best_s):
+                        best_s = span_time
+                    left += 1
+                else:
+                    break
+
+        if best_s is not None:
+            result[f"best_{label}_s"] = round(best_s, 1)
+            result[f"best_{label}_pace"] = _seconds_to_pace(best_s, target_m)
+        else:
+            result[f"best_{label}_s"] = None
+            result[f"best_{label}_pace"] = None
+
+    return result
+
+# ---------------------------------------------------------------------------
+# Interval rep detection
+# ---------------------------------------------------------------------------
+
+# Tuning constants - adjust these if detection is over/under-sensitive
+INTERVAL_REST_RATIO_THRESHOLD = 0.20   # flag session as intervals if rest >= 20% of elapsed time
+INTERVAL_SPEED_THRESHOLD_MPS  = 2.0    # below this = rest (approx 8:20/km)
+INTERVAL_MIN_REST_DURATION_S  = 5      # consecutive seconds below threshold to end a rep
+
+INTERVAL_DISTANCES = {
+    "400m": 400.0,
+    "800m": 800.0,
+    "1km":  1_000.0,
+    "1mi":  1_609.344,
+}
+
+
+def _detect_reps(track: list[tuple[float, float]]) -> list[dict]:
+    """
+    Segment a record-level track into effort reps by speed threshold.
+
+    track: list of (epoch_s, cumulative_dist_m), sorted by time.
+    Returns a list of rep dicts with keys: dist_m, time_s, pace (M:SS/km).
+    """
+    if len(track) < 2:
+        return []
+
+    reps = []
+    in_rep = False
+    rep_start_idx = 0
+    rest_streak = 0   # consecutive low-speed records
+
+    for i in range(1, len(track)):
+        dt = track[i][0] - track[i - 1][0]
+        dd = track[i][1] - track[i - 1][1]
+        speed = dd / dt if dt > 0 else 0.0
+
+        if speed >= INTERVAL_SPEED_THRESHOLD_MPS:
+            if not in_rep:
+                in_rep = True
+                rep_start_idx = i - 1
+            rest_streak = 0
+        else:
+            if in_rep:
+                rest_streak += 1
+                if rest_streak >= INTERVAL_MIN_REST_DURATION_S:
+                    # Close rep at the point rest began
+                    end_idx = i - rest_streak
+                    if end_idx > rep_start_idx:
+                        dist_m = track[end_idx][1] - track[rep_start_idx][1]
+                        time_s = track[end_idx][0] - track[rep_start_idx][0]
+                        if dist_m > 0 and time_s > 0:
+                            reps.append({
+                                "dist_m": round(dist_m, 1),
+                                "time_s": round(time_s, 1),
+                                "pace":   _seconds_to_pace(time_s, dist_m),
+                            })
+                    in_rep = False
+                    rest_streak = 0
+
+    # Close any rep still open at end of track
+    if in_rep:
+        dist_m = track[-1][1] - track[rep_start_idx][1]
+        time_s = track[-1][0] - track[rep_start_idx][0]
+        if dist_m > 0 and time_s > 0:
+            reps.append({
+                "dist_m": round(dist_m, 1),
+                "time_s": round(time_s, 1),
+                "pace":   _seconds_to_pace(time_s, dist_m),
+            })
+
+    return reps
+
+
+def _interval_best_efforts(reps: list[dict]) -> dict:
+    """
+    For each standard interval distance, find the fastest rep that covers
+    at least that distance. Returns best_<label>_s and best_<label>_pace columns.
+    """
+    result = {
+        "interval_rep_count":     len(reps),
+        "interval_rep_distances": json.dumps([r["dist_m"] for r in reps]),
+    }
+    for label in INTERVAL_DISTANCES:
+        result[f"interval_best_{label}_s"]    = None
+        result[f"interval_best_{label}_pace"] = None
+
+    for label, target_m in INTERVAL_DISTANCES.items():
+        best_s = None
+        for rep in reps:
+            if rep["dist_m"] >= target_m and (best_s is None or rep["time_s"] < best_s):
+                best_s = rep["time_s"]
+        if best_s is not None:
+            result[f"interval_best_{label}_s"]    = best_s
+            result[f"interval_best_{label}_pace"] = _seconds_to_pace(best_s, target_m)
+
+    return result
+
+# -----------
+# Build CSV
+# -----------
 
 def parse_fit(fit_path: Path) -> dict:
     stats = {
@@ -89,6 +263,19 @@ def parse_fit(fit_path: Path) -> dict:
         "fit_training_stress_score": None,
         "fit_record_count": 0,
         "fit_splits": [],
+        # best efforts
+        "best_1km_s": None, "best_1km_pace": None,
+        "best_1mi_s": None, "best_1mi_pace": None,
+        "best_5k_s":  None, "best_5k_pace":  None,
+        "best_10k_s": None, "best_10k_pace": None,
+        "best_half_s": None, "best_half_pace": None,
+        # interval rep detection (populated only for flagged sessions)
+        "interval_rep_count":          None,
+        "interval_rep_distances":      None,
+        "interval_best_400m_s":        None, "interval_best_400m_pace": None,
+        "interval_best_800m_s":        None, "interval_best_800m_pace": None,
+        "interval_best_1km_s":         None, "interval_best_1km_pace":  None,
+        "interval_best_1mi_s":         None, "interval_best_1mi_pace":  None,
     }
 
     try:
@@ -99,7 +286,12 @@ def parse_fit(fit_path: Path) -> dict:
         return stats
 
     record_count = 0
-    laps = []
+    laps  = []
+    track = []  # (epoch_s, cumulative_dist_m)
+
+    # Session-level elapsed/timer times - read first so we can flag intervals
+    session_elapsed = None
+    session_timer   = None
 
     for msg in messages:
         name = msg.name
@@ -122,6 +314,8 @@ def parse_fit(fit_path: Path) -> dict:
             stats["fit_avg_power"]             = d.get("avg_power")
             stats["fit_total_calories"]        = d.get("total_calories")
             stats["fit_training_stress_score"] = d.get("training_stress_score")
+            session_elapsed = d.get("total_elapsed_time")
+            session_timer   = d.get("total_timer_time")
 
         elif name == "lap":
             d = {f.name: f.value for f in msg.fields}
@@ -141,16 +335,36 @@ def parse_fit(fit_path: Path) -> dict:
 
         elif name == "record":
             record_count += 1
+            d  = {f.name: f.value for f in msg.fields}
+            ts = d.get("timestamp")
+            dm = d.get("distance")
+            if ts is not None and dm is not None:
+                epoch = ts.timestamp() if hasattr(ts, "timestamp") else float(ts)
+                track.append((epoch, float(dm)))
 
     stats["fit_record_count"] = record_count
-    stats["fit_splits"] = json.dumps(laps)
-    return stats
+    stats["fit_splits"]       = json.dumps(laps)
 
+    # Best efforts (sliding window over record track)
+    efforts = _best_efforts(track)
+    stats.update(efforts)
+
+    # Interval detection - only if rest ratio is high enough
+    is_interval_session = False
+    if session_elapsed and session_timer and session_elapsed > 0:
+        rest_ratio = (session_elapsed - session_timer) / session_elapsed
+        is_interval_session = rest_ratio >= INTERVAL_REST_RATIO_THRESHOLD
+
+    if is_interval_session:
+        reps = _detect_reps(track)
+        if len(reps) >= 2:
+            stats.update(_interval_best_efforts(reps))
+
+    return stats
 
 def load_activities_csv(csv_path: Path) -> list[dict]:
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
-
 
 def extract_activity_id(filename: str) -> str:
     stem = Path(filename).stem
