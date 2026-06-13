@@ -15,6 +15,7 @@ best_*_s columns, fit_avg_cadence, Elevation Gain, etc).
 
 
 import csv
+import math
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -73,12 +74,90 @@ def fmt_date(date_str: str) -> str:
         return date_str[:6]
 
 
+def fmt_pace_from_s_per_km(s_per_km: float) -> str:
+    m, sec = int(s_per_km // 60), int(round(s_per_km % 60))
+    if sec == 60:
+        m, sec = m + 1, 0
+    return f"{m}:{sec:02d}"
+
+
+def fmt_target_range(lo_s: float, hi_s: float) -> str:
+    """Format a target pace range in s/km as 'M:SS–M:SS/km'."""
+    return f"{fmt_pace_from_s_per_km(lo_s)}–{fmt_pace_from_s_per_km(hi_s)}/km"
+
+
 def riegel(t1: float, d1: float, d2: float) -> float:
     return t1 * (d2 / d1) ** 1.06
 
 
+def fit_riegel(points: list[tuple[float, float]]) -> tuple[float, float]:
+    """
+    Fit T = a * D^b to (dist_m, ga_time_s) pairs via log-log least squares.
+    Returns (a, b). Clamps b to [1.0, 1.15] for physiological sanity.
+    Falls back to b=1.06 when fewer than 2 points are available.
+    """
+    if len(points) < 2:
+        if points:
+            d, t = points[0]
+            return t / d ** 1.06, 1.06
+        return 1.0, 1.06
+    log_D = [math.log(d) for d, _ in points]
+    log_T = [math.log(t) for _, t in points]
+    n = len(log_D)
+    mean_x = sum(log_D) / n
+    mean_y = sum(log_T) / n
+    ssxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(log_D, log_T))
+    ssxx = sum((x - mean_x) ** 2 for x in log_D)
+    b = ssxy / ssxx if ssxx else 1.06
+    b = max(1.0, min(1.15, b))
+    log_a = mean_y - b * mean_x
+    return math.exp(log_a), b
+
+
+def derive_training_target(riegel_a: float, riegel_b: float, target_dist_m: float) -> tuple:
+    """
+    Hybrid target pace range:
+    - Distances >= 1500m: fitted Riegel curve — keeps race-distance targets proportionally
+      consistent, so falloff at 15K/half vs 5K/10K shows up as a real gap.
+    - Short reps (400m / 800m / 1km): percentage of curve-predicted 5K pace, because
+      Riegel extrapolation to short distances gives physiologically unrealistic targets
+      (it would project sub-4:30/km for 800m from a typical half-marathon anchor).
+
+    Returns (lo_s_per_km, hi_s_per_km) where lo is faster.
+    """
+    pred_5k_pace = (riegel_a * 5000 ** riegel_b) / 5  # s/km from curve
+
+    if target_dist_m >= 1500:
+        pred_pace = (riegel_a * target_dist_m ** riegel_b) / (target_dist_m / 1000)
+        return pred_pace * 0.97, pred_pace
+    elif target_dist_m >= 900:   # 1km reps: 2–4% faster than 5K
+        return pred_5k_pace * 0.96, pred_5k_pace * 0.98
+    elif target_dist_m >= 700:   # 800m reps: 4–7% faster than 5K
+        return pred_5k_pace * 0.93, pred_5k_pace * 0.96
+    else:                          # 400m reps: 7–12% faster than 5K
+        return pred_5k_pace * 0.88, pred_5k_pace * 0.93
+
+
 # ---------------------------------------------------------------------------
 # Data loading
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Training distance definitions — drives the training targets table
+# ---------------------------------------------------------------------------
+
+TRAINING_DEFS = [
+    # (label, best_effort_col, dist_m, incl_intervals)
+    ("400m reps",     "best_400m_s",   400,        True),
+    ("800m reps",     "best_1/2mi_s",  804.672,    True),
+    ("1km reps",      "best_1km_s",    1_000,      False),
+    ("1 mile",        "best_1mi_s",    1_609.344,  False),
+    ("5K",            "best_5k_s",     5_000,      False),
+    ("10K",           "best_10k_s",    10_000,     False),
+    ("15K",           "best_15k_s",    15_000,     False),
+    ("Half marathon", "best_half_s",   21_097.5,   False),
+]
+
 # ---------------------------------------------------------------------------
 
 DISTANCE_BANDS = [
@@ -296,6 +375,8 @@ GOAL_CSS = """
 .pill.gap{background:#3a1a0a;color:#e07020;}
 
 .pred-table{width:100%;border-collapse:collapse;}
+.pred-table th{font-size:10px;font-weight:600;color:#555;text-align:left;padding:4px 6px;border-bottom:1px solid #2a2a2a;}
+.pred-table th:not(:first-child){text-align:right;}
 .pred-table td{font-size:12px;padding:6px 6px;border-bottom:1px solid #222;vertical-align:middle;}
 .pred-table tr:last-child td{border-bottom:none;}
 .pred-table td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums;}
@@ -431,35 +512,48 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
     bar_half_pct  = max(0, min(100, round((8400 - pred_half_s) / 3000 * 100)))
     target_half_pct = round((8400 - 6000) / 3000 * 100)  # 1:40:00
 
-    # --- Speed session targets ---
-    # Current best paces (s/km) derived from best efforts
-    best_400m  = top3_for_band(rows, "best_400m_s",  400,      True)
-    best_800m  = top3_for_band(rows, "best_1/2mi_s", 804.672,  True)
-    best_1km   = top3_for_band(rows, "best_1km_s",   1_000,    False)
-    best_1mi   = top3_for_band(rows, "best_1mi_s",   1_609.344, False)
-    best_5k    = top3_for_band(rows, "best_5k_s",    5_000,    False)
-
-    def best_pace_s(efforts, dist_m):
-        if not efforts:
-            return None
-        return efforts[0]["s"] / (dist_m / 1000)
-
-    speed_rows = [
-        # (label, target_range_str, dist_m, best_efforts, target_lo_s/km, target_hi_s/km)
-        ("400m reps",      "4:47–4:59/km", 400,       best_400m, 287, 299),
-        ("800m reps",      "4:56–5:11/km", 804.672,   best_800m, 296, 311),
-        ("1km reps",       "5:08–5:20/km", 1_000,     best_1km,  308, 320),
-        ("1mi reps",       "5:17–5:24/km", 1_609.344, best_1mi,  317, 324),
-        ("Tempo 20–40min", "5:31–5:49/km", 5_000,     best_5k,   331, 349),
+    # --- Fit personal Riegel curve from GA best efforts ---
+    # Uses 1 mile through half marathon to find the actual exponent b in T = a * D^b.
+    # b > 1.06 → more falloff than average at long distances
+    # b < 1.06 → better endurance scaling than average
+    _RIEGEL_FIT_DEFS = [
+        ("best_1mi_s",  1_609.344, False),
+        ("best_5k_s",   5_000,    False),
+        ("best_10k_s",  10_000,   False),
+        ("best_15k_s",  15_000,   False),
+        ("best_half_s", 21_097.5, False),
     ]
+    _fit_points: list[tuple[float, float]] = []
+    for _col, _dm, _incl in _RIEGEL_FIT_DEFS:
+        _eff = top3_for_band(rows, _col, _dm, _incl)
+        if _eff:
+            _e = _eff[0]
+            _fit_points.append((_dm, ga_time(_e["s"], _e["gain"], _e["dist_km"])))
+
+    _riegel_a, _riegel_b = fit_riegel(_fit_points)
+
+    if abs(_riegel_b - 1.06) < 0.005:
+        _b_note = "matches standard"
+    elif _riegel_b > 1.06:
+        _b_note = "more falloff than avg at long distances"
+    else:
+        _b_note = "better endurance scaling than avg"
+    training_anchor_note = (
+        f"Targets from fitted Riegel curve · personal exponent b={_riegel_b:.3f} ({_b_note})"
+        f" · fitted to {len(_fit_points)} distances"
+    )
 
     speed_rows_html = []
-    for label, target_range, dist_m, efforts, lo, hi in speed_rows:
-        p = best_pace_s(efforts, dist_m)
-        if p is None:
+    for label, col_s, dist_m, incl_intervals in TRAINING_DEFS:
+        efforts = top3_for_band(rows, col_s, dist_m, incl_intervals)
+        if not efforts:
             continue
+        lo, hi = derive_training_target(_riegel_a, _riegel_b, dist_m)
+        current_s_per_km = efforts[0]["s"] / (dist_m / 1000)
         current_str = fmt_pace_bare(efforts[0]["s"], dist_m) + "/km"
-        speed_rows_html.append(render_speed_row(label, target_range, current_str, p, lo, hi))
+        speed_rows_html.append(render_speed_row(
+            label, fmt_target_range(lo, hi), current_str, current_s_per_km, lo, hi,
+        ))
 
     # --- Riegel predictions table ---
     pred_rows_html = []
@@ -595,7 +689,8 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 </div>
 
 <div class="section">
-  <p class="section-title">Speed session targets vs current bests</p>
+  <p class="section-title">Training targets vs current bests</p>
+  <p class="subtitle">{training_anchor_note}</p>
   <table class="speed-table">
     <thead>
       <tr>

@@ -139,12 +139,106 @@ If reps are being split in two, increase `INTERVAL_MIN_REST_DURATION_S`. If cont
 runs are being falsely flagged, increase `INTERVAL_REST_RATIO_THRESHOLD` or decrease
 `INTERVAL_SPEED_THRESHOLD_MPS`.
 
+## Generating dashboards
+
+Once you have a `YYYY-MM-DD_strava.csv`, run:
+
+```bash
+python generate_dashboards.py
+```
+
+This produces two self-contained HTML files next to the script:
+
+| File | Contents |
+|---|---|
+| `top_runs_by_distance.html` | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
+| `goal_dashboard.html` | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and a weekly mileage sparkline |
+
+Open either file directly in a browser — no server required.
+
+### Goal dashboard sections
+
+| Section | Description |
+|---|---|
+| Race goals | Predicted finish time vs target for upcoming races, with a progress bar |
+| Training targets vs current bests | Data-derived target pace range for every distance (400m → half); gap column shows where fitness falls off relative to your personal Riegel curve |
+| Riegel race predictions | Extrapolated race times anchored on your best grade-adjusted 10K |
+| Weekly mileage | Sparkline of km/week from April 2026 onwards |
+
+### Training target methodology
+
+Targets are derived entirely from your own data — there are no hardcoded pace constants. The pipeline has three stages.
+
+#### 1. Grade adjustment (Minetti formula)
+
+All effort times are corrected for elevation before any analysis. The Minetti metabolic cost model gives the energy cost of running at grade *g* (rise/run):
+
+```
+cost(g) = 155.4g⁵ − 30.4g⁴ − 43.3g³ + 46.3g² + 19.5g + 3.6
+```
+
+A raw effort time is scaled by `cost(0) / cost(g)` to produce the equivalent flat-ground time. Grade is computed as `elevation_gain / (2 × distance_m)` — the factor of 2 treats elevation gain as a one-way uphill contribution (conservative, since descents provide only partial recovery).
+
+#### 2. Personal Riegel curve fitting
+
+The standard Riegel endurance formula predicts finish time at distance *D* from a known time at distance *D₁*:
+
+```
+T₂ = T₁ × (D₂ / D₁)^b
+```
+
+The conventional exponent *b = 1.06* is a population average. This script fits your personal *b* by running log-log least squares regression on your GA best efforts at 1 mile, 5K, 10K, 15K, and half marathon:
+
+```
+log(T) = log(a) + b × log(D)   →   solve for a, b
+```
+
+The fitted *b* is clamped to [1.0, 1.15] for physiological sanity. A value above 1.06 means you fall off faster than the average runner as distance increases; below 1.06 means your endurance scales better than average. The subtitle of the training targets section in `goal_dashboard.html` shows your current fitted *b* and an interpretation.
+
+Functions: `fit_riegel(points)` → `(a, b)`
+
+#### 3. Hybrid target derivation
+
+Targets are computed from the fitted curve using two different methods depending on distance, because Riegel extrapolation from race distances becomes unreliable for very short repetition efforts:
+
+**Race distances (≥ 1500m — 1 mile, 5K, 10K, 15K, half marathon)**
+
+```
+target_hi = a × D^b / (D / 1000)   # the curve's predicted pace (s/km)
+target_lo = target_hi × 0.97       # 3% faster: improvement goal
+```
+
+Every distance on this part of the table shares the same curve, so gaps are directly comparable. A 15K that's 40 s/km below the curve predicted from your 5K fitness is immediately visible.
+
+**Short repetition efforts (400m, 800m, 1km)**
+
+Targets are expressed as a percentage of the curve-predicted 5K pace:
+
+| Distance | Target range | Rationale |
+|---|---|---|
+| 1km reps | 96–98% of 5K pace | Slightly faster than 5K, VO2max zone |
+| 800m reps | 93–96% of 5K pace | Faster, high-intensity |
+| 400m reps | 88–93% of 5K pace | Fastest reps, speed-endurance zone |
+
+Function: `derive_training_target(riegel_a, riegel_b, target_dist_m)` → `(lo_s_per_km, hi_s_per_km)`
+
+#### Reading the training targets table
+
+| Status | Meaning |
+|---|---|
+| **exceeds** (green) | Current best is faster than even the aggressive target (target_lo) |
+| **on target** (green) | Current best falls within the target range |
+| **gap** (orange) | Current best is slower than the Riegel prediction — shows where fitness is falling behind the curve |
+
 ## File structure
 
 ```
 Strava-Analysis/
-├── strava_compile.py       # main script
-├── YYYY-MM-DD_strava.csv   # output (gitignored)
+├── strava_compile.py           # main script — processes Strava export → CSV
+├── generate_dashboards.py      # generates HTML dashboards from the CSV
+├── YYYY-MM-DD_strava.csv       # output (gitignored)
+├── top_runs_by_distance.html   # best efforts dashboard (gitignored)
+├── goal_dashboard.html         # goal gap dashboard (gitignored)
 └── README.md
 ```
 
