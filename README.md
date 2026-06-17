@@ -17,10 +17,18 @@ pip install fitparse
 Drop a Strava export zip (`export_*.zip`) into your Downloads folder, then run:
 
 ```bash
+python main.py
+```
+
+This runs all three steps in sequence — compile the export, generate the dashboards, generate the analytics — and writes all output to `csv_data/` and `dashboards/`. It exits early with an error if any step fails.
+
+### Running steps individually
+
+```bash
 python strava_compile.py
 ```
 
-The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically).
+The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically). The date is taken from the export zip's file modification time — i.e. when you downloaded it from Strava — so the filename reflects the export generation date rather than the day you ran the script.
 
 ### Options
 
@@ -143,7 +151,7 @@ runs are being falsely flagged, increase `INTERVAL_REST_RATIO_THRESHOLD` or decr
 
 ## Generating dashboards
 
-Once you have a `csv_data/YYYY-MM-DD_strava.csv`, run:
+Once you have a `csv_data/YYYY-MM-DD_strava.csv`, you can run the dashboard scripts individually:
 
 ```bash
 python generate_dashboards.py
@@ -267,9 +275,10 @@ Points at ≥ 1200 m are fitted via linear regression of distance on time (`dist
 
 ```
 Strava-Analysis/
-├── strava_compile.py           # main script — processes Strava export → enriched CSV
-├── generate_dashboards.py      # generates best-efforts and goal dashboards
-├── generate_analytics.py       # generates training analytics dashboard
+├── main.py                     # one-command entrypoint: compile + all dashboards
+├── strava_compile.py           # step 1 — processes Strava export → enriched CSV
+├── generate_dashboards.py      # step 2 — generates best-efforts and goal dashboards
+├── generate_analytics.py       # step 3 — generates training analytics dashboard
 ├── csv_data/                   # output CSVs (gitignored)
 │   └── YYYY-MM-DD_strava.csv
 ├── dashboards/                 # output HTML dashboards (gitignored)

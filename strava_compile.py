@@ -473,7 +473,8 @@ def main():
     if args.out:
         out_path = Path(args.out)
     else:
-        date_str = datetime.today().strftime("%Y-%m-%d")
+        # date_str = datetime.today().strftime("%Y-%m-%d")    # Using current date
+        date_str = datetime.fromtimestamp(archive_path.stat().st_mtime).strftime("%Y-%m-%d")    # Using export file last edit date
         out_path = Path(__file__).parent / "csv_data" / f"{date_str}_strava.csv"
         
     activities_dir = export_dir / "activities"
