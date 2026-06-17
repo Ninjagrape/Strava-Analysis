@@ -145,6 +145,7 @@ def _best_efforts(records: list[tuple[float, float]]) -> dict:
 # ---------------------------------------------------------------------------
 
 # Tuning constants - adjust these if detection is over/under-sensitive
+PACE_ZONE_THRESHOLD_MPS       = None   # set to your threshold pace in m/s (e.g. 3.33 = 5:00/km); None = use activity avg speed
 INTERVAL_REST_RATIO_THRESHOLD = 0.20   # flag session as intervals if rest >= 20% of elapsed time
 INTERVAL_SPEED_THRESHOLD_MPS  = 2.0    # below this = rest (approx 8:20/km)
 INTERVAL_MIN_REST_DURATION_S  = 5      # consecutive seconds below threshold to end a rep
@@ -242,6 +243,40 @@ def _interval_best_efforts(reps: list[dict]) -> dict:
 # Build CSV
 # -----------
 
+def _pace_zone_secs(speed_stream: list, threshold_mps: float) -> str:
+    """
+    Tally seconds spent in each of 5 pace zones from the per-record speed stream.
+    Zones are defined as fractions of threshold speed (Z4 = threshold).
+    Returns a JSON list [z1_s, z2_s, z3_s, z4_s, z5_s].
+    """
+    if not threshold_mps or threshold_mps <= 0 or len(speed_stream) < 2:
+        return json.dumps([0, 0, 0, 0, 0])
+
+    # speed multipliers relative to threshold (faster = higher)
+    # Z1 <0.77, Z2 0.77-0.87, Z3 0.87-0.93, Z4 0.93-1.03, Z5 >1.03
+    bounds = [0.77, 0.87, 0.93, 1.03]
+    secs = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+    for i in range(1, len(speed_stream)):
+        t_prev, _ = speed_stream[i - 1]
+        t_cur, sp = speed_stream[i]
+        dt = t_cur - t_prev
+        if dt <= 0 or dt > 30 or sp is None:  # skip gaps/pauses
+            continue
+        frac = sp / threshold_mps
+        if frac < bounds[0]:
+            secs[0] += dt
+        elif frac < bounds[1]:
+            secs[1] += dt
+        elif frac < bounds[2]:
+            secs[2] += dt
+        elif frac < bounds[3]:
+            secs[3] += dt
+        else:
+            secs[4] += dt
+
+    return json.dumps([round(s, 1) for s in secs])
+
 def parse_fit(fit_path: Path) -> dict:
     stats = {
         "fit_file": fit_path.stem,
@@ -269,6 +304,8 @@ def parse_fit(fit_path: Path) -> dict:
         "best_5k_s":  None, "best_5k_pace":  None,
         "best_10k_s": None, "best_10k_pace": None,
         "best_half_s": None, "best_half_pace": None,
+        # pace zones (seconds per zone, JSON) from per-record speed stream
+        "fit_pace_zone_secs": None,
         # interval rep detection (populated only for flagged sessions)
         "interval_rep_count":          None,
         "interval_rep_distances":      None,
@@ -287,7 +324,8 @@ def parse_fit(fit_path: Path) -> dict:
 
     record_count = 0
     laps  = []
-    track = []  # (epoch_s, cumulative_dist_m)
+    track = []          # (epoch_s, cumulative_dist_m)
+    speed_stream = []   # (epoch_s, speed_mps) for pace-zone tally
 
     # Session-level elapsed/timer times - read first so we can flag intervals
     session_elapsed = None
@@ -338,9 +376,13 @@ def parse_fit(fit_path: Path) -> dict:
             d  = {f.name: f.value for f in msg.fields}
             ts = d.get("timestamp")
             dm = d.get("distance")
+            sp = d.get("enhanced_speed")
+            if sp is None:
+                sp = d.get("speed")
             if ts is not None and dm is not None:
                 epoch = ts.timestamp() if hasattr(ts, "timestamp") else float(ts)
                 track.append((epoch, float(dm)))
+                speed_stream.append((epoch, float(sp) if sp is not None else None))
 
     stats["fit_record_count"] = record_count
     stats["fit_splits"]       = json.dumps(laps)
@@ -348,6 +390,14 @@ def parse_fit(fit_path: Path) -> dict:
     # Best efforts (sliding window over record track)
     efforts = _best_efforts(track)
     stats.update(efforts)
+
+    # Pace zones from per-record speed stream
+    if PACE_ZONE_THRESHOLD_MPS:
+        threshold = PACE_ZONE_THRESHOLD_MPS
+    else:
+        # fall back to this activity's own average speed as a rough anchor
+        threshold = stats["fit_avg_speed_mps"]
+    stats["fit_pace_zone_secs"] = _pace_zone_secs(speed_stream, threshold)
 
     # Interval detection - only if rest ratio is high enough
     is_interval_session = False
@@ -424,7 +474,7 @@ def main():
         out_path = Path(args.out)
     else:
         date_str = datetime.today().strftime("%Y-%m-%d")
-        out_path = Path(__file__).parent / f"{date_str}_strava.csv"
+        out_path = Path(__file__).parent / "csv_data" / f"{date_str}_strava.csv"
         
     activities_dir = export_dir / "activities"
     if not activities_dir.exists():

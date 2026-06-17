@@ -737,10 +737,11 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 def main():
     here = Path(__file__).parent
 
-    # Find the most recent *_strava.csv in the same folder as this script
-    candidates = sorted(here.glob("*_strava.csv"))
+    # Find the most recent *_strava.csv in csv_data/
+    csv_dir = here / "csv_data"
+    candidates = sorted(csv_dir.glob("*_strava.csv"))
     if not candidates:
-        sys.exit(f"Error: no *_strava.csv found in {here}")
+        sys.exit(f"Error: no *_strava.csv found in {csv_dir}")
     csv_path = candidates[-1]
     print(f"Using: {csv_path.name}")
 
@@ -755,11 +756,14 @@ def main():
     except (ValueError, IndexError):
         updated = datetime.today().strftime("%#-d-%b-%Y")
 
-    best_path = here / "top_runs_by_distance.html"
+    dashboards_dir = here / "dashboards"
+    dashboards_dir.mkdir(exist_ok=True)
+
+    best_path = dashboards_dir / "top_runs_by_distance.html"
     best_path.write_text(generate_best_efforts(rows, updated), encoding="utf-8")
     print(f"Written: {best_path}")
 
-    goal_path = here / "goal_dashboard.html"
+    goal_path = dashboards_dir / "goal_dashboard.html"
     goal_path.write_text(generate_goal_dashboard(rows, updated), encoding="utf-8")
     print(f"Written: {goal_path}")
 
