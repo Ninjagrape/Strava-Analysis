@@ -20,7 +20,7 @@ Drop a Strava export zip (`export_*.zip`) into your Downloads folder, then run:
 python strava_compile.py
 ```
 
-The output CSV is written to the same directory as the script, named `YYYY-MM-DD_strava.csv`.
+The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically).
 
 ### Options
 
@@ -29,7 +29,7 @@ The output CSV is written to the same directory as the script, named `YYYY-MM-DD
 | `--downloads` | `~/Downloads` | Folder to search for the Strava export zip or folder |
 | `--archive` | auto-detected | Override: path to a specific export zip or extracted folder |
 | `--csv` | auto-detected | Override: path to a specific `activities.csv` |
-| `--out` | `YYYY-MM-DD_strava.csv` next to script | Override: output CSV path |
+| `--out` | `csv_data/YYYY-MM-DD_strava.csv` | Override: output CSV path |
 | `--sport` | `running` | Filter by sport. Options: `running`, `cycling`, `all` |
 | `--tmp` | `/tmp/strava_fit` | Temp directory for decompressed `.fit` files |
 
@@ -65,6 +65,7 @@ derived from the `.fit` files.
 | `fit_training_stress_score` | Training Stress Score (if recorded) |
 | `fit_record_count` | Number of raw record messages parsed |
 | `fit_splits` | JSON array of per-lap data (see below) |
+| `fit_pace_zone_secs` | JSON array `[z1_s, z2_s, z3_s, z4_s, z5_s]` — seconds spent in each of 5 pace zones, tallied from the per-record speed stream |
 
 ### Lap splits (`fit_splits`)
 
@@ -130,6 +131,7 @@ is treated as a false positive and columns are also left empty.
 The detection constants are at the top of the script and are easy to tune:
 
 ```python
+PACE_ZONE_THRESHOLD_MPS       = None   # threshold pace for pace zones (e.g. 3.33 = 5:00/km); None = use activity avg speed
 INTERVAL_REST_RATIO_THRESHOLD = 0.20   # flag session if rest >= 20% of elapsed time
 INTERVAL_SPEED_THRESHOLD_MPS  = 2.0    # below this speed = rest (~8:20/km)
 INTERVAL_MIN_REST_DURATION_S  = 5      # consecutive slow seconds before closing a rep
@@ -141,20 +143,20 @@ runs are being falsely flagged, increase `INTERVAL_REST_RATIO_THRESHOLD` or decr
 
 ## Generating dashboards
 
-Once you have a `YYYY-MM-DD_strava.csv`, run:
+Once you have a `csv_data/YYYY-MM-DD_strava.csv`, run:
 
 ```bash
 python generate_dashboards.py
+python generate_analytics.py
 ```
 
-This produces two self-contained HTML files next to the script:
+Both scripts write self-contained HTML files into the `dashboards/` subdirectory (created automatically). Open any file directly in a browser — no server required.
 
-| File | Contents |
-|---|---|
-| `top_runs_by_distance.html` | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
-| `goal_dashboard.html` | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and a weekly mileage sparkline |
-
-Open either file directly in a browser — no server required.
+| Script | Output file | Contents |
+|---|---|---|
+| `generate_dashboards.py` | `dashboards/top_runs_by_distance.html` | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
+| `generate_dashboards.py` | `dashboards/goal_dashboard.html` | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and a weekly mileage sparkline |
+| `generate_analytics.py` | `dashboards/analytics_dashboard.html` | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
 
 ### Goal dashboard sections
 
@@ -230,15 +232,50 @@ Function: `derive_training_target(riegel_a, riegel_b, target_dist_m)` → `(lo_s
 | **on target** (green) | Current best falls within the target range |
 | **gap** (orange) | Current best is slower than the Riegel prediction — shows where fitness is falling behind the curve |
 
+## Analytics dashboard (`generate_analytics.py`)
+
+Run after `generate_dashboards.py`. All analyses use pace, distance, and elevation — no heart rate or power required. Outputs `dashboards/analytics_dashboard.html`.
+
+### Sections
+
+| Section | Description |
+|---|---|
+| Fitness, fatigue and form | CTL (42-day), ATL (7-day), and TSB (form) computed from a pace-based load score — the HR-free equivalent of Strava's Fitness & Freshness |
+| Acute:Chronic Workload Ratio | 7-day acute load vs 28-day chronic baseline; green 0.8–1.3 sweet spot, red = injury-risk spike |
+| Training strain & monotony (Foster) | Monotony = weekly mean / SD; strain = weekly load × monotony; high strain with low variation is the classic overtraining signature |
+| Critical speed model | Running analog of Strava's power curve: `distance = CS × time + D'`. Fits CS (sustainable threshold pace) and D' (finite anaerobic distance) to all best-effort distances ≥ 1200 m |
+| Time in pace zones | Proportion of total moving time in 5 zones anchored to critical speed (Z4 = threshold); aims for a polarised Z1/Z2 + Z4/Z5 distribution |
+| VO₂max estimate (VDOT) | Monthly best Daniels VDOT from grade-adjusted 1mi–10K efforts; useful as a fitness trend rather than an absolute figure |
+| Average cadence by month | Steps/min (one foot); rising cadence at the same pace signals improving running economy |
+| Training log calendar | Daily training load heatmap — darker green = higher load, gaps are rest days |
+
+### Load score
+
+The CTL/ATL/TSB calculation uses a pace-based stress score because no HR or power data is available. Each session's load is:
+
+```
+load = grade_adjusted_distance_km × 10 × intensity²
+```
+
+where `intensity = threshold_pace / session_GA_pace`, clamped to [0.5, 1.5]. The threshold pace is the 15th-percentile fastest GA pace across all sessions. This mirrors the TRIMP-less load that Runalyze uses when HR is absent.
+
+### Critical speed model
+
+Points at ≥ 1200 m are fitted via linear regression of distance on time (`dist = CS × t + D'`). The slope CS is your aerobic threshold in m/s; D' (intercept) is the finite work reserve above threshold. The dashboard table compares actual best times to the model's predicted times at each distance.
+
 ## File structure
 
 ```
 Strava-Analysis/
-├── strava_compile.py           # main script — processes Strava export → CSV
-├── generate_dashboards.py      # generates HTML dashboards from the CSV
-├── YYYY-MM-DD_strava.csv       # output (gitignored)
-├── top_runs_by_distance.html   # best efforts dashboard (gitignored)
-├── goal_dashboard.html         # goal gap dashboard (gitignored)
+├── strava_compile.py           # main script — processes Strava export → enriched CSV
+├── generate_dashboards.py      # generates best-efforts and goal dashboards
+├── generate_analytics.py       # generates training analytics dashboard
+├── csv_data/                   # output CSVs (gitignored)
+│   └── YYYY-MM-DD_strava.csv
+├── dashboards/                 # output HTML dashboards (gitignored)
+│   ├── top_runs_by_distance.html
+│   ├── goal_dashboard.html
+│   └── analytics_dashboard.html
 └── README.md
 ```
 
