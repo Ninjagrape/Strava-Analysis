@@ -69,6 +69,26 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
 # Best efforts
 # ---------------------------------------------------------------------------
 
+SEMICIRCLES_TO_DEG = 180.0 / (2 ** 31)
+GPS_MAX_POINTS = 250
+
+
+def _simplify_polyline(coords: list, max_points: int = GPS_MAX_POINTS) -> list:
+    """Downsample lat/lon coords to at most max_points via uniform stride."""
+    if not coords:
+        return []
+    n = len(coords)
+    if n <= max_points:
+        return [[round(lat, 5), round(lon, 5)] for lat, lon in coords]
+    step = (n - 1) / (max_points - 1)
+    result = []
+    for i in range(max_points):
+        idx = min(int(round(i * step)), n - 1)
+        lat, lon = coords[idx]
+        result.append([round(lat, 5), round(lon, 5)])
+    return result
+
+
 BEST_EFFORT_DISTANCES = {
     "400m":  400,
     "1/2mi": 804.672,
@@ -346,6 +366,8 @@ def parse_fit(fit_path: Path) -> dict:
         "fit_pace_zone_secs": None,
         # per-km splits (interpolated from record track)
         "fit_km_splits": None,
+        # GPS polyline [[lat, lon], ...] downsampled
+        "fit_gps_polyline": None,
         # interval rep detection (populated only for flagged sessions)
         "interval_rep_count":          None,
         "interval_rep_distances":      None,
@@ -366,6 +388,7 @@ def parse_fit(fit_path: Path) -> dict:
     laps  = []
     track = []          # (epoch_s, cumulative_dist_m)
     speed_stream = []   # (epoch_s, speed_mps) for pace-zone tally
+    gps_coords = []     # (lat_deg, lon_deg)
 
     # Session-level elapsed/timer times - read first so we can flag intervals
     session_elapsed = None
@@ -423,9 +446,14 @@ def parse_fit(fit_path: Path) -> dict:
                 epoch = ts.timestamp() if hasattr(ts, "timestamp") else float(ts)
                 track.append((epoch, float(dm)))
                 speed_stream.append((epoch, float(sp) if sp is not None else None))
+            lat_sc = d.get("position_lat")
+            lon_sc = d.get("position_long")
+            if lat_sc is not None and lon_sc is not None:
+                gps_coords.append((lat_sc * SEMICIRCLES_TO_DEG, lon_sc * SEMICIRCLES_TO_DEG))
 
-    stats["fit_record_count"] = record_count
-    stats["fit_splits"]       = json.dumps(laps)
+    stats["fit_record_count"]   = record_count
+    stats["fit_splits"]         = json.dumps(laps)
+    stats["fit_gps_polyline"]   = json.dumps(_simplify_polyline(gps_coords))
 
     # Best efforts (sliding window over record track)
     efforts = _best_efforts(track)
@@ -558,9 +586,10 @@ def main():
     fit_keys = []
     if parsed:
         sample = next(iter(parsed.values()))
-        fit_keys = [k for k in sample.keys() if k not in ("fit_splits", "fit_km_splits")]
+        fit_keys = [k for k in sample.keys() if k not in ("fit_splits", "fit_km_splits", "fit_gps_polyline")]
         fit_keys.append("fit_splits")
         fit_keys.append("fit_km_splits")
+        fit_keys.append("fit_gps_polyline")
 
     enriched = []
     matched = 0

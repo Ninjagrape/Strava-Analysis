@@ -10,6 +10,7 @@ generate_dashboards and generate_analytics.
 """
 
 import json
+import math
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,6 +42,85 @@ BEST_EFFORT_DEFS = [
     ("15K",           "best_15k_s",    15_000.0),
     ("Half marathon", "best_half_s",   21_097.5),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Heatmap helpers
+# ---------------------------------------------------------------------------
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(min(a, 1.0)))
+
+
+def _interpolate_polyline(poly: list, step_m: float = 12.0) -> list:
+    """Insert intermediate lat/lon points so no segment is longer than step_m metres.
+    This fills the gaps left by the 250-point GPS simplification so the heatmap
+    renders as a continuous line rather than discrete blobs when zoomed in."""
+    if len(poly) < 2:
+        return list(poly)
+    result = [poly[0]]
+    for i in range(1, len(poly)):
+        lat0, lon0 = poly[i - 1][0], poly[i - 1][1]
+        lat1, lon1 = poly[i][0], poly[i][1]
+        mid_lat = (lat0 + lat1) / 2
+        dlat_m = (lat1 - lat0) * 111_000
+        dlon_m = (lon1 - lon0) * 111_000 * math.cos(math.radians(mid_lat))
+        dist_m = math.hypot(dlat_m, dlon_m)
+        if dist_m > step_m:
+            n = int(dist_m / step_m)
+            for j in range(1, n + 1):
+                frac = j / (n + 1)
+                result.append([lat0 + frac * (lat1 - lat0), lon0 + frac * (lon1 - lon0)])
+        result.append([lat1, lon1])
+    return result
+
+
+def _heatmap_points(runs: list[dict], max_dist_km: float = 150.0) -> list:
+    """Build heatmap points where each run contributes at most one point per ~100 m grid cell.
+    This makes density proportional to distinct-run frequency, not raw GPS point count,
+    so oval laps don't inflate an area to match a frequently-run local route."""
+    centroids = []
+    for r in runs:
+        poly = r.get("gps_polyline", [])
+        if len(poly) >= 5:
+            lat_c = sum(p[0] for p in poly) / len(poly)
+            lon_c = sum(p[1] for p in poly) / len(poly)
+            centroids.append((lat_c, lon_c))
+
+    if not centroids:
+        return []
+
+    lats = sorted(c[0] for c in centroids)
+    lons = sorted(c[1] for c in centroids)
+    med_lat = lats[len(lats) // 2]
+    med_lon = lons[len(lons) // 2]
+
+    points = []
+    for r in runs:
+        poly = r.get("gps_polyline", [])
+        if len(poly) < 5:
+            continue
+        lat_c = sum(p[0] for p in poly) / len(poly)
+        lon_c = sum(p[1] for p in poly) / len(poly)
+        if _haversine_km(med_lat, med_lon, lat_c, lon_c) > max_dist_km:
+            continue
+        # Interpolate to fill gaps (250-pt simplification leaves ~20 m spacing).
+        dense = _interpolate_polyline(poly, step_m=12.0)
+        # Deduplicate: each ~11 m grid cell (4 decimal places) counts once per run.
+        # Fine enough for smooth rendering; coarse enough to collapse repeated laps.
+        seen: set = set()
+        for p in dense:
+            key = (round(p[0], 4), round(p[1], 4))
+            if key not in seen:
+                seen.add(key)
+                points.append(p)
+
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +230,12 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         # Pace zones: prefer km-split-based computation (correct units, personal threshold)
         pace_zones = _compute_pace_zones(km_splits, threshold_mps)
 
+        # GPS polyline for map
+        try:
+            gps_polyline = json.loads(row.get("fit_gps_polyline") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            gps_polyline = []
+
         # Per-run best efforts
         best_efforts = []
         for label, col, dist_be in BEST_EFFORT_DEFS:
@@ -177,11 +263,12 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "descent":     round(num(row, "fit_total_descent_m") or 0),
             "cadence":     round(num(row, "fit_avg_cadence")) if num(row, "fit_avg_cadence") else None,
             "calories":    round(num(row, "fit_total_calories")) if num(row, "fit_total_calories") else None,
-            "is_interval": is_interval(row),
-            "lap_splits":  lap_splits,
-            "km_splits":   km_splits,
-            "pace_zones":  pace_zones,
+            "is_interval":  is_interval(row),
+            "lap_splits":   lap_splits,
+            "km_splits":    km_splits,
+            "pace_zones":   pace_zones,
             "best_efforts": best_efforts,
+            "gps_polyline": gps_polyline,
         })
 
     runs.sort(key=lambda r: r["date_iso"], reverse=True)
@@ -306,6 +393,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .rd-table tr:last-child td{border-bottom:none}
 .pace-cell{color:#eee;font-weight:500}
 .best-km{color:#5cb85c !important}
+.leaflet-container,.leaflet-container *,.leaflet-container *::before,.leaflet-container *::after{box-sizing:content-box}
 """
 
 # ---------------------------------------------------------------------------
@@ -313,6 +401,30 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 # ---------------------------------------------------------------------------
 
 HUB_JS = r"""
+var overviewMap = null;
+var currentRunMap = null;
+var selectedRunId = null;
+
+function initRunMap(r) {
+  if (currentRunMap) { currentRunMap.remove(); currentRunMap = null; }
+  if (!r || !r.gps_polyline || r.gps_polyline.length < 5 || typeof L === 'undefined') return;
+  setTimeout(function() {
+    try {
+      var mapEl = document.getElementById('run-map-' + r.id);
+      if (!mapEl) return;
+      currentRunMap = L.map(mapEl, {zoomControl: true, preferCanvas: true});
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        subdomains: 'abcd', maxZoom: 19
+      }).addTo(currentRunMap);
+      var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(currentRunMap);
+      L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
+      L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
+      currentRunMap.fitBounds(poly.getBounds(), {padding: [24, 24]});
+    } catch(e) { console.warn('Run map init failed:', e); }
+  }, 50);
+}
+
 document.querySelectorAll('.tab').forEach(function(btn) {
   btn.addEventListener('click', function() {
     var id = btn.dataset.panel;
@@ -320,6 +432,13 @@ document.querySelectorAll('.tab').forEach(function(btn) {
     document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
     document.getElementById('panel-' + id).classList.add('active');
     btn.classList.add('active');
+    if (id === 'overview' && overviewMap) {
+      setTimeout(function() { overviewMap.invalidateSize(); }, 50);
+    }
+    if (id === 'runs' && selectedRunId !== null) {
+      var r = RUNS.find(function(x) { return x.id === selectedRunId; });
+      if (r) initRunMap(r);
+    }
   });
 });
 
@@ -367,13 +486,21 @@ function renderRunList(runs) {
 }
 
 function showRun(id) {
+  selectedRunId = id;
   document.querySelectorAll('.run-item').forEach(function(el) { el.classList.remove('active'); });
   var item = document.querySelector('.run-item[data-id="' + id + '"]');
   if (item) { item.classList.add('active'); item.scrollIntoView({block:'nearest'}); }
   var r = RUNS.find(function(x) { return x.id === id; });
   if (!r) return;
+
   document.getElementById('run-detail-content').innerHTML = renderDetail(r);
   document.getElementById('run-detail-pane').scrollTop = 0;
+
+  // Only init map if the Runs panel is currently visible
+  var runsPanel = document.getElementById('panel-runs');
+  if (runsPanel && runsPanel.classList.contains('active')) {
+    initRunMap(r);
+  }
 }
 
 // ── Run detail ────────────────────────────────────────────────────────────
@@ -391,11 +518,16 @@ function renderDetail(r) {
     kmExtraStats(r) +
     '</div>';
 
+  var mapHtml = (r.gps_polyline && r.gps_polyline.length >= 5)
+    ? '<div id="run-map-' + r.id + '" style="height:260px;border-radius:8px;border:1px solid #3a3a3a;margin-bottom:1.25rem"></div>'
+    : '';
+
   return '<div class="rd-header">' +
       '<h2 class="rd-name">' + esc(r.name) + '</h2>' +
       '<div class="rd-date">' + r.weekday + ', ' + r.date_long + '</div>' +
     '</div>' +
     statsHtml +
+    mapHtml +
     renderRunShape(r) +
     renderKmSplits(r) +
     renderPaceZones(r.pace_zones) +
@@ -568,6 +700,28 @@ function section(title, body) {
   return '<div class="rd-section"><div class="rd-section-title">' + title + '</div>' + body + '</div>';
 }
 
+// ── Overview heatmap ──────────────────────────────────────────────────────
+
+function initOverviewMap() {
+  if (!HEATMAP_POINTS || !HEATMAP_POINTS.length || typeof L === 'undefined') return;
+  try {
+    var el = document.getElementById('overview-heatmap');
+    if (!el) return;
+    overviewMap = L.map(el, {zoomControl: true});
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd', maxZoom: 19
+    }).addTo(overviewMap);
+    if (typeof L.heatLayer !== 'undefined') {
+      L.heatLayer(HEATMAP_POINTS, {
+        radius: 7, blur: 8, maxZoom: 18, minOpacity: 0.2,
+        gradient: {0.0: '#1a3a1a', 0.3: '#3a7a3a', 0.6: '#5cb85c', 0.85: '#e0a020', 1.0: '#d9534f'}
+      }).addTo(overviewMap);
+    }
+    overviewMap.fitBounds(L.latLngBounds(HEATMAP_POINTS), {padding: [20, 20]});
+  } catch(e) { console.warn('Overview heatmap init failed:', e); }
+}
+
 // ── Search & init ─────────────────────────────────────────────────────────
 
 document.getElementById('run-search').addEventListener('input', function() {
@@ -582,6 +736,7 @@ document.getElementById('run-search').addEventListener('input', function() {
 
 renderRunList(RUNS);
 if (RUNS.length) showRun(RUNS[0].id);
+initOverviewMap();
 """
 
 
@@ -598,10 +753,12 @@ def generate(
     html_goals: str,
     html_analytics: str,
 ) -> str:
-    stats      = _overview_stats(rows, runs)
-    weeks      = weekly_mileage(rows)
-    spark_cols = render_spark(weeks)
-    runs_json  = json.dumps(runs, ensure_ascii=False)
+    stats          = _overview_stats(rows, runs)
+    weeks          = weekly_mileage(rows)
+    spark_cols     = render_spark(weeks)
+    runs_json      = json.dumps(runs, ensure_ascii=False)
+    heat_pts       = _heatmap_points(runs)
+    heatmap_json   = json.dumps(heat_pts)
 
     # Embed threshold as seconds/km for JS zone colouring (null if unknown)
     if threshold_mps and threshold_mps > 0:
@@ -638,6 +795,11 @@ def generate(
 </div>
 
 <div class="ov-section">
+  <p class="ov-section-title">All-time heatmap</p>
+  <div id="overview-heatmap" style="height:420px;border-radius:8px;border:1px solid #3a3a3a;background:#111;overflow:hidden"></div>
+</div>
+
+<div class="ov-section">
   <p class="ov-section-title">Weekly mileage &mdash; Apr 2026 onwards</p>
   <div class="spark-wrap">
     <p class="spark-label">km per week (ISO weeks) &middot; updated {updated}</p>
@@ -662,6 +824,7 @@ def generate(
         "<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<title>Training Hub</title>\n"
+        "<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\"/>\n"
         "<style>\n" + combined_css + "</style>\n"
         "</head>\n"
         "<body>\n"
@@ -707,9 +870,12 @@ def generate(
         "  </div>\n"
         "</div>\n"
 
+        "<script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>\n"
+        "<script src=\"https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js\"></script>\n"
         "<script>\n"
         "const RUNS = " + runs_json + ";\n"
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
+        "const HEATMAP_POINTS = " + heatmap_json + ";\n"
         + HUB_JS +
         "</script>\n"
         "</body>\n"
