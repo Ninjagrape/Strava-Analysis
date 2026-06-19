@@ -707,6 +707,17 @@ def generate(rows: list[dict], updated: str) -> str:
 """
 
 
+# Exported for hub embedding (the dashboard-specific CSS without body-level rules)
+ANALYTICS_PANEL_CSS = SHARED_CSS
+
+
+def body_analytics(rows: list[dict], updated: str) -> str:
+    html = generate(rows, updated)
+    s = html.index('<body>') + len('<body>')
+    e = html.index('</body>')
+    return html[s:e].strip()
+
+
 def main():
     here = Path(__file__).parent
     csv_dir = here / "csv_data"

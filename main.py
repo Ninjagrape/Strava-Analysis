@@ -7,8 +7,7 @@ HERE = Path(__file__).parent
 
 STEPS = [
     ("Compile Strava export",    HERE / "strava_compile.py"),
-    ("Generate dashboards",      HERE / "generate_dashboards.py"),
-    ("Generate analytics",       HERE / "generate_analytics.py"),
+    ("Generate hub (all dashboards)", HERE / "generate_hub.py"),
 ]
 
 def run_step(label: str, script: Path):
@@ -22,4 +21,4 @@ def run_step(label: str, script: Path):
 if __name__ == "__main__":
     for label, script in STEPS:
         run_step(label, script)
-    print("\nAll done. Dashboards written to dashboards/")
+    print("\nAll done. Open dashboards/index.html to start.")

@@ -731,6 +731,24 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Body fragments — return inner HTML only, for embedding in the hub
+# ---------------------------------------------------------------------------
+
+def body_best_efforts(rows: list[dict], updated: str) -> str:
+    html = generate_best_efforts(rows, updated)
+    s = html.index('<body>') + len('<body>')
+    e = html.index('</body>')
+    return html[s:e].strip()
+
+
+def body_goal_dashboard(rows: list[dict], updated: str) -> str:
+    html = generate_goal_dashboard(rows, updated)
+    s = html.index('<body>') + len('<body>')
+    e = html.index('</body>')
+    return html[s:e].strip()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

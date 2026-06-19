@@ -215,6 +215,44 @@ def _detect_reps(track: list[tuple[float, float]]) -> list[dict]:
     return reps
 
 
+def _per_km_splits(track: list[tuple]) -> list[dict]:
+    """
+    Compute per-km split times by interpolating the cumulative distance track.
+    Returns [{km: N, time_s: float}, ...] for each complete km.
+    """
+    if len(track) < 2:
+        return []
+    start_dist = track[0][1]
+    total_dist = track[-1][1] - start_dist
+    if total_dist < 1000:
+        return []
+
+    splits = []
+    prev_crossing_epoch = track[0][0]
+    km = 1
+    target = start_dist + 1000.0
+
+    for i in range(1, len(track)):
+        epoch, dist = track[i]
+        while dist >= target:
+            ep0, d0 = track[i - 1]
+            if dist > d0:
+                frac = (target - d0) / (dist - d0)
+                crossing_epoch = ep0 + frac * (epoch - ep0)
+            else:
+                crossing_epoch = epoch
+            split_time = crossing_epoch - prev_crossing_epoch
+            if split_time > 0:
+                splits.append({"km": km, "time_s": round(split_time, 1)})
+            prev_crossing_epoch = crossing_epoch
+            km += 1
+            target = start_dist + km * 1000.0
+            if target > track[-1][1] + 1:
+                break
+
+    return splits
+
+
 def _interval_best_efforts(reps: list[dict]) -> dict:
     """
     For each standard interval distance, find the fastest rep that covers
@@ -306,6 +344,8 @@ def parse_fit(fit_path: Path) -> dict:
         "best_half_s": None, "best_half_pace": None,
         # pace zones (seconds per zone, JSON) from per-record speed stream
         "fit_pace_zone_secs": None,
+        # per-km splits (interpolated from record track)
+        "fit_km_splits": None,
         # interval rep detection (populated only for flagged sessions)
         "interval_rep_count":          None,
         "interval_rep_distances":      None,
@@ -390,6 +430,9 @@ def parse_fit(fit_path: Path) -> dict:
     # Best efforts (sliding window over record track)
     efforts = _best_efforts(track)
     stats.update(efforts)
+
+    # Per-km splits (interpolated from cumulative distance track)
+    stats["fit_km_splits"] = json.dumps(_per_km_splits(track))
 
     # Pace zones from per-record speed stream
     if PACE_ZONE_THRESHOLD_MPS:
@@ -515,8 +558,9 @@ def main():
     fit_keys = []
     if parsed:
         sample = next(iter(parsed.values()))
-        fit_keys = [k for k in sample.keys() if k != "fit_splits"]
+        fit_keys = [k for k in sample.keys() if k not in ("fit_splits", "fit_km_splits")]
         fit_keys.append("fit_splits")
+        fit_keys.append("fit_km_splits")
 
     enriched = []
     matched = 0
