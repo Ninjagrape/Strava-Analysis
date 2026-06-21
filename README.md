@@ -3,8 +3,11 @@
 Processes a Strava data export into an enriched CSV, merging `activities.csv` metadata with
 per-second record data parsed from each activity's `.fit.gz` file. Computes best efforts
 and detects interval reps from the raw GPS/distance stream, then builds a self-contained
-training hub (`dashboards/index.html`) with best-efforts, goals, analytics, an all-time GPS
-heatmap, and a searchable per-run browser with maps and charts.
+training hub (`dashboards/TrainingHub.html`) with best-efforts, goals, analytics, an all-time
+GPS heatmap, and a searchable per-run browser. Each run has its Strava description, a route
+map, per-km splits (with elevation gain/loss and cadence), and an over-distance
+pace/elevation/heart-rate/cadence profile. Clicking a route opens an expanded view where
+tracing the graph moves a marker along the map and shows the exact distance and value.
 
 ## Requirements
 
@@ -22,13 +25,13 @@ Drop a Strava export zip (`export_*.zip`) into your Downloads folder, then run:
 python main.py
 ```
 
-This runs both steps in sequence — compile the export, then generate the hub — and writes all output to `csv_data/` and `dashboards/`. It exits early with an error if any step fails. When it finishes, open `dashboards/index.html` in a browser.
+This runs both steps in sequence — compile the export, then generate the hub — and writes all output to `csv_data/` and `dashboards/`. It exits early with an error if any step fails. When it finishes, open `dashboards/TrainingHub.html` in a browser.
 
 ### Running steps individually
 
 ```bash
 python strava_compile.py   # step 1: export → enriched CSV
-python generate_hub.py     # step 2: CSV → dashboards/index.html
+python generate_hub.py     # step 2: CSV → dashboards/TrainingHub.html
 ```
 
 The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically). The date is taken from the export zip's file modification time — i.e. when you downloaded it from Strava — so the filename reflects the export generation date rather than the day you ran the script.
@@ -77,6 +80,9 @@ derived from the `.fit` files.
 | `fit_record_count` | Number of raw record messages parsed |
 | `fit_splits` | JSON array of per-lap data (see below) |
 | `fit_pace_zone_secs` | JSON array `[z1_s, z2_s, z3_s, z4_s, z5_s]` — seconds spent in each of 5 pace zones, tallied from the per-record speed stream |
+| `fit_km_splits` | JSON array of per-km splits with elevation gain/loss and cadence (see below) |
+| `fit_gps_polyline` | JSON array of `[lat, lon]` route points (downsampled) for maps |
+| `fit_distance_stream` | JSON array of over-distance samples — pace/elevation/HR/cadence + position — for per-run charts (see below) |
 
 ### Lap splits (`fit_splits`)
 
@@ -98,6 +104,43 @@ Stored as a JSON array in the `fit_splits` column. Each element is an object wit
 Note: lap distance/speed fields are populated by the device and may be absent for some
 Garmin models. Best efforts (below) are computed from raw record messages and are reliable
 regardless.
+
+### Per-km splits (`fit_km_splits`)
+
+Per-kilometre splits interpolated from the cumulative-distance record stream (independent of
+device laps). Each element covers one complete km:
+
+```json
+{
+  "km": 1,
+  "time_s": 312.4,
+  "gain_m": 11,
+  "loss_m": 3,
+  "cad": 168
+}
+```
+
+`gain_m`/`loss_m` (per-km elevation gain/loss in metres) and `cad` (average cadence, both
+feet) are omitted when the underlying stream has no data — e.g. treadmill runs.
+
+### Per-run streams (`fit_gps_polyline`, `fit_distance_stream`)
+
+`fit_gps_polyline` is a `[[lat, lon], ...]` array (downsampled to ≤ 250 points) used to draw
+the route on the per-run map and to build the all-time heatmap.
+
+`fit_distance_stream` powers the over-distance charts. It is sampled **by distance** —
+~50 samples per km (≈ every 20 m), capped at 1200 points — so short and long runs get the
+same spatial resolution rather than the same total count. Each point carries whichever
+metrics the run recorded:
+
+```json
+{ "d": 1.42, "pace": 312.5, "elev": 41.2, "hr": 155, "cad": 168, "lat": -33.84, "lon": 151.21 }
+```
+
+`d` is distance in km and `pace` is seconds/km; `lat`/`lon` let the chart cursor map a
+distance back to a position on the route map. Keys are omitted when a metric isn't recorded.
+The sampling density and cap are tunable via `STREAM_POINTS_PER_KM` and `STREAM_MAX_POINTS`
+at the top of the stream section in `strava_compile.py`.
 
 ### Best efforts
 
@@ -154,7 +197,7 @@ runs are being falsely flagged, increase `INTERVAL_REST_RATIO_THRESHOLD` or decr
 
 ## The training hub (`generate_hub.py`)
 
-Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a single self-contained `dashboards/index.html` — no server required, open it directly in a browser. It imports the analysis logic from `generate_dashboards.py` and `generate_analytics.py` and stitches everything into one tabbed page (the all-time heatmap and per-run maps use [Leaflet](https://leafletjs.com/), loaded from a CDN, so the maps need an internet connection):
+Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a single self-contained `dashboards/TrainingHub.html` — no server required, open it directly in a browser. It imports the analysis logic from `generate_dashboards.py` and `generate_analytics.py` and stitches everything into one tabbed page (the all-time heatmap and per-run maps use [Leaflet](https://leafletjs.com/), loaded from a CDN, so the maps need an internet connection):
 
 | Tab | Contents |
 |---|---|
@@ -162,7 +205,7 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
-| Runs | Searchable run list; selecting a run shows its stats, a GPS map of the route, pace/elevation charts, km splits, pace zones, best efforts, and an over-distance pace profile |
+| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph moves a marker along the route and labels the exact distance and value |
 
 ### Standalone dashboard scripts
 
@@ -285,13 +328,13 @@ Points at ≥ 1200 m are fitted via linear regression of distance on time (`dist
 Strava-Analysis/
 ├── main.py                     # one-command entrypoint: compile + generate hub
 ├── strava_compile.py           # step 1 — processes Strava export → enriched CSV
-├── generate_hub.py             # step 2 — builds the consolidated hub (index.html)
+├── generate_hub.py             # step 2 — builds the consolidated hub (TrainingHub.html)
 ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 ├── generate_analytics.py       # analytics logic; also runs standalone
 ├── csv_data/                   # output CSVs (gitignored)
 │   └── YYYY-MM-DD_strava.csv
 ├── dashboards/                 # output HTML dashboards (gitignored)
-│   ├── index.html              # the consolidated training hub (main output)
+│   ├── TrainingHub.html        # the consolidated training hub (main output)
 │   ├── top_runs_by_distance.html   # only if generate_dashboards.py is run alone
 │   ├── goal_dashboard.html         # only if generate_dashboards.py is run alone
 │   └── analytics_dashboard.html    # only if generate_analytics.py is run alone

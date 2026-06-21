@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 generate_hub.py
-Generates dashboards/index.html — a self-contained training hub with:
+Generates dashboards/TrainingHub.html — a self-contained training hub with:
   - Overview panel: summary stats, fitness indicators, weekly mileage
   - Runs panel: searchable run list with per-run analytics
 
