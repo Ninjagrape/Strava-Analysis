@@ -236,6 +236,12 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             gps_polyline = []
 
+        # Over-distance metric stream
+        try:
+            dist_stream = json.loads(row.get("fit_distance_stream") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            dist_stream = []
+
         # Per-run best efforts
         best_efforts = []
         for label, col, dist_be in BEST_EFFORT_DEFS:
@@ -269,6 +275,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "pace_zones":   pace_zones,
             "best_efforts": best_efforts,
             "gps_polyline": gps_polyline,
+            "dist_stream": dist_stream,
         })
 
     runs.sort(key=lambda r: r["date_iso"], reverse=True)
@@ -394,6 +401,14 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .pace-cell{color:#eee;font-weight:500}
 .best-km{color:#5cb85c !important}
 .leaflet-container,.leaflet-container *,.leaflet-container *::before,.leaflet-container *::after{box-sizing:content-box}
+
+.dist-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}
+.dist-tab{background:#222;border:1px solid #3a3a3a;color:#888;font-size:11px;
+  padding:4px 10px;border-radius:6px;cursor:pointer;transition:color .1s,border-color .1s}
+.dist-tab:hover{color:#ccc}
+.dist-tab.active{color:#eee;border-color:#5cb85c;background:#1b2a1b}
+.dist-chart{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:8px}
+.dist-chart svg{display:block;width:100%;height:auto}
 """
 
 # ---------------------------------------------------------------------------
@@ -496,6 +511,12 @@ function showRun(id) {
   document.getElementById('run-detail-content').innerHTML = renderDetail(r);
   document.getElementById('run-detail-pane').scrollTop = 0;
 
+  // draw the default over-distance metric if a stream exists
+  if (r.dist_stream && r.dist_stream.length) {
+    var av = availableMetrics(r.dist_stream);
+    if (av.length) drawDistMetric(r.id, av[0].key);
+  }
+
   // Only init map if the Runs panel is currently visible
   var runsPanel = document.getElementById('panel-runs');
   if (runsPanel && runsPanel.classList.contains('active')) {
@@ -519,7 +540,7 @@ function renderDetail(r) {
     '</div>';
 
   var mapHtml = (r.gps_polyline && r.gps_polyline.length >= 5)
-    ? '<div id="run-map-' + r.id + '" style="height:260px;border-radius:8px;border:1px solid #3a3a3a;margin-bottom:1.25rem"></div>'
+    ? '<div id="run-map-' + r.id + '" style="height:460px;border-radius:8px;border:1px solid #3a3a3a;margin-bottom:1.25rem"></div>'
     : '';
 
   return '<div class="rd-header">' +
@@ -531,7 +552,8 @@ function renderDetail(r) {
     renderRunShape(r) +
     renderKmSplits(r) +
     renderPaceZones(r.pace_zones) +
-    renderBestEfforts(r.best_efforts);
+    renderBestEfforts(r.best_efforts) +
+    renderDistChart(r);
 }
 
 function stat(label, value) {
@@ -562,6 +584,120 @@ function kmExtraStats(r) {
            '<div class="rds-v" style="font-size:13px;' + cls + '">' + label + '</div></div>';
   }
   return out;
+}
+
+// ── Over-distance metric chart ────────────────────────────────────────────
+
+var DIST_METRICS = [
+  {key: 'pace', label: 'Pace',      color: '#5cb85c', invert: true},
+  {key: 'elev', label: 'Elevation', color: '#8a6db5', invert: false},
+  {key: 'hr',   label: 'Heart rate',color: '#d9534f', invert: false},
+  {key: 'cad',  label: 'Cadence',   color: '#5b8fd9', invert: false}
+];
+
+function availableMetrics(stream) {
+  return DIST_METRICS.filter(function(m) {
+    return stream.some(function(p) { return p[m.key] != null; });
+  });
+}
+
+function fmtMetric(key, v) {
+  if (key === 'pace') {
+    var mn = Math.floor(v / 60), sc = Math.round(v % 60);
+    return mn + ':' + (sc < 10 ? '0' : '') + sc + '/km';
+  }
+  if (key === 'elev') return Math.round(v) + ' m';
+  if (key === 'hr')   return Math.round(v) + ' bpm';
+  if (key === 'cad')  return Math.round(v) + ' spm';
+  return v;
+}
+
+function drawDistMetric(runId, metricKey) {
+  var r = RUNS.find(function(x) { return x.id === runId; });
+  if (!r || !r.dist_stream || !r.dist_stream.length) return;
+  var metric = DIST_METRICS.find(function(m) { return m.key === metricKey; });
+  var stream = r.dist_stream;
+
+  var W = 720, H = 200, padL = 44, padR = 12, padT = 12, padB = 24;
+  var pts = stream.filter(function(p) { return p[metricKey] != null && p.d != null; });
+  if (pts.length < 2) return;
+
+  var xs = pts.map(function(p) { return p.d; });
+  var ys = pts.map(function(p) { return p[metricKey]; });
+  var xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+  var ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
+  if (ymax === ymin) ymax = ymin + 1;
+  var xspan = (xmax - xmin) || 1, yspan = (ymax - ymin) || 1;
+
+  function px(d) { return padL + (d - xmin) / xspan * (W - padL - padR); }
+  function py(v) {
+    var t = (v - ymin) / yspan;
+    if (metric.invert) t = 1 - t; // faster pace (smaller s/km) plotted higher
+    return H - padB - t * (H - padT - padB);
+  }
+
+  // area + line path
+  var line = pts.map(function(p, i) {
+    return (i ? 'L' : 'M') + px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1);
+  }).join(' ');
+  var area = 'M' + px(pts[0].d).toFixed(1) + ',' + (H - padB) +
+    pts.map(function(p) { return 'L' + px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1); }).join('') +
+    'L' + px(pts[pts.length - 1].d).toFixed(1) + ',' + (H - padB) + 'Z';
+
+  // y gridlines (3)
+  var grid = '';
+  for (var g = 0; g <= 2; g++) {
+    var frac = g / 2;
+    var vy = padT + frac * (H - padT - padB);
+    var val = metric.invert ? (ymin + frac * yspan) : (ymax - frac * yspan);
+    grid += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (W - padR) +
+      '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (vy + 3).toFixed(1) +
+      '" font-size="9" fill="#555" text-anchor="end">' + fmtMetric(metricKey, val) + '</text>';
+  }
+  // x labels at each whole km that fits
+  var xlab = '';
+  for (var km = Math.ceil(xmin); km <= Math.floor(xmax); km++) {
+    if ((xmax - xmin) > 12 && km % 2 !== 0) continue;
+    xlab += '<text x="' + px(km).toFixed(1) + '" y="' + (H - 8) +
+      '" font-size="9" fill="#555" text-anchor="middle">' + km + '</text>';
+  }
+
+  var gid = 'grad-' + runId + '-' + metricKey;
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">' +
+    '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0" stop-color="' + metric.color + '" stop-opacity="0.35"/>' +
+      '<stop offset="1" stop-color="' + metric.color + '" stop-opacity="0.02"/>' +
+    '</linearGradient></defs>' +
+    grid +
+    '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
+    '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+    xlab +
+    '</svg>';
+
+  var holder = document.getElementById('dist-chart-' + runId);
+  if (holder) holder.innerHTML = svg;
+}
+
+function selectDistMetric(runId, metricKey) {
+  document.querySelectorAll('#dist-tabs-' + runId + ' .dist-tab').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.metric === metricKey);
+  });
+  drawDistMetric(runId, metricKey);
+}
+
+function renderDistChart(r) {
+  if (!r.dist_stream || !r.dist_stream.length) return '';
+  var avail = availableMetrics(r.dist_stream);
+  if (!avail.length) return '';
+  var tabs = avail.map(function(m, i) {
+    return '<button class="dist-tab' + (i === 0 ? ' active' : '') +
+      '" data-metric="' + m.key + '" onclick="selectDistMetric(' + r.id + ',\'' + m.key + '\')">' +
+      m.label + '</button>';
+  }).join('');
+  return section('Over distance',
+    '<div class="dist-tabs" id="dist-tabs-' + r.id + '">' + tabs + '</div>' +
+    '<div id="dist-chart-' + r.id + '" class="dist-chart"></div>');
 }
 
 // ── Run shape chart ───────────────────────────────────────────────────────

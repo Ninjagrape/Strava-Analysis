@@ -2,7 +2,9 @@
 
 Processes a Strava data export into an enriched CSV, merging `activities.csv` metadata with
 per-second record data parsed from each activity's `.fit.gz` file. Computes best efforts
-and detects interval reps from the raw GPS/distance stream.
+and detects interval reps from the raw GPS/distance stream, then builds a self-contained
+training hub (`dashboards/index.html`) with best-efforts, goals, analytics, an all-time GPS
+heatmap, and a searchable per-run browser with maps and charts.
 
 ## Requirements
 
@@ -20,12 +22,13 @@ Drop a Strava export zip (`export_*.zip`) into your Downloads folder, then run:
 python main.py
 ```
 
-This runs all three steps in sequence — compile the export, generate the dashboards, generate the analytics — and writes all output to `csv_data/` and `dashboards/`. It exits early with an error if any step fails.
+This runs both steps in sequence — compile the export, then generate the hub — and writes all output to `csv_data/` and `dashboards/`. It exits early with an error if any step fails. When it finishes, open `dashboards/index.html` in a browser.
 
 ### Running steps individually
 
 ```bash
-python strava_compile.py
+python strava_compile.py   # step 1: export → enriched CSV
+python generate_hub.py     # step 2: CSV → dashboards/index.html
 ```
 
 The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically). The date is taken from the export zip's file modification time — i.e. when you downloaded it from Strava — so the filename reflects the export generation date rather than the day you ran the script.
@@ -149,16 +152,21 @@ If reps are being split in two, increase `INTERVAL_MIN_REST_DURATION_S`. If cont
 runs are being falsely flagged, increase `INTERVAL_REST_RATIO_THRESHOLD` or decrease
 `INTERVAL_SPEED_THRESHOLD_MPS`.
 
-## Generating dashboards
+## The training hub (`generate_hub.py`)
 
-Once you have a `csv_data/YYYY-MM-DD_strava.csv`, you can run the dashboard scripts individually:
+Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a single self-contained `dashboards/index.html` — no server required, open it directly in a browser. It imports the analysis logic from `generate_dashboards.py` and `generate_analytics.py` and stitches everything into one tabbed page (the all-time heatmap and per-run maps use [Leaflet](https://leafletjs.com/), loaded from a CDN, so the maps need an internet connection):
 
-```bash
-python generate_dashboards.py
-python generate_analytics.py
-```
+| Tab | Contents |
+|---|---|
+| Overview | Summary stats, fitness/fatigue/form (CTL/ATL/TSB) indicators, an all-time GPS heatmap, and a weekly mileage sparkline |
+| Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
+| Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
+| Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
+| Runs | Searchable run list; selecting a run shows its stats, a GPS map of the route, pace/elevation charts, km splits, pace zones, best efforts, and an over-distance pace profile |
 
-Both scripts write self-contained HTML files into the `dashboards/` subdirectory (created automatically). Open any file directly in a browser — no server required.
+### Standalone dashboard scripts
+
+`generate_dashboards.py` and `generate_analytics.py` can also be run on their own to emit individual HTML files into `dashboards/` (created automatically):
 
 | Script | Output file | Contents |
 |---|---|---|
@@ -242,7 +250,7 @@ Function: `derive_training_target(riegel_a, riegel_b, target_dist_m)` → `(lo_s
 
 ## Analytics dashboard (`generate_analytics.py`)
 
-Run after `generate_dashboards.py`. All analyses use pace, distance, and elevation — no heart rate or power required. Outputs `dashboards/analytics_dashboard.html`.
+All analyses use pace, distance, and elevation — no heart rate or power required. These analyses appear in the hub's Analytics tab; running the script standalone outputs `dashboards/analytics_dashboard.html`.
 
 ### Sections
 
@@ -275,16 +283,18 @@ Points at ≥ 1200 m are fitted via linear regression of distance on time (`dist
 
 ```
 Strava-Analysis/
-├── main.py                     # one-command entrypoint: compile + all dashboards
+├── main.py                     # one-command entrypoint: compile + generate hub
 ├── strava_compile.py           # step 1 — processes Strava export → enriched CSV
-├── generate_dashboards.py      # step 2 — generates best-efforts and goal dashboards
-├── generate_analytics.py       # step 3 — generates training analytics dashboard
+├── generate_hub.py             # step 2 — builds the consolidated hub (index.html)
+├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
+├── generate_analytics.py       # analytics logic; also runs standalone
 ├── csv_data/                   # output CSVs (gitignored)
 │   └── YYYY-MM-DD_strava.csv
 ├── dashboards/                 # output HTML dashboards (gitignored)
-│   ├── top_runs_by_distance.html
-│   ├── goal_dashboard.html
-│   └── analytics_dashboard.html
+│   ├── index.html              # the consolidated training hub (main output)
+│   ├── top_runs_by_distance.html   # only if generate_dashboards.py is run alone
+│   ├── goal_dashboard.html         # only if generate_dashboards.py is run alone
+│   └── analytics_dashboard.html    # only if generate_analytics.py is run alone
 └── README.md
 ```
 
