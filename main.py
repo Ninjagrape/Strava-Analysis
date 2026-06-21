@@ -21,4 +21,4 @@ def run_step(label: str, script: Path):
 if __name__ == "__main__":
     for label, script in STEPS:
         run_step(label, script)
-    print("\nAll done. Open dashboards/index.html to start.")
+    print("\nAll done. Open dashboards/TrainingHub.html to start.")
