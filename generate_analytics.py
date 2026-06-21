@@ -390,6 +390,10 @@ h1{font-size:15px;font-weight:600;margin:0 0 .25rem;color:#999;}
 .stat-value.red{color:#d9534f;}
 .stat-sub{font-size:10px;color:#666;margin:2px 0 0;}
 svg{display:block;width:100%;height:auto;}
+.rng-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
+.rng-btn{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
+.rng-btn:hover{color:#ccc;}
+.rng-btn.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
 .legend{font-size:10px;color:#666;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
 .legend span{display:inline-flex;align-items:center;gap:4px;}
 .swatch{width:10px;height:10px;border-radius:2px;display:inline-block;}
@@ -518,6 +522,40 @@ def _calendar_heatmap(cal: dict, w=720):
     return "".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Per-chart time-range controls (recency window)
+# ---------------------------------------------------------------------------
+# Each time-series chart is pre-rendered for several windows; the buttons just
+# show/hide the matching SVG (setRange in JS). The underlying metrics are still
+# computed over the full history — only the *view* is cropped.
+
+DAILY_RANGES   = [("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("All", None)]
+MONTHLY_RANGES = [("3M", 3), ("6M", 6), ("1Y", 12), ("All", None)]
+CAL_RANGES     = [("3M", 90), ("6M", 180), ("1Y", 365), ("All", None)]
+
+
+def _last_days(series: list[dict], days, date_key="date") -> list[dict]:
+    """Trailing slice of a date-keyed series to the last `days` (None = all)."""
+    if days is None or not series:
+        return series
+    start = series[-1][date_key] - timedelta(days=days)
+    return [s for s in series if s[date_key] >= start]
+
+
+def _ranged(ranges: list[tuple], default_label: str, render_fn) -> str:
+    """Wrap render_fn(window) outputs in a button-toggled range group."""
+    btns, divs = [], []
+    for label, win in ranges:
+        active = label == default_label
+        btns.append(
+            f'<button class="rng-btn{" active" if active else ""}" '
+            f'data-range="{label}" onclick="setRange(this)">{label}</button>')
+        style = "" if active else ' style="display:none"'
+        divs.append(f'<div class="rng-chart" data-range="{label}"{style}>{render_fn(win)}</div>')
+    return (f'<div class="rng-group"><div class="rng-tabs">{"".join(btns)}</div>'
+            f'{"".join(divs)}</div>')
+
+
 def generate(rows: list[dict], updated: str) -> str:
     loads = session_loads(rows)
     daily = daily_series(loads)
@@ -558,21 +596,25 @@ def generate(rows: list[dict], updated: str) -> str:
     cal = calendar_data(loads)
 
     # ---- build HTML ----
-    fitness_chart = _line_chart(
-        fitness,
+    fitness_chart = _ranged(DAILY_RANGES, "3M", lambda win: _line_chart(
+        _last_days(fitness, win),
         [("ctl", "#5cb85c", "Fitness (CTL)"),
          ("atl", "#e0a020", "Fatigue (ATL)"),
          ("tsb", "#5b8fd9", "Form (TSB)")],
-    )
+    ))
 
-    acwr_labels = [s["date"].strftime("%#d/%#m") for s in acwr]
-    acwr_vals = [round(s["acwr"], 2) for s in acwr]
-    acwr_chart = _bar_chart(acwr_labels, acwr_vals, band=(0.8, 1.3),
-                            fmt=lambda v: f"{v:.1f}" if v else "")
+    def _acwr_render(win):
+        s = _last_days(acwr, win)
+        return _bar_chart([x["date"].strftime("%#d/%#m") for x in s],
+                          [round(x["acwr"], 2) for x in s], band=(0.8, 1.3),
+                          fmt=lambda v: f"{v:.1f}" if v else "")
+    acwr_chart = _ranged(DAILY_RANGES, "3M", _acwr_render)
 
-    strain_labels = [s["date"].strftime("%#d/%#m") for s in mono]
-    strain_vals = [round(s["strain"]) for s in mono]
-    strain_chart = _bar_chart(strain_labels, strain_vals, color="#5b8fd9")
+    def _strain_render(win):
+        s = _last_days(mono, win)
+        return _bar_chart([x["date"].strftime("%#d/%#m") for x in s],
+                          [round(x["strain"]) for x in s], color="#5b8fd9")
+    strain_chart = _ranged(DAILY_RANGES, "3M", _strain_render)
 
     # critical speed table
     cs_rows = ""
@@ -596,11 +638,25 @@ def generate(rows: list[dict], updated: str) -> str:
             zone_legend += (f'<span><span class="swatch" style="background:{zone_colors[i]}"></span>'
                             f'{z["name"]} ({fmt_pace_from_s_per_km(z["hi_s"])}-{fmt_pace_from_s_per_km(z["lo_s"])}/km)</span>')
 
-    vdot_chart = _bar_chart([l for l, _ in vdot], [v for _, v in vdot],
-                            color="#5cb85c", fmt=lambda v: f"{v:.0f}") if vdot else ""
-    cad_chart = _bar_chart([l for l, _ in cad], [v for _, v in cad],
-                           color="#5b8fd9", fmt=lambda v: f"{v:.0f}") if cad else ""
-    cal_chart = _calendar_heatmap(cal)
+    def _monthly_render(data, color):
+        def render(n):
+            sub = data if n is None else data[-n:]
+            if not sub:
+                return "<p class='note'>No data.</p>"
+            return _bar_chart([l for l, _ in sub], [v for _, v in sub],
+                              color=color, fmt=lambda v: f"{v:.0f}")
+        return render
+    vdot_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(vdot, "#5cb85c")) if vdot else ""
+    cad_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(cad, "#5b8fd9")) if cad else ""
+
+    def _cal_render(win):
+        if win is None or not cal:
+            c = cal
+        else:
+            start = max(cal) - timedelta(days=win)
+            c = {d: v for d, v in cal.items() if d >= start}
+        return _calendar_heatmap(c)
+    cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
@@ -702,6 +758,19 @@ def generate(rows: list[dict], updated: str) -> str:
   </div>
 </div>
 
+<script>
+function setRange(btn){{
+  var g = btn.closest('.rng-group');
+  if(!g) return;
+  var range = btn.getAttribute('data-range');
+  var btns = g.querySelectorAll('.rng-btn');
+  for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i]===btn); }}
+  var charts = g.querySelectorAll('.rng-chart');
+  for(var j=0;j<charts.length;j++){{
+    charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
+  }}
+}}
+</script>
 </body>
 </html>
 """
