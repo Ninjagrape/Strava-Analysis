@@ -235,10 +235,13 @@ def _detect_reps(track: list[tuple[float, float]]) -> list[dict]:
     return reps
 
 
-def _per_km_splits(track: list[tuple]) -> list[dict]:
+def _per_km_splits(track: list[tuple], elev_stream: list = None,
+                   cad_stream: list = None) -> list[dict]:
     """
-    Compute per-km split times by interpolating the cumulative distance track.
-    Returns [{km: N, time_s: float}, ...] for each complete km.
+    Compute per-km split times by interpolating the cumulative distance track,
+    plus per-km elevation gain/loss and average cadence.
+    Returns [{km: N, time_s, gain_m, loss_m, cad}, ...] for each complete km.
+    gain_m/loss_m/cad are omitted when the underlying stream has no data.
     """
     if len(track) < 2:
         return []
@@ -246,6 +249,35 @@ def _per_km_splits(track: list[tuple]) -> list[dict]:
     total_dist = track[-1][1] - start_dist
     if total_dist < 1000:
         return []
+
+    elev_by_t = {t: v for t, v in (elev_stream or []) if v is not None}
+    cad_by_t  = {t: v for t, v in (cad_stream or []) if v is not None}
+    have_elev = bool(elev_by_t)
+    have_cad  = bool(cad_by_t)
+
+    n_km = int(total_dist // 1000)            # complete kms only
+    gain    = [0.0] * n_km
+    loss    = [0.0] * n_km
+    cad_sum = [0.0] * n_km
+    cad_cnt = [0]   * n_km
+
+    # Accumulate elevation deltas and cadence into the km each sample falls in.
+    prev_alt = None
+    for epoch, dist in track:
+        km_idx = int((dist - start_dist) // 1000)   # 0-based km bucket
+        in_range = 0 <= km_idx < n_km
+        if have_elev and epoch in elev_by_t:
+            alt = elev_by_t[epoch]
+            if prev_alt is not None and in_range:
+                d = alt - prev_alt
+                if d > 0:
+                    gain[km_idx] += d
+                else:
+                    loss[km_idx] -= d
+            prev_alt = alt
+        if have_cad and in_range and epoch in cad_by_t:
+            cad_sum[km_idx] += cad_by_t[epoch]
+            cad_cnt[km_idx] += 1
 
     splits = []
     prev_crossing_epoch = track[0][0]
@@ -263,7 +295,14 @@ def _per_km_splits(track: list[tuple]) -> list[dict]:
                 crossing_epoch = epoch
             split_time = crossing_epoch - prev_crossing_epoch
             if split_time > 0:
-                splits.append({"km": km, "time_s": round(split_time, 1)})
+                s = {"km": km, "time_s": round(split_time, 1)}
+                idx = km - 1
+                if have_elev and idx < n_km:
+                    s["gain_m"] = round(gain[idx])
+                    s["loss_m"] = round(loss[idx])
+                if have_cad and idx < n_km and cad_cnt[idx] > 0:
+                    s["cad"] = round(cad_sum[idx] / cad_cnt[idx])
+                splits.append(s)
             prev_crossing_epoch = crossing_epoch
             km += 1
             target = start_dist + km * 1000.0
@@ -272,39 +311,58 @@ def _per_km_splits(track: list[tuple]) -> list[dict]:
 
     return splits
 
-DISTANCE_STREAM_MAX_POINTS = 300
+# Over-distance chart sampling: take a fixed number of samples *per km* so short
+# and long runs get the same spatial resolution (rather than the same total count,
+# which over-sampled short runs). STREAM_MAX_POINTS caps very long runs.
+STREAM_POINTS_PER_KM  = 50      # ~one sample every 20 m
+STREAM_MAX_POINTS     = 1200    # hard cap (kicks in past ~24 km)
+STREAM_PACE_WINDOW_M  = 50.0    # min look-ahead distance for instantaneous pace (noise control)
 
 def _distance_stream(track: list, elev_stream: list, hr_stream: list,
-                     cad_stream: list) -> str:
+                     cad_stream: list, pos_stream: list) -> str:
     """
-    Build a downsampled over-distance series for per-run charts.
+    Build an over-distance series for per-run charts, sampled at a constant
+    ~STREAM_POINTS_PER_KM samples per km (uniform spatial resolution).
     track:       [(epoch_s, cumulative_dist_m)]
     elev_stream: [(epoch_s, altitude_m or None)]
     hr_stream:   [(epoch_s, hr_bpm or None)]
     cad_stream:  [(epoch_s, cadence_spm or None)]   (already doubled to both feet)
-    Returns JSON list of points: {"d": km, "pace": s/km, "elev": m, "hr": bpm, "cad": spm}
+    pos_stream:  [(epoch_s, lat_deg or None, lon_deg or None)]
+    Returns JSON list of points: {"d": km, "pace": s/km, "elev": m, "hr": bpm,
+                                  "cad": spm, "lat": deg, "lon": deg}
+    lat/lon let the per-run chart cursor map a distance back to a map position.
     Keys are omitted when the underlying stream has no data at all.
     """
     if len(track) < 2:
+        return json.dumps([])
+
+    start_dist = track[0][1]
+    total_dist = track[-1][1] - start_dist
+    if total_dist <= 0:
         return json.dumps([])
 
     # lookups by epoch for the optional streams
     elev_by_t = {t: v for t, v in elev_stream if v is not None}
     hr_by_t   = {t: v for t, v in hr_stream if v is not None}
     cad_by_t  = {t: v for t, v in cad_stream if v is not None}
+    pos_by_t  = {t: (la, lo) for t, la, lo in pos_stream if la is not None and lo is not None}
     have_elev = bool(elev_by_t)
     have_hr   = bool(hr_by_t)
     have_cad  = bool(cad_by_t)
+    have_pos  = bool(pos_by_t)
 
     n = len(track)
-    step = max(1, n // DISTANCE_STREAM_MAX_POINTS)
-    pts = []
-    for i in range(0, n, step):
+    # Sample spacing in metres: target density, widened if it would blow the cap.
+    spacing = max(1000.0 / STREAM_POINTS_PER_KM, total_dist / STREAM_MAX_POINTS)
+
+    def build_point(i: int) -> dict:
         epoch, dist_m = track[i]
-        # instantaneous pace from a small window around this sample
-        j = min(i + step, n - 1)
-        dd = track[j][1] - track[i][1]
-        dt = track[j][0] - track[i][0]
+        # instantaneous pace from a forward window of at least STREAM_PACE_WINDOW_M
+        j = i
+        while j + 1 < n and (track[j][1] - dist_m) < STREAM_PACE_WINDOW_M:
+            j += 1
+        dd = track[j][1] - dist_m
+        dt = track[j][0] - epoch
         pace = (dt / (dd / 1000.0)) if dd > 0 and dt > 0 else None
         # clamp implausible pace (e.g. GPS jitter while stationary)
         if pace is not None and (pace < 120 or pace > 1200):
@@ -318,7 +376,23 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
             p["hr"] = round(hr_by_t[epoch])
         if have_cad and epoch in cad_by_t:
             p["cad"] = round(cad_by_t[epoch])
-        pts.append(p)
+        if have_pos and epoch in pos_by_t:
+            la, lo = pos_by_t[epoch]
+            p["lat"] = round(la, 5)
+            p["lon"] = round(lo, 5)
+        return p
+
+    pts = []
+    next_dist = start_dist
+    emitted_idx = -1
+    for i in range(n):
+        if track[i][1] >= next_dist or i == n - 1:
+            if i != emitted_idx:
+                pts.append(build_point(i))
+                emitted_idx = i
+            # advance the threshold past the current distance to keep the spacing
+            while next_dist <= track[i][1]:
+                next_dist += spacing
     return json.dumps(pts)
 
 def _interval_best_efforts(reps: list[dict]) -> dict:
@@ -442,6 +516,7 @@ def parse_fit(fit_path: Path) -> dict:
     elev_stream = []    # (epoch_s, altitude_m)
     hr_stream   = []    # (epoch_s, hr_bpm)
     cad_stream  = []    # (epoch_s, cadence_spm, both feet)
+    pos_stream  = []    # (epoch_s, lat_deg or None, lon_deg or None)
 
     for msg in messages:
         name = msg.name
@@ -491,10 +566,15 @@ def parse_fit(fit_path: Path) -> dict:
             sp = d.get("enhanced_speed")
             if sp is None:
                 sp = d.get("speed")
+            lat_sc = d.get("position_lat")
+            lon_sc = d.get("position_long")
+            lat = lat_sc * SEMICIRCLES_TO_DEG if lat_sc is not None else None
+            lon = lon_sc * SEMICIRCLES_TO_DEG if lon_sc is not None else None
             if ts is not None and dm is not None:
                 epoch = ts.timestamp() if hasattr(ts, "timestamp") else float(ts)
                 track.append((epoch, float(dm)))
                 speed_stream.append((epoch, float(sp) if sp is not None else None))
+                pos_stream.append((epoch, lat, lon))
                 # optional per-record metrics, keyed by the same epoch
                 alt = d.get("enhanced_altitude")
                 if alt is None:
@@ -510,22 +590,20 @@ def parse_fit(fit_path: Path) -> dict:
                 else:
                     cad_val = None
                 cad_stream.append((epoch, cad_val))
-            lat_sc = d.get("position_lat")
-            lon_sc = d.get("position_long")
-            if lat_sc is not None and lon_sc is not None:
-                gps_coords.append((lat_sc * SEMICIRCLES_TO_DEG, lon_sc * SEMICIRCLES_TO_DEG))
+            if lat is not None and lon is not None:
+                gps_coords.append((lat, lon))
 
     stats["fit_record_count"]   = record_count
     stats["fit_splits"]         = json.dumps(laps)
     stats["fit_gps_polyline"]   = json.dumps(_simplify_polyline(gps_coords))
-    stats["fit_distance_stream"] = _distance_stream(track, elev_stream, hr_stream, cad_stream)
+    stats["fit_distance_stream"] = _distance_stream(track, elev_stream, hr_stream, cad_stream, pos_stream)
 
     # Best efforts (sliding window over record track)
     efforts = _best_efforts(track)
     stats.update(efforts)
 
     # Per-km splits (interpolated from cumulative distance track)
-    stats["fit_km_splits"] = json.dumps(_per_km_splits(track))
+    stats["fit_km_splits"] = json.dumps(_per_km_splits(track, elev_stream, cad_stream))
 
     # Pace zones from per-record speed stream
     if PACE_ZONE_THRESHOLD_MPS:

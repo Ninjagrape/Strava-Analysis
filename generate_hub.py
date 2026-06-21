@@ -256,6 +256,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         runs.append({
             "id":          len(runs),
             "name":        (row.get("Activity Name") or "Run").strip() or "Run",
+            "description": (row.get("Activity Description") or "").strip(),
             "date_long":   dt.strftime("%d %b %Y"),
             "date_short":  dt.strftime("%b %d"),
             "weekday":     dt.strftime("%A"),
@@ -380,10 +381,22 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 /* Run detail */
 #run-detail-pane{flex:1;overflow-y:auto;padding:1.25rem}
 .placeholder-msg{color:#333;font-size:13px;text-align:center;margin-top:4rem}
+/* Run-detail top: name+stats on the left, Strava description on the right.
+   The left column is pinned to the top; the description is bottom-aligned so the
+   bottom of its last line (incl. the "more" button) sits on the stats-box bottom.
+   Expanding the description grows the box upward into the space above it. */
+.rd-top{display:flex;gap:1rem;margin-bottom:1.25rem}
+.rd-left{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;align-self:flex-start}
 .rd-header{margin-bottom:1rem}
 .rd-name{font-size:20px;font-weight:700;color:#eee;margin:0 0 4px}
 .rd-date{font-size:12px;color:#555}
-.rd-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:1.25rem}
+.rd-desc{flex:0 1 360px;max-width:360px;align-self:flex-end;background:#1e1e1e;
+  border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;font-size:12px;color:#aaa}
+.rd-desc-text{white-space:pre-line;line-height:1.5;word-break:break-word}
+.rd-desc-btn{background:none;border:none;color:#5cb85c;font-size:11px;font-weight:600;
+  cursor:pointer;padding:3px 0 0}
+.rd-desc-btn:hover{text-decoration:underline}
+.rd-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
 .rds{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 12px}
 .rds-l{font-size:10px;color:#555;margin-bottom:3px}
 .rds-v{font-size:15px;font-weight:600;color:#eee}
@@ -407,8 +420,40 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
   padding:4px 10px;border-radius:6px;cursor:pointer;transition:color .1s,border-color .1s}
 .dist-tab:hover{color:#ccc}
 .dist-tab.active{color:#eee;border-color:#5cb85c;background:#1b2a1b}
-.dist-chart{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:8px}
+.dist-chart{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:8px;position:relative}
 .dist-chart svg{display:block;width:100%;height:auto}
+.dist-tip{position:absolute;pointer-events:none;background:#000;border:1px solid #3a3a3a;
+  border-radius:6px;padding:4px 8px;font-size:11px;line-height:1.45;color:#eee;white-space:nowrap;
+  transform:translate(-50%,calc(-100% - 10px));opacity:0;transition:opacity .08s;z-index:5}
+.dist-tip b{color:#fff;font-weight:600}
+.dist-tip .tip-d{color:#888}
+
+/* Inline run map + "click to expand" affordance */
+.rd-map-wrap{position:relative;margin-bottom:1.25rem;cursor:pointer}
+.rd-map{height:460px;border-radius:8px;border:1px solid #3a3a3a}
+.rd-map-hint{position:absolute;top:8px;right:8px;z-index:450;background:rgba(0,0,0,.6);
+  color:#ddd;font-size:11px;padding:3px 9px;border-radius:6px;pointer-events:none;
+  border:1px solid #3a3a3a}
+
+/* Expanded analysis overlay (map + over-distance graph on one screen) */
+.run-overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:600;display:none}
+.run-overlay.open{display:flex;justify-content:center}
+.ro-box{display:flex;flex-direction:column;width:100%;max-width:1300px;height:100%;
+  padding:12px 14px;gap:8px;overflow:hidden}
+.ro-head{display:flex;justify-content:space-between;align-items:center;flex:0 0 auto}
+.ro-title{font-size:15px;font-weight:600;color:#eee}
+.ro-close{background:#222;border:1px solid #3a3a3a;color:#bbb;font-size:15px;line-height:1;
+  width:30px;height:30px;border-radius:6px;cursor:pointer}
+.ro-close:hover{color:#fff;border-color:#5cb85c}
+/* Body: splits column on the left, map+graph fill the height on the right */
+.ro-body{flex:1 1 auto;display:flex;gap:12px;min-height:0}
+.ro-splits{flex:0 0 290px;overflow-y:auto;min-height:0}
+.ro-splits .rd-table th,.ro-splits .rd-table td{padding:5px 5px}
+.ro-main{flex:1 1 auto;display:flex;flex-direction:column;gap:8px;min-height:0}
+.ro-map{flex:1 1 auto;min-height:200px;border-radius:8px;border:1px solid #3a3a3a}
+.ro-tabs{flex:0 0 auto}
+.run-overlay .dist-chart{flex:0 0 auto;cursor:crosshair}
+.run-overlay .dist-chart svg{height:30vh}
 """
 
 # ---------------------------------------------------------------------------
@@ -419,6 +464,10 @@ HUB_JS = r"""
 var overviewMap = null;
 var currentRunMap = null;
 var selectedRunId = null;
+// The expanded-analysis overlay owns the only map the chart cursor links to.
+var overlayMap = null;
+var overlayRunId = null;
+var activeCursorMarker = null;   // moving dot that tracks the over-distance chart cursor
 
 function initRunMap(r) {
   if (currentRunMap) { currentRunMap.remove(); currentRunMap = null; }
@@ -435,9 +484,90 @@ function initRunMap(r) {
       var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(currentRunMap);
       L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
       L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
+      // A plain click on the route opens the expanded map + graph analysis view.
+      currentRunMap.on('click', function() { openRunOverlay(r.id); });
       currentRunMap.fitBounds(poly.getBounds(), {padding: [24, 24]});
     } catch(e) { console.warn('Run map init failed:', e); }
   }, 50);
+}
+
+// ── Expanded analysis overlay ───────────────────────────────────────────────
+
+function openRunOverlay(runId) {
+  // The inline map fires both Leaflet's click and the wrapper's onclick; ignore
+  // the second call so we don't initialise the overlay map twice.
+  if (document.getElementById('run-overlay').classList.contains('open')) return;
+  var r = RUNS.find(function(x) { return x.id === runId; });
+  if (!r || !r.gps_polyline || r.gps_polyline.length < 5 || typeof L === 'undefined') return;
+  overlayRunId = runId;
+
+  document.getElementById('ro-title').textContent = r.name + ' · ' + r.date_long;
+
+  var avail = availableMetrics(r.dist_stream || []);
+  document.getElementById('ro-tabs').innerHTML = avail.map(function(m, i) {
+    return '<button class="dist-tab' + (i === 0 ? ' active' : '') +
+      '" data-metric="' + m.key + '" onclick="selectOverlayMetric(\'' + m.key + '\')">' +
+      m.label + '</button>';
+  }).join('');
+  document.getElementById('ro-splits').innerHTML = renderKmSplits(r);
+
+  document.getElementById('run-overlay').classList.add('open');
+
+  setTimeout(function() {
+    try {
+      if (overlayMap) { overlayMap.remove(); overlayMap = null; }
+      var el = document.getElementById('ro-map');
+      overlayMap = L.map(el, {zoomControl: true, preferCanvas: true});
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        subdomains: 'abcd', maxZoom: 19
+      }).addTo(overlayMap);
+      var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(overlayMap);
+      L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(overlayMap);
+      L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(overlayMap);
+      activeCursorMarker = L.circleMarker(r.gps_polyline[0], {
+        radius: 6, color: '#fff', fillColor: '#e07020', weight: 2,
+        opacity: 0, fillOpacity: 0, pane: 'markerPane'
+      }).addTo(overlayMap);
+      var bounds = poly.getBounds();
+      // invalidateSize first so Leaflet knows the real container size, then fit.
+      overlayMap.invalidateSize();
+      overlayMap.fitBounds(bounds, {padding: [24, 24]});
+      if (avail.length) selectOverlayMetric(avail[0].key);
+      // Re-fit once the flex layout has fully settled — the first paint can
+      // report a stale container height, leaving the route partly off-screen.
+      setTimeout(function() {
+        if (overlayMap) { overlayMap.invalidateSize(); overlayMap.fitBounds(bounds, {padding: [24, 24]}); }
+      }, 180);
+    } catch(e) { console.warn('Overlay map init failed:', e); }
+  }, 60);
+}
+
+function closeRunOverlay() {
+  document.getElementById('run-overlay').classList.remove('open');
+  if (overlayMap) { overlayMap.remove(); overlayMap = null; }
+  activeCursorMarker = null;
+  overlayRunId = null;
+  DIST_STATE = null;
+}
+
+function selectOverlayMetric(metricKey) {
+  if (overlayRunId === null) return;
+  document.querySelectorAll('#ro-tabs .dist-tab').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.metric === metricKey);
+  });
+  drawDistMetric(overlayRunId, metricKey, {holderId: 'ro-chart', interactive: true});
+}
+
+function moveRunCursor(lat, lon) {
+  if (!activeCursorMarker) return;
+  if (lat == null || lon == null) { activeCursorMarker.setStyle({opacity: 0, fillOpacity: 0}); return; }
+  activeCursorMarker.setLatLng([lat, lon]);
+  activeCursorMarker.setStyle({opacity: 1, fillOpacity: 1});
+}
+
+function hideRunCursor() {
+  if (activeCursorMarker) activeCursorMarker.setStyle({opacity: 0, fillOpacity: 0});
 }
 
 document.querySelectorAll('.tab').forEach(function(btn) {
@@ -514,7 +644,7 @@ function showRun(id) {
   // draw the default over-distance metric if a stream exists
   if (r.dist_stream && r.dist_stream.length) {
     var av = availableMetrics(r.dist_stream);
-    if (av.length) drawDistMetric(r.id, av[0].key);
+    if (av.length) drawDistMetric(r.id, av[0].key, {holderId: 'dist-chart-' + r.id, interactive: false});
   }
 
   // Only init map if the Runs panel is currently visible
@@ -540,14 +670,22 @@ function renderDetail(r) {
     '</div>';
 
   var mapHtml = (r.gps_polyline && r.gps_polyline.length >= 5)
-    ? '<div id="run-map-' + r.id + '" style="height:460px;border-radius:8px;border:1px solid #3a3a3a;margin-bottom:1.25rem"></div>'
+    ? '<div class="rd-map-wrap" onclick="openRunOverlay(' + r.id + ')">' +
+        '<div id="run-map-' + r.id + '" class="rd-map"></div>' +
+        '<div class="rd-map-hint">⤢ Click map to expand</div>' +
+      '</div>'
     : '';
 
-  return '<div class="rd-header">' +
-      '<h2 class="rd-name">' + esc(r.name) + '</h2>' +
-      '<div class="rd-date">' + r.weekday + ', ' + r.date_long + '</div>' +
+  return '<div class="rd-top">' +
+      '<div class="rd-left">' +
+        '<div class="rd-header">' +
+          '<h2 class="rd-name">' + esc(r.name) + '</h2>' +
+          '<div class="rd-date">' + r.weekday + ', ' + r.date_long + '</div>' +
+        '</div>' +
+        statsHtml +
+      '</div>' +
+      renderDesc(r) +
     '</div>' +
-    statsHtml +
     mapHtml +
     renderRunShape(r) +
     renderKmSplits(r) +
@@ -561,6 +699,34 @@ function stat(label, value) {
 }
 function statMuted(label, value) {
   return '<div class="rds"><div class="rds-l">' + label + '</div><div class="rds-v rds-v-muted">' + value + '</div></div>';
+}
+
+// ── Strava description (top-right, collapsible) ─────────────────────────────
+
+var DESC_LIMIT = 160;  // chars shown before the "more" toggle kicks in
+
+function descBody(r, expanded) {
+  var full = r.description || '';
+  var isLong = full.length > DESC_LIMIT;
+  var text = (isLong && !expanded) ? full.slice(0, DESC_LIMIT).replace(/\s+$/, '') + '…' : full;
+  var btn = isLong
+    ? '<button class="rd-desc-btn" onclick="toggleDesc(' + r.id + ')">' + (expanded ? 'less' : 'more') + '</button>'
+    : '';
+  return '<div class="rd-desc-text">' + esc(text) + '</div>' + btn;
+}
+
+function renderDesc(r) {
+  if (!r.description) return '';
+  return '<div class="rd-desc" id="rd-desc-' + r.id + '" data-expanded="0">' + descBody(r, false) + '</div>';
+}
+
+function toggleDesc(id) {
+  var el = document.getElementById('rd-desc-' + id);
+  if (!el) return;
+  var expanded = el.dataset.expanded === '1';
+  el.dataset.expanded = expanded ? '0' : '1';
+  var r = RUNS.find(function(x) { return x.id === id; });
+  if (r) el.innerHTML = descBody(r, !expanded);
 }
 
 function kmExtraStats(r) {
@@ -612,7 +778,14 @@ function fmtMetric(key, v) {
   return v;
 }
 
-function drawDistMetric(runId, metricKey) {
+// Holds the geometry of the currently-drawn chart so the hover handler can
+// invert a mouse x back to a distance and look up the point's value + position.
+var DIST_STATE = null;
+
+function drawDistMetric(runId, metricKey, opts) {
+  opts = opts || {};
+  var holderId    = opts.holderId || ('dist-chart-' + runId);
+  var interactive = !!opts.interactive;
   var r = RUNS.find(function(x) { return x.id === runId; });
   if (!r || !r.dist_stream || !r.dist_stream.length) return;
   var metric = DIST_METRICS.find(function(m) { return m.key === metricKey; });
@@ -663,8 +836,18 @@ function drawDistMetric(runId, metricKey) {
       '" font-size="9" fill="#555" text-anchor="middle">' + km + '</text>';
   }
 
-  var gid = 'grad-' + runId + '-' + metricKey;
-  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg">' +
+  // The interactive cursor (guide line + dot + tooltip) is only drawn when the
+  // chart links to a visible map — i.e. inside the expanded overlay.
+  var aspect = interactive ? ' preserveAspectRatio="none"' : '';
+  var cursorSvg = interactive
+    ? '<g id="' + holderId + '-cursor" style="opacity:0;pointer-events:none">' +
+        '<line y1="' + padT + '" y2="' + (H - padB) + '" stroke="#888" stroke-width="1" stroke-dasharray="3,3"/>' +
+        '<circle r="4.5" fill="' + metric.color + '" stroke="#fff" stroke-width="1.5"/>' +
+      '</g>'
+    : '';
+
+  var gid = 'grad-' + holderId + '-' + metricKey;
+  var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '"' + aspect + ' xmlns="http://www.w3.org/2000/svg">' +
     '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0" stop-color="' + metric.color + '" stop-opacity="0.35"/>' +
       '<stop offset="1" stop-color="' + metric.color + '" stop-opacity="0.02"/>' +
@@ -673,17 +856,105 @@ function drawDistMetric(runId, metricKey) {
     '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
     '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
     xlab +
+    cursorSvg +
     '</svg>';
 
-  var holder = document.getElementById('dist-chart-' + runId);
-  if (holder) holder.innerHTML = svg;
+  var holder = document.getElementById(holderId);
+  if (!holder) return;
+  holder.innerHTML = svg + (interactive ? '<div class="dist-tip" id="' + holderId + '-tip"></div>' : '');
+
+  if (!interactive) {
+    holder.onmousemove = null;
+    holder.onmouseleave = null;
+    return;
+  }
+
+  DIST_STATE = {
+    holderId: holderId, runId: runId, metricKey: metricKey, label: metric.label, color: metric.color,
+    pts: pts, xmin: xmin, xspan: xspan, ymin: ymin, yspan: yspan, invert: metric.invert,
+    W: W, H: H, padL: padL, padR: padR, padT: padT, padB: padB,
+    poly: r.gps_polyline || []
+  };
+
+  holder.onmousemove = function(e) { onDistHover(e, holder); };
+  holder.onmouseleave = function() {
+    var cur = document.getElementById(holderId + '-cursor');
+    var tip = document.getElementById(holderId + '-tip');
+    if (cur) cur.style.opacity = 0;
+    if (tip) tip.style.opacity = 0;
+    hideRunCursor();
+  };
+}
+
+function onDistHover(e, holder) {
+  var st = DIST_STATE;
+  if (!st) return;
+  var svg = holder.querySelector('svg');
+  if (!svg) return;
+  var sr = svg.getBoundingClientRect();
+  var sx = (e.clientX - sr.left) / sr.width * st.W;   // mouse x in svg user units
+
+  function px(d) { return st.padL + (d - st.xmin) / st.xspan * (st.W - st.padL - st.padR); }
+  function py(v) {
+    var t = (v - st.ymin) / st.yspan;
+    if (st.invert) t = 1 - t;
+    return st.H - st.padB - t * (st.H - st.padT - st.padB);
+  }
+
+  // nearest point by x position
+  var best = st.pts[0], bestDx = Infinity;
+  for (var i = 0; i < st.pts.length; i++) {
+    var dx = Math.abs(px(st.pts[i].d) - sx);
+    if (dx < bestDx) { bestDx = dx; best = st.pts[i]; }
+  }
+
+  var cx = px(best.d), cy = py(best[st.metricKey]);
+
+  // move the svg cursor
+  var cur = document.getElementById(st.holderId + '-cursor');
+  if (cur) {
+    cur.style.opacity = 1;
+    var ln = cur.querySelector('line');
+    var dot = cur.querySelector('circle');
+    ln.setAttribute('x1', cx); ln.setAttribute('x2', cx);
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy);
+  }
+
+  // tooltip with exact x (distance) and y (metric value)
+  var tip = document.getElementById(st.holderId + '-tip');
+  if (tip) {
+    tip.innerHTML = '<div class="tip-d">' + best.d.toFixed(2) + ' km</div>' +
+                    '<div><b>' + fmtMetric(st.metricKey, best[st.metricKey]) + '</b></div>';
+    var hr = holder.getBoundingClientRect();
+    var scaleX = sr.width / st.W, scaleY = sr.height / st.H;
+    tip.style.left = ((sr.left - hr.left) + cx * scaleX) + 'px';
+    tip.style.top  = ((sr.top - hr.top) + cy * scaleY) + 'px';
+    tip.style.opacity = 1;
+  }
+
+  // move the dot on the map to the matching position. Prefer the GPS coords
+  // embedded in the stream point; fall back to interpolating along the polyline
+  // by distance fraction for runs compiled before lat/lon was stored.
+  if (best.lat != null && best.lon != null) {
+    moveRunCursor(best.lat, best.lon);
+  } else if (st.poly.length >= 2) {
+    var frac = (best.d - st.xmin) / st.xspan;
+    frac = Math.max(0, Math.min(1, frac));
+    var fi = frac * (st.poly.length - 1);
+    var lo = Math.floor(fi), hi = Math.min(lo + 1, st.poly.length - 1), t = fi - lo;
+    var lat = st.poly[lo][0] + (st.poly[hi][0] - st.poly[lo][0]) * t;
+    var lon = st.poly[lo][1] + (st.poly[hi][1] - st.poly[lo][1]) * t;
+    moveRunCursor(lat, lon);
+  } else {
+    hideRunCursor();
+  }
 }
 
 function selectDistMetric(runId, metricKey) {
   document.querySelectorAll('#dist-tabs-' + runId + ' .dist-tab').forEach(function(t) {
     t.classList.toggle('active', t.dataset.metric === metricKey);
   });
-  drawDistMetric(runId, metricKey);
+  drawDistMetric(runId, metricKey, {holderId: 'dist-chart-' + runId, interactive: false});
 }
 
 function renderDistChart(r) {
@@ -752,6 +1023,8 @@ function renderKmSplits(r) {
   }
 
   var bestKm = ks.reduce(function(b,k){ return (k.pace_s && k.pace_s < b.pace_s) ? k : b; }, ks[0]);
+  var hasElev = ks.some(function(s){ return s.gain_m != null || s.loss_m != null; });
+  var hasCad  = ks.some(function(s){ return s.cad != null; });
 
   var rows = ks.map(function(s) {
     var isBest = bestKm.pace_s && s.km === bestKm.km;
@@ -761,16 +1034,27 @@ function renderKmSplits(r) {
     var mins = Math.floor((s.time_s || 0) / 60);
     var secs = Math.round((s.time_s || 0) % 60);
     var timeStr = mins + ':' + (secs < 10 ? '0' : '') + secs;
+    var elevCell = '';
+    if (hasElev) {
+      var g = s.gain_m || 0, l = s.loss_m || 0;
+      elevCell = '<td><span style="color:#4a9a4a">↑' + g + '</span> ' +
+                 '<span style="color:#c07a3a">↓' + l + '</span></td>';
+    }
+    var cadCell = hasCad ? '<td>' + (s.cad != null ? s.cad : '—') + '</td>' : '';
     return '<tr' + (isBest ? ' class="best-km"' : '') + '>' +
       '<td>' + s.km + '</td>' +
       '<td>' + timeStr + '</td>' +
       '<td class="pace-cell">' + dot + s.pace_str + (isBest ? ' ★' : '') + '</td>' +
+      elevCell + cadCell +
     '</tr>';
   }).join('');
 
+  var head = '<th>km</th><th>Time</th><th>Pace</th>' +
+    (hasElev ? '<th>Elev</th>' : '') + (hasCad ? '<th>Cad</th>' : '');
+
   return section('Per km splits',
     '<table class="rd-table">' +
-    '<thead><tr><th>km</th><th>Time</th><th>Pace</th></tr></thead>' +
+    '<thead><tr>' + head + '</tr></thead>' +
     '<tbody>' + rows + '</tbody></table>');
 }
 
@@ -868,6 +1152,14 @@ document.getElementById('run-search').addEventListener('input', function() {
   renderRunList(filtered);
   if (filtered.length) showRun(filtered[0].id);
   else document.getElementById('run-detail-content').innerHTML = '<p class="placeholder-msg">No runs match</p>';
+});
+
+// Close the expanded analysis overlay on backdrop click or Escape.
+document.getElementById('run-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeRunOverlay();
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeRunOverlay();
 });
 
 renderRunList(RUNS);
@@ -1006,6 +1298,23 @@ def generate(
         "  </div>\n"
         "</div>\n"
 
+        "<div id=\"run-overlay\" class=\"run-overlay\">\n"
+        "  <div class=\"ro-box\">\n"
+        "    <div class=\"ro-head\">\n"
+        "      <span id=\"ro-title\" class=\"ro-title\"></span>\n"
+        "      <button class=\"ro-close\" onclick=\"closeRunOverlay()\" title=\"Close (Esc)\">&times;</button>\n"
+        "    </div>\n"
+        "    <div class=\"ro-body\">\n"
+        "      <aside id=\"ro-splits\" class=\"ro-splits\"></aside>\n"
+        "      <div class=\"ro-main\">\n"
+        "        <div id=\"ro-map\" class=\"ro-map\"></div>\n"
+        "        <div id=\"ro-tabs\" class=\"dist-tabs ro-tabs\"></div>\n"
+        "        <div id=\"ro-chart\" class=\"dist-chart\"></div>\n"
+        "      </div>\n"
+        "    </div>\n"
+        "  </div>\n"
+        "</div>\n"
+
         "<script src=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.js\"></script>\n"
         "<script src=\"https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js\"></script>\n"
         "<script>\n"
@@ -1060,7 +1369,7 @@ def main():
     dashboards_dir = here / "dashboards"
     dashboards_dir.mkdir(exist_ok=True)
 
-    out = dashboards_dir / "index.html"
+    out = dashboards_dir / "TrainingHub.html"
     out.write_text(
         generate(rows, runs, updated, threshold_mps, html_efforts, html_goals, html_analytics),
         encoding="utf-8",
