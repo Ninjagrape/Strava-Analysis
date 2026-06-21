@@ -1132,13 +1132,36 @@ function initOverviewMap() {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
       subdomains: 'abcd', maxZoom: 19
     }).addTo(overviewMap);
+    // Set a view first so getZoom()/getCenter() are valid for tuneHeatRadius below.
+    overviewMap.fitBounds(L.latLngBounds(HEATMAP_POINTS), {padding: [20, 20]});
     if (typeof L.heatLayer !== 'undefined') {
-      L.heatLayer(HEATMAP_POINTS, {
+      var heat = L.heatLayer(HEATMAP_POINTS, {
         radius: 7, blur: 8, maxZoom: 18, minOpacity: 0.2,
         gradient: {0.0: '#1a3a1a', 0.3: '#3a7a3a', 0.6: '#5cb85c', 0.85: '#e0a020', 1.0: '#d9534f'}
       }).addTo(overviewMap);
+      // Points sit on an ~11 m dedup grid, but leaflet.heat uses a fixed *pixel*
+      // radius. As you zoom in the gap between points grows past that radius and
+      // the line breaks back into dots. Scale the radius with zoom so it always
+      // spans roughly the point spacing (clamped so low zoom keeps the old look).
+      var BASE_RADIUS = 7;
+      function tuneHeatRadius() {
+        var z = overviewMap.getZoom();
+        var lat = overviewMap.getCenter().lat;
+        var mPerPx = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, z);
+        var spacingPx = 11 / mPerPx;
+        var radius = Math.max(BASE_RADIUS, Math.min(40, spacingPx * 0.8));
+        // A bigger brush makes a single path's own interpolated points overlap
+        // more, so the accumulated alpha saturates and even a lightly-visited
+        // street drifts to red as you zoom in. Scale the intensity normalisation
+        // (max) with the radius so the per-point contribution is divided back
+        // down: at BASE_RADIUS max stays 1 (the low-zoom look), and colour now
+        // tracks how often a route was actually run rather than the zoom level.
+        var max = radius / BASE_RADIUS;
+        heat.setOptions({radius: radius, blur: radius * 1.1, max: max});
+      }
+      overviewMap.on('zoomend', tuneHeatRadius);
+      tuneHeatRadius();
     }
-    overviewMap.fitBounds(L.latLngBounds(HEATMAP_POINTS), {padding: [20, 20]});
   } catch(e) { console.warn('Overview heatmap init failed:', e); }
 }
 
