@@ -29,6 +29,7 @@ from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
     ANALYTICS_PANEL_CSS, body_analytics,
 )
+from generate_segments import build_segments, body_segments, SEGMENTS_CSS
 
 
 # ---------------------------------------------------------------------------
@@ -774,8 +775,125 @@ document.querySelectorAll('.tab').forEach(function(btn) {
       var r = RUNS.find(function(x) { return x.id === selectedRunId; });
       if (r) initRunMap(r);
     }
+    if (id === 'segments') initSegments();
   });
 });
+
+// ── Benchmark segments ────────────────────────────────────────────────────
+
+var segMaps = {};
+var segInit = false;
+
+function initSegments() {
+  if (segInit || typeof L === 'undefined' || !SEGMENTS || !SEGMENTS.length) {
+    // Hidden Leaflet maps need a size recompute once their panel is shown.
+    Object.keys(segMaps).forEach(function(k) { segMaps[k].invalidateSize(); });
+    return;
+  }
+  segInit = true;
+  setTimeout(function() {
+    SEGMENTS.forEach(function(seg) {
+      try { initSegMap(seg); } catch(e) { console.warn('seg map failed', e); }
+      try { drawSegTrend(seg); } catch(e) { console.warn('seg trend failed', e); }
+    });
+  }, 50);
+}
+
+function initSegMap(seg) {
+  var el = document.getElementById('seg-map-' + seg.id);
+  if (!el || !seg.polyline || seg.polyline.length < 2) return;
+  var map = L.map(el, {zoomControl: false, attributionControl: false,
+                       dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+                       boxZoom: false, keyboard: false, tap: false, preferCanvas: true});
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19
+  }).addTo(map);
+  var colour = seg.type === 'climb' ? '#e0a020' : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
+  var poly = L.polyline(seg.polyline, {color: colour, weight: 3, opacity: 0.95}).addTo(map);
+  L.circleMarker(seg.polyline[0], {radius: 4, color: colour, fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(map);
+  L.circleMarker(seg.polyline[seg.polyline.length - 1], {radius: 4, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(map);
+  map.invalidateSize();
+  map.fitBounds(poly.getBounds(), {padding: [12, 12]});
+  segMaps[seg.id] = map;
+}
+
+function drawSegTrend(seg) {
+  var holder = document.getElementById('seg-trend-' + seg.id);
+  if (!holder) return;
+  var efforts = seg.efforts.slice().sort(function(a, b) {
+    return a.date_iso < b.date_iso ? -1 : (a.date_iso > b.date_iso ? 1 : 0);
+  });
+  if (efforts.length < 2) { holder.innerHTML = ''; return; }
+
+  var W = 360, H = 150, padL = 40, padR = 10, padT = 14, padB = 22;
+  var ts = efforts.map(function(e) { return Date.parse(e.date_iso); });
+  var ys = efforts.map(function(e) { return e.time_s; });
+  var tmin = Math.min.apply(null, ts), tmax = Math.max.apply(null, ts);
+  var ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
+  if (tmax === tmin) tmax = tmin + 1;
+  // Pad the time axis so faster (smaller) times sit higher with a little headroom.
+  var ylo = ymin - (ymax - ymin) * 0.12 - 1, yhi = ymax + (ymax - ymin) * 0.12 + 1;
+
+  function px(t) { return padL + (t - tmin) / (tmax - tmin) * (W - padL - padR); }
+  function py(v) { return padT + (v - ylo) / (yhi - ylo) * (H - padT - padB); } // smaller time = higher
+
+  var prT = seg.pr_time_s;
+  var grid = '';
+  for (var g = 0; g <= 2; g++) {
+    var vy = padT + g / 2 * (H - padT - padB);
+    var val = yhi - g / 2 * (yhi - ylo);
+    grid += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (W - padR) +
+      '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>' +
+      '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
+      '" font-size="9" fill="#555" text-anchor="end">' + fmtSegTime(val) + '</text>';
+  }
+  var line = efforts.map(function(e, i) {
+    return (i ? 'L' : 'M') + px(ts[i]).toFixed(1) + ',' + py(ys[i]).toFixed(1);
+  }).join(' ');
+  var dots = efforts.map(function(e, i) {
+    var isPr = e.time_s === prT;
+    return '<circle cx="' + px(ts[i]).toFixed(1) + '" cy="' + py(ys[i]).toFixed(1) +
+      '" r="' + (isPr ? 4.5 : 3) + '" fill="' + (isPr ? '#5cb85c' : '#888') +
+      '" stroke="#1c1c1c" stroke-width="1.5"' +
+      ' data-d="' + e.date_long + '" data-t="' + e.time_str + '" class="seg-dot"/>';
+  }).join('');
+  // date labels at first and last attempt
+  var xlab = '<text x="' + padL + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="start">' +
+      shortDate(efforts[0].date_iso) + '</text>' +
+    '<text x="' + (W - padR) + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="end">' +
+      shortDate(efforts[efforts.length - 1].date_iso) + '</text>';
+
+  holder.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
+    grid + xlab +
+    '<path d="' + line + '" fill="none" stroke="#5cb85c" stroke-width="1.6" opacity="0.85"/>' +
+    dots + '</svg>' +
+    '<div class="seg-trend-tip" id="seg-tip-' + seg.id + '"></div>';
+
+  var tip = document.getElementById('seg-tip-' + seg.id);
+  holder.querySelectorAll('.seg-dot').forEach(function(c) {
+    c.addEventListener('mouseenter', function() {
+      var r = holder.getBoundingClientRect();
+      var cr = c.getBoundingClientRect();
+      tip.innerHTML = '<b>' + c.getAttribute('data-t') + '</b><br>' + c.getAttribute('data-d');
+      tip.style.left = (cr.left - r.left + cr.width / 2) + 'px';
+      tip.style.top = (cr.top - r.top) + 'px';
+      tip.style.opacity = '1';
+    });
+    c.addEventListener('mouseleave', function() { tip.style.opacity = '0'; });
+  });
+}
+
+function fmtSegTime(s) {
+  s = Math.max(0, Math.round(s));
+  var m = Math.floor(s / 60), sec = s % 60;
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function shortDate(iso) {
+  var d = new Date(iso);
+  return d.toLocaleDateString('en-AU', {month: 'short', year: '2-digit'});
+}
 
 var ZONE_COLORS = ['#3a7a3a', '#5cb85c', '#e0a020', '#e07020', '#d9534f'];
 var ZONE_NAMES  = ['Z1 Easy', 'Z2 Endurance', 'Z3 Tempo', 'Z4 Threshold', 'Z5 Speed'];
@@ -1462,6 +1580,8 @@ def generate(
     html_efforts: str,
     html_goals: str,
     html_analytics: str,
+    segments: list[dict],
+    html_segments: str,
 ) -> str:
     stats          = _overview_stats(rows, runs, threshold_mps)
     weeks          = weekly_mileage(rows)
@@ -1533,7 +1653,8 @@ def generate(
     # Embedded dashboard panel CSS comes before hub CSS so hub body rules win.
     # ANALYTICS_PANEL_CSS has a body{padding:1rem} rule — the hub's body rule
     # (padding:0) comes later in the same <style> block and takes precedence.
-    combined_css = BEST_EFFORTS_CSS + "\n" + GOAL_CSS + "\n" + ANALYTICS_PANEL_CSS + "\n" + HUB_CSS
+    combined_css = (BEST_EFFORTS_CSS + "\n" + GOAL_CSS + "\n" + ANALYTICS_PANEL_CSS
+                    + "\n" + SEGMENTS_CSS + "\n" + HUB_CSS)
 
     panel_style = "height:calc(100vh - 44px);overflow-y:auto;padding:1rem"
 
@@ -1544,6 +1665,7 @@ def generate(
         "<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<title>Training Hub</title>\n"
+        "<link rel=\"icon\" href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>%F0%9F%8F%83</text></svg>\"/>\n"
         "<link rel=\"stylesheet\" href=\"https://unpkg.com/leaflet@1.9.4/dist/leaflet.css\"/>\n"
         "<style>\n" + combined_css + "</style>\n"
         "</head>\n"
@@ -1553,6 +1675,7 @@ def generate(
         "  <span class=\"brand\">Training Hub</span>\n"
         "  <button class=\"tab active\" data-panel=\"overview\">Overview</button>\n"
         "  <button class=\"tab\" data-panel=\"efforts\">Best Efforts</button>\n"
+        "  <button class=\"tab\" data-panel=\"segments\">Segments</button>\n"
         "  <button class=\"tab\" data-panel=\"goals\">Goals</button>\n"
         "  <button class=\"tab\" data-panel=\"analytics\">Analytics</button>\n"
         "  <button class=\"tab\" data-panel=\"runs\">Runs</button>\n"
@@ -1564,6 +1687,10 @@ def generate(
 
         "<div id=\"panel-efforts\" class=\"panel\" style=\"" + panel_style + "\">\n"
         + html_efforts +
+        "\n</div>\n"
+
+        "<div id=\"panel-segments\" class=\"panel\">\n"
+        + html_segments +
         "\n</div>\n"
 
         "<div id=\"panel-goals\" class=\"panel\" style=\"" + panel_style + "\">\n"
@@ -1612,6 +1739,7 @@ def generate(
         "<script src=\"https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js\"></script>\n"
         "<script>\n"
         "const RUNS = " + runs_json + ";\n"
+        "const SEGMENTS = " + json.dumps(segments, ensure_ascii=False) + ";\n"
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
         "const HEATMAP_POINTS = " + heatmap_json + ";\n"
         + HUB_JS +
@@ -1657,11 +1785,18 @@ def main():
         print(f"[profile] _build_runs: {time.perf_counter() - t0:.2f}s ({len(runs)} runs)")
     print(f"Loaded {len(runs)} runs")
 
+    print("Detecting benchmark segments…")
+    t0 = time.perf_counter()
+    segments = build_segments(runs)
+    if PROFILE:
+        print(f"[profile] build_segments: {time.perf_counter() - t0:.2f}s ({len(segments)} segments)")
+
     print("Building dashboard panels…")
     t0 = time.perf_counter()
     html_efforts   = body_best_efforts(rows, updated)
     html_goals     = body_goal_dashboard(rows, updated)
     html_analytics = body_analytics(rows, updated)
+    html_segments  = body_segments(segments, updated)
     if PROFILE:
         print(f"[profile] panels (efforts/goals/analytics): {time.perf_counter() - t0:.2f}s")
 
@@ -1669,7 +1804,8 @@ def main():
     dashboards_dir.mkdir(exist_ok=True)
 
     out = dashboards_dir / "TrainingHub.html"
-    html = generate(rows, runs, updated, threshold_mps, html_efforts, html_goals, html_analytics)
+    html = generate(rows, runs, updated, threshold_mps, html_efforts, html_goals,
+                    html_analytics, segments, html_segments)
     out.write_text(html, encoding="utf-8")
     if PROFILE:
         print(f"[profile] HTML size: {len(html.encode('utf-8')) / 1_048_576:.1f} MB")

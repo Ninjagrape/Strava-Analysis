@@ -2,6 +2,10 @@
 *_strava.csv
 enriched_activities.csv
 
+# Segment detection caches (regenerated from runs)
+segments_cache.json
+segment_geocode_cache.json
+
 # Strava export zips/folders (don't commit raw data)
 export_*/
 

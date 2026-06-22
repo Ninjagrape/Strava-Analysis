@@ -370,7 +370,7 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
         # clamp implausible pace (e.g. GPS jitter while stationary)
         if pace is not None and (pace < 120 or pace > 1200):
             pace = None
-        p = {"d": round(dist_m / 1000.0, 3)}
+        p = {"d": round(dist_m / 1000.0, 3), "t": round(epoch - track[0][0], 1)}
         if pace is not None:
             p["pace"] = round(pace, 1)
         if have_elev and epoch in elev_by_t:
