@@ -23,6 +23,7 @@ Writes analytics_dashboard.html next to the script.
 """
 
 import csv
+import json
 import math
 import sys
 from collections import defaultdict
@@ -357,6 +358,39 @@ def cadence_trend(rows: list[dict]) -> list[tuple]:
     return out
 
 
+def period_totals(rows: list[dict], by: str) -> list[dict]:
+    """Per-period totals: [{date, dist (km), elev (m), time (h)}], gap-filled.
+
+    by='week' buckets by ISO-week Monday, by='month' by first-of-month. Empty
+    periods between the first and last activity are filled with zeros so the
+    line drops to the axis on rest weeks, like Strava's weekly graph.
+    """
+    bucket = defaultdict(lambda: {"dist": 0.0, "elev": 0.0, "time": 0.0})
+    for r in rows:
+        dt = parse_date(r)
+        dist_m = num(r, "Distance")
+        if not dt or not dist_m or dist_m <= 0:
+            continue
+        d = dt.date()
+        key = d - timedelta(days=d.weekday()) if by == "week" else d.replace(day=1)
+        b = bucket[key]
+        b["dist"] += dist_m / 1000
+        b["elev"] += num(r, "Elevation Gain") or 0
+        b["time"] += (num(r, "Moving Time") or 0) / 3600
+    if not bucket:
+        return []
+    keys = sorted(bucket)
+    out, cur, end = [], keys[0], keys[-1]
+    while cur <= end:
+        b = bucket.get(cur, {"dist": 0.0, "elev": 0.0, "time": 0.0})
+        out.append({"date": cur.isoformat(),
+                    "dist": round(b["dist"], 1), "elev": round(b["elev"]),
+                    "time": round(b["time"], 2)})
+        cur = (cur + timedelta(days=7) if by == "week"
+               else (cur.replace(day=28) + timedelta(days=4)).replace(day=1))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 8. Calendar heatmap
 # ---------------------------------------------------------------------------
@@ -394,6 +428,12 @@ svg{display:block;width:100%;height:auto;}
 .rng-btn{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
 .rng-btn:hover{color:#ccc;}
 .rng-btn.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
+.ptot-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;}
+.ptot-head .rng-tabs{margin-bottom:0;}
+.ptot-total{font-size:12px;font-weight:600;color:#ccc;margin:0;}
+.ptot-chart{position:relative;}
+.ptot-tip{position:absolute;transform:translate(-50%,-115%);background:#111;border:1px solid #3a3a3a;border-radius:6px;padding:4px 8px;font-size:11px;color:#eee;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .08s;z-index:5;}
+.ptot-tip-d{font-size:9px;color:#888;margin-bottom:1px;}
 .legend{font-size:10px;color:#666;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
 .legend span{display:inline-flex;align-items:center;gap:4px;}
 .swatch{width:10px;height:10px;border-radius:2px;display:inline-block;}
@@ -585,6 +625,7 @@ def generate(rows: list[dict], updated: str) -> str:
     cur_tsb = fitness[-1]["tsb"] if fitness else 0
     cur_acwr = acwr[-1]["acwr"] if acwr else 0
     cur_mono = mono[-1]["monotony"] if mono else 0
+    cur_strain = mono[-1]["strain"] if mono else 0
 
     tsb_class = "green" if cur_tsb > 5 else ("amber" if cur_tsb > -10 else "red")
     tsb_note = ("fresh / tapered" if cur_tsb > 5 else
@@ -617,6 +658,7 @@ def generate(rows: list[dict], updated: str) -> str:
         [("ctl", "#5cb85c", "Fitness (CTL)"),
          ("atl", "#e0a020", "Fatigue (ATL)"),
          ("tsb", "#5b8fd9", "Form (TSB)")],
+        yfmt=lambda v: f"{round(v / 5) * 5:g}",
     ))
 
     def _acwr_render(win):
@@ -629,7 +671,8 @@ def generate(rows: list[dict], updated: str) -> str:
     def _strain_render(win):
         s = _last_days(mono, win)
         return _bar_chart([x["date"].strftime("%#d/%#m") for x in s],
-                          [round(x["strain"]) for x in s], color="#5b8fd9")
+                          [round(x["strain"]) for x in s], color="#5b8fd9",
+                          yfmt=lambda v: f"{v:.0f}")
     strain_chart = _ranged(DAILY_RANGES, "3M", _strain_render)
 
     # critical speed table
@@ -673,6 +716,11 @@ def generate(rows: list[dict], updated: str) -> str:
             c = {d: v for d, v in cal.items() if d >= start}
         return _calendar_heatmap(c)
     cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
+
+    # per-period totals (distance / elevation / time), weekly + monthly, for the
+    # interactive Strava-style toggle chart rendered in JS at the page bottom
+    totals_json = json.dumps({"week": period_totals(rows, "week"),
+                              "month": period_totals(rows, "month")})
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
@@ -719,9 +767,10 @@ def generate(rows: list[dict], updated: str) -> str:
   <div class="card">
     <div class="stat-row">
       <div class="stat"><p class="stat-label">Monotony</p><p class="stat-value {mono_class}">{cur_mono:.2f}</p><p class="stat-sub">lower is better; &gt;2 is risky</p></div>
+      <div class="stat"><p class="stat-label">Strain (latest week)</p><p class="stat-value">{cur_strain:.0f}</p><p class="stat-sub">weekly load × monotony</p></div>
     </div>
     {strain_chart}
-    <p class="note">Strain = weekly load × monotony. High strain with high monotony (same load every day, no easy/hard variation) is the classic overtraining signature.</p>
+    <p class="note">The chart plots <strong>strain</strong> (weekly load × monotony), not monotony — so its scale runs into the hundreds. High strain with high monotony (same load every day, no easy/hard variation) is the classic overtraining signature.</p>
   </div>
 </div>
 
@@ -774,6 +823,37 @@ def generate(rows: list[dict], updated: str) -> str:
   </div>
 </div>
 
+<div class="section">
+  <p class="section-title">Distance, elevation &amp; time</p>
+  <div class="card">
+    <div class="ptot-head">
+      <div class="rng-tabs" id="ptot-metric">
+        <button class="rng-btn active" data-metric="dist" onclick="ptotSet('metric','dist',this)">Distance</button>
+        <button class="rng-btn" data-metric="elev" onclick="ptotSet('metric','elev',this)">Elev gain</button>
+        <button class="rng-btn" data-metric="time" onclick="ptotSet('metric','time',this)">Time</button>
+      </div>
+      <p class="ptot-total" id="ptot-total"></p>
+    </div>
+    <div id="ptot-chart" class="ptot-chart"></div>
+    <div class="ptot-head">
+      <div class="rng-tabs" id="ptot-win">
+        <button class="rng-btn" data-win="90" onclick="ptotSet('win',90,this)">3M</button>
+        <button class="rng-btn active" data-win="180" onclick="ptotSet('win',180,this)">6M</button>
+        <button class="rng-btn" data-win="365" onclick="ptotSet('win',365,this)">1Y</button>
+        <button class="rng-btn" data-win="0" onclick="ptotSet('win',0,this)">All</button>
+      </div>
+      <div class="rng-tabs" id="ptot-gran">
+        <button class="rng-btn active" data-gran="week" onclick="ptotSet('gran','week',this)">Weekly</button>
+        <button class="rng-btn" data-gran="month" onclick="ptotSet('gran','month',this)">Monthly</button>
+      </div>
+    </div>
+    <p class="note">Distance, elevation gain or moving time per week (or month). Hover a point to read its exact value. Window and granularity are independent toggles.</p>
+  </div>
+</div>
+
+<script>
+var PTOT_DATA = {totals_json};
+</script>
 <script>
 function setRange(btn){{
   var g = btn.closest('.rng-group');
@@ -786,6 +866,124 @@ function setRange(btn){{
     charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
   }}
 }}
+
+// ── Per-period totals chart (Strava-style, interactive) ──────────────────────
+var PTOT_STATE = {{metric:'dist', win:180, gran:'week'}};
+var PTOT_META = {{
+  dist: {{unit:'km', color:'#5cb85c'}},
+  elev: {{unit:'m',  color:'#8a6db5'}},
+  time: {{unit:'h',  color:'#5b8fd9'}}
+}};
+var PTOT_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function ptotFmt(metric, v){{
+  if(metric==='time'){{
+    var h=Math.floor(v), m=Math.round((v-h)*60);
+    if(m===60){{h++;m=0;}}
+    return h+'h '+(m<10?'0':'')+m+'m';
+  }}
+  if(metric==='dist') return (Math.round(v*10)/10)+' km';
+  return Math.round(v)+' m';
+}}
+
+function ptotShortDate(iso, gran){{
+  var d=new Date(iso+'T00:00:00');
+  if(gran==='month') return PTOT_MON[d.getMonth()];
+  return d.getDate()+' '+PTOT_MON[d.getMonth()];
+}}
+
+function ptotRangeLabel(iso, gran){{
+  var d=new Date(iso+'T00:00:00');
+  if(gran==='month') return PTOT_MON[d.getMonth()]+' '+d.getFullYear();
+  var e=new Date(d.getTime()+6*86400000);
+  return d.getDate()+' '+PTOT_MON[d.getMonth()]+' – '+e.getDate()+' '+PTOT_MON[e.getMonth()];
+}}
+
+function ptotWindow(){{
+  var data=(PTOT_DATA[PTOT_STATE.gran]||[]).slice();
+  var win=PTOT_STATE.win;
+  if(win>0 && data.length){{
+    var last=new Date(data[data.length-1].date+'T00:00:00');
+    var cut=last.getTime()-win*86400000;
+    data=data.filter(function(p){{ return new Date(p.date+'T00:00:00').getTime()>=cut; }});
+  }}
+  return data;
+}}
+
+function ptotSetTotal(txt){{ var el=document.getElementById('ptot-total'); if(el) el.textContent=txt; }}
+
+function drawPtot(){{
+  var holder=document.getElementById('ptot-chart');
+  if(!holder) return;
+  var metric=PTOT_STATE.metric, meta=PTOT_META[metric];
+  var data=ptotWindow();
+  if(data.length<2){{ holder.innerHTML='<p class="note">Not enough data for this window.</p>'; ptotSetTotal(''); return; }}
+  var W=720,H=180,padL=44,padR=12,padT=14,padB=24;
+  var vals=data.map(function(p){{ return p[metric]; }});
+  var vmin=0, vmax=Math.max.apply(null, vals); if(vmax<=0) vmax=1;
+  var n=data.length;
+  function px(i){{ return padL+(n<=1?0:i/(n-1))*(W-padL-padR); }}
+  function py(v){{ return H-padB-(v-vmin)/(vmax-vmin)*(H-padT-padB); }}
+  var grid='';
+  for(var g=0; g<=2; g++){{
+    var gv=vmin+g/2*(vmax-vmin), gy=py(gv);
+    grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+gy.toFixed(1)+'" stroke="#2a2a2a" stroke-width="1"/>'
+        +'<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="#666" text-anchor="end">'+Math.round(gv)+'</text>';
+  }}
+  var line=data.map(function(p,i){{ return (i?'L':'M')+px(i).toFixed(1)+','+py(p[metric]).toFixed(1); }}).join(' ');
+  var area='M'+px(0).toFixed(1)+','+(H-padB)+data.map(function(p,i){{ return 'L'+px(i).toFixed(1)+','+py(p[metric]).toFixed(1); }}).join('')+'L'+px(n-1).toFixed(1)+','+(H-padB)+'Z';
+  var xlab='', step=Math.max(1, Math.round(n/6));
+  for(var i=0;i<n;i+=step){{
+    xlab+='<text x="'+px(i).toFixed(1)+'" y="'+(H-8)+'" font-size="8" fill="#555" text-anchor="middle">'+ptotShortDate(data[i].date, PTOT_STATE.gran)+'</text>';
+  }}
+  var svg='<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">'
+    +'<defs><linearGradient id="ptot-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+meta.color+'" stop-opacity="0.30"/><stop offset="1" stop-color="'+meta.color+'" stop-opacity="0.02"/></linearGradient></defs>'
+    +grid+'<path d="'+area+'" fill="url(#ptot-grad)"/><path d="'+line+'" fill="none" stroke="'+meta.color+'" stroke-width="2"/>'+xlab
+    +'<g id="ptot-cursor" style="opacity:0;pointer-events:none"><line y1="'+padT+'" y2="'+(H-padB)+'" stroke="#888" stroke-width="1" stroke-dasharray="3,3"/><circle r="4" fill="'+meta.color+'" stroke="#fff" stroke-width="1.5"/></g>'
+    +'</svg>';
+  holder.innerHTML=svg+'<div class="ptot-tip" id="ptot-tip"></div>';
+  var sum=vals.reduce(function(a,b){{ return a+b; }}, 0);
+  ptotSetTotal('Total '+ptotFmt(metric, sum));
+  holder._ptot={{data:data, metric:metric, n:n, W:W, H:H, padL:padL, padR:padR, padT:padT, padB:padB, vmin:vmin, vmax:vmax, sum:sum}};
+  holder.onmousemove=function(e){{ ptotHover(e, holder); }};
+  holder.onmouseleave=function(){{
+    var c=document.getElementById('ptot-cursor'); if(c) c.style.opacity=0;
+    var t=document.getElementById('ptot-tip'); if(t) t.style.opacity=0;
+    ptotSetTotal('Total '+ptotFmt(metric, holder._ptot.sum));
+  }};
+}}
+
+function ptotHover(e, holder){{
+  var st=holder._ptot; if(!st) return;
+  var svg=holder.querySelector('svg'); if(!svg) return;
+  var sr=svg.getBoundingClientRect();
+  var sx=(e.clientX-sr.left)/sr.width*st.W;
+  function px(i){{ return st.padL+(st.n<=1?0:i/(st.n-1))*(st.W-st.padL-st.padR); }}
+  function py(v){{ return st.H-st.padB-(v-st.vmin)/(st.vmax-st.vmin)*(st.H-st.padT-st.padB); }}
+  var bi=0, bd=Infinity;
+  for(var i=0;i<st.n;i++){{ var dx=Math.abs(px(i)-sx); if(dx<bd){{ bd=dx; bi=i; }} }}
+  var p=st.data[bi], cx=px(bi), cy=py(p[st.metric]);
+  var cur=document.getElementById('ptot-cursor');
+  if(cur){{ cur.style.opacity=1; var ln=cur.querySelector('line'), dot=cur.querySelector('circle'); ln.setAttribute('x1',cx); ln.setAttribute('x2',cx); dot.setAttribute('cx',cx); dot.setAttribute('cy',cy); }}
+  var tip=document.getElementById('ptot-tip');
+  if(tip){{
+    tip.innerHTML='<div class="ptot-tip-d">'+ptotRangeLabel(p.date, PTOT_STATE.gran)+'</div><div><b>'+ptotFmt(st.metric, p[st.metric])+'</b></div>';
+    var hr=holder.getBoundingClientRect(), scaleX=sr.width/st.W, scaleY=sr.height/st.H;
+    tip.style.left=((sr.left-hr.left)+cx*scaleX)+'px';
+    tip.style.top=((sr.top-hr.top)+cy*scaleY)+'px';
+    tip.style.opacity=1;
+  }}
+  ptotSetTotal(ptotRangeLabel(p.date, PTOT_STATE.gran)+': '+ptotFmt(st.metric, p[st.metric]));
+}}
+
+function ptotSet(kind, val, btn){{
+  PTOT_STATE[kind]=val;
+  var bs=btn.parentNode.querySelectorAll('.rng-btn');
+  for(var i=0;i<bs.length;i++) bs[i].classList.toggle('active', bs[i]===btn);
+  drawPtot();
+}}
+
+drawPtot();
 </script>
 </body>
 </html>

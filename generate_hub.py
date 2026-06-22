@@ -283,7 +283,177 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
     return runs
 
 
-def _overview_stats(rows: list[dict], runs: list[dict]) -> dict:
+def _load_recommendation(
+    runs: list[dict], daily: list[tuple], fitness: list[dict],
+    threshold_mps: float | None,
+) -> dict | None:
+    """Recommend next week's training in real units from the ACWR injury model.
+
+    The acute:chronic workload ratio (acute = trailing 7-day load, chronic =
+    trailing 28-day load scaled to a week) has a well-documented injury "sweet
+    spot" around 0.8-1.3; ratios above ~1.5 carry markedly higher soft-tissue
+    injury risk. We turn that into a concrete target load for the coming week,
+    nudged by current form (TSB), then translate it back into the numbers a
+    runner actually plans by: weekly distance, longest run, climb and an easy
+    pace ceiling. The translation uses *your own* recent distance/load and
+    elevation/distance ratios so the km figures match how you actually run.
+
+    Returns None when there isn't enough history (no 28-day baseline yet).
+    """
+    if not daily:
+        return None
+    loads = [l for _, l in daily]
+    acute = sum(loads[-7:])
+    chronic_window = loads[-28:]
+    chronic = sum(chronic_window) / len(chronic_window) * 7 if chronic_window else 0.0
+    if chronic <= 0 or len(loads) < 14:
+        return None
+    acwr = acute / chronic
+
+    cur = fitness[-1] if fitness else {"ctl": 0.0, "atl": 0.0, "tsb": 0.0}
+    tsb = cur["tsb"]
+
+    rec_low  = 0.8 * chronic   # detraining floor of the sweet spot
+    rec_high = 1.3 * chronic   # injury-risk ceiling of the sweet spot
+
+    # When building, step up from whichever is higher — last week's actual load
+    # or your established baseline — so a runner who's been progressing isn't
+    # dragged back toward a lagging chronic average. The injury ceiling
+    # (rec_high) is the hard guardrail; the small step is itself the ramp limit.
+    build_base = max(acute, chronic)
+    if tsb < -25 or acwr > 1.5:
+        headline, risk, target = "Back off and recover", "red", 0.80 * chronic
+    elif tsb < -10 or acwr > 1.3:
+        headline, risk, target = "Hold steady — let fatigue settle", "amber", chronic
+    elif tsb > 12 and acwr < 1.1:
+        headline, risk, target = "Build — you have room", "green", build_base * 1.10
+    else:
+        headline, risk, target = "Build gradually", "green", build_base * 1.05
+
+    target = min(target, rec_high)           # never exceed the injury-risk ceiling
+    target = max(target, 0.0)
+
+    # ── Translate load → real units using the runner's own recent profile ──
+    last_date   = daily[-1][0]
+    win28_start = str(last_date - timedelta(days=27))
+    win7_start  = str(last_date - timedelta(days=6))
+    recent = [r for r in runs if r["date_iso"] >= win28_start]
+    km28   = sum(r["dist_km"] for r in recent)
+    gain28 = sum(r["gain"] for r in recent)
+    load28 = sum(chronic_window)
+    # load per km from real history (captures their typical intensity + terrain);
+    # fall back to the easy-running approximation (load ≈ km*10) if no recent km.
+    load_per_km = (load28 / km28) if km28 > 0 else 10.0
+    gain_per_km = (gain28 / km28) if km28 > 0 else 0.0
+
+    def km(load_val: float) -> int:
+        return round(load_val / load_per_km) if load_per_km > 0 else 0
+    def metres(km_val: float) -> int:
+        return int(round(km_val * gain_per_km / 10.0) * 10)
+
+    target_km = km(target)
+    low_km, high_km = km(rec_low), km(rec_high)
+    # Longest single run: up to ~40% of the week — the upper end of the common
+    # 30-40% guideline, enough room for a proper long run without one session
+    # dominating the week.
+    long_run_km = round(target_km * 0.40)
+    last7_km = round(sum(r["dist_km"] for r in runs if r["date_iso"] >= win7_start), 1)
+
+    # Easy-pace ceiling: most weekly volume should sit at an aerobic pace, ~85%
+    # of threshold velocity. Skip if we have no threshold estimate.
+    easy_pace = thr_pace = None
+    if threshold_mps and threshold_mps > 0:
+        thr_pace  = fmt_pace_from_s_per_km(1000.0 / threshold_mps)
+        easy_pace = fmt_pace_from_s_per_km(1000.0 / (threshold_mps * 0.85))
+
+    return {
+        "acwr":         round(acwr, 2),
+        "acwr_class":   "red" if acwr > 1.5 else ("amber" if (acwr > 1.3 or acwr < 0.8) else "green"),
+        "headline":     headline,
+        "risk":         risk,
+        # human-facing primary numbers
+        "target_km":    target_km,
+        "low_km":       low_km,
+        "high_km":      high_km,
+        "long_run_km":  long_run_km,
+        "target_gain":  metres(target_km),
+        "gain_per_km":  round(gain_per_km),
+        "easy_pace":    easy_pace,
+        "thr_pace":     thr_pace,
+        "last7_km":     last7_km,
+        # technical figures shown as sub-text
+        "target_load":  round(target),
+        "load_low":     round(rec_low),
+        "load_high":    round(rec_high),
+        "last_week":    round(acute),
+        "advice":       _load_advice(tsb, acwr),
+    }
+
+
+def _load_advice(tsb: float, acwr: float) -> str:
+    """One-paragraph rationale tying the numbers to injury-prevention guidance."""
+    bits = []
+    if acwr > 1.5:
+        bits.append("Your last 7 days sit well above your 4-week baseline "
+                    "(ACWR &gt; 1.5) — the classic high injury-risk zone — so pull the coming week down.")
+    elif acwr > 1.3:
+        bits.append("Acute load is running ahead of your baseline; ease off "
+                    "slightly to bring ACWR back under 1.3.")
+    elif acwr < 0.8:
+        bits.append("You've been training below your baseline, so there's room "
+                    "to add load without spiking risk.")
+    else:
+        bits.append("Your acute:chronic balance sits in the safe 0.8–1.3 sweet spot.")
+    if tsb < -25:
+        bits.append("Form is deeply negative — prioritise recovery before building again.")
+    elif tsb < -10:
+        bits.append("You're carrying fatigue, so keep most runs easy.")
+    elif tsb > 12:
+        bits.append("You're well rested and can absorb a bigger week.")
+    bits.append("Keep the week-on-week increase under ~10% to stay injury-safe.")
+    return " ".join(bits)
+
+
+def _recommendation_html(rec: dict | None) -> str:
+    """Render the 'Plan for next 7 days' overview section (or nothing)."""
+    if not rec:
+        return ""
+    pace_card = ""
+    if rec["easy_pace"]:
+        pace_card = (
+            f'<div class="ov-card"><p class="ov-label">Easy pace ceiling</p>'
+            f'<p class="ov-value">{rec["easy_pace"]}<span class="ov-unit">/km</span></p>'
+            f'<p class="ov-sub">keep most runs easier &middot; threshold {rec["thr_pace"]}</p></div>'
+        )
+    elev_card = ""
+    if rec["gain_per_km"] > 0:
+        elev_card = (
+            f'<div class="ov-card"><p class="ov-label">Climb budget</p>'
+            f'<p class="ov-value">{rec["target_gain"]}<span class="ov-unit">m</span></p>'
+            f'<p class="ov-sub">&asymp; {rec["gain_per_km"]} m/km at your usual terrain</p></div>'
+        )
+    return f"""
+<div class="ov-section">
+  <p class="ov-section-title">Plan for next 7 days</p>
+  <div class="ov-rec">
+    <div class="ov-rec-head">
+      <span class="ov-rec-badge {rec['risk']}">{rec['headline']}</span>
+      <span class="ov-rec-acwr">workload ratio <b class="{rec['acwr_class']}">{rec['acwr']:.2f}</b> &middot; target load {rec['target_load']}</span>
+    </div>
+    <div class="ov-grid">
+      <div class="ov-card"><p class="ov-label">Weekly distance</p><p class="ov-value {rec['risk']}">{rec['target_km']}<span class="ov-unit">km</span></p><p class="ov-sub">safe range {rec['low_km']}&ndash;{rec['high_km']} km &middot; last week {rec['last7_km']} km</p></div>
+      <div class="ov-card"><p class="ov-label">Longest run</p><p class="ov-value">{rec['long_run_km']}<span class="ov-unit">km</span></p><p class="ov-sub">cap one run at ~⅓ of the week</p></div>
+      {pace_card}
+      {elev_card}
+    </div>
+    <p class="ov-rec-advice">{rec['advice']}</p>
+    <p class="ov-rec-foot">Distance, climb and pace are translated from a TSS-style training-load target (shown above) using your own recent running. Guidance only &mdash; not a substitute for how your body feels.</p>
+  </div>
+</div>
+"""
+
+
+def _overview_stats(rows: list[dict], runs: list[dict], threshold_mps: float | None = None) -> dict:
     total_km = sum(r["dist_km"] for r in runs)
     total_s  = sum(r["moving_s"] for r in runs)
     today      = datetime.today().date()
@@ -296,8 +466,10 @@ def _overview_stats(rows: list[dict], runs: list[dict]) -> dict:
     fitness = ctl_atl_tsb(daily)
     cur     = fitness[-1] if fitness else {"ctl": 0.0, "atl": 0.0, "tsb": 0.0}
     tsb     = cur["tsb"]
+    rec     = _load_recommendation(runs, daily, fitness, threshold_mps)
 
     return {
+        "rec":           rec,
         "total_runs":    len(runs),
         "total_km":      round(total_km, 1),
         "total_time":    fmt_time(total_s),
@@ -342,8 +514,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .ov-card{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:12px 14px}
 .ov-label{font-size:10px;color:#666;margin:0 0 4px}
 .ov-value{font-size:20px;font-weight:700;color:#eee;margin:0;line-height:1.2}
+.ov-unit{font-size:12px;font-weight:600;color:#888;margin-left:3px}
 .ov-sub{font-size:10px;color:#555;margin:3px 0 0}
 .green{color:#5cb85c}.amber{color:#e0a020}.red{color:#d9534f}
+.ov-rec{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:12px 14px}
+.ov-rec-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.ov-rec-badge{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;border:1px solid currentColor}
+.ov-rec-badge.green{background:rgba(92,184,92,.12)}.ov-rec-badge.amber{background:rgba(224,160,32,.12)}.ov-rec-badge.red{background:rgba(217,83,79,.12)}
+.ov-rec-acwr{font-size:11px;color:#888}
+.ov-rec .ov-grid{margin-bottom:10px}
+.ov-rec-advice{font-size:12px;color:#bbb;line-height:1.55;margin:0 0 8px}
+.ov-rec-foot{font-size:10px;color:#555;margin:0;line-height:1.5}
 .spark-wrap{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 14px}
 .spark-label{font-size:10px;color:#555;margin:0 0 6px}
 .bars{display:flex;align-items:flex-end;gap:4px;height:48px}
@@ -454,6 +635,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .ro-tabs{flex:0 0 auto}
 .run-overlay .dist-chart{flex:0 0 auto;cursor:crosshair}
 .run-overlay .dist-chart svg{height:30vh}
+.ro-zoom-hint{flex:0 0 auto;font-size:10px;color:#666;text-align:center;margin-top:4px}
 """
 
 # ---------------------------------------------------------------------------
@@ -510,6 +692,11 @@ function openRunOverlay(runId) {
       m.label + '</button>';
   }).join('');
   document.getElementById('ro-splits').innerHTML = renderKmSplits(r);
+
+  // Start each overlay at the full-run view rather than inheriting the last
+  // run's zoom window (the holder is reused across runs).
+  var roHolder = document.getElementById('ro-chart');
+  if (roHolder) roHolder._zoom = null;
 
   document.getElementById('run-overlay').classList.add('open');
 
@@ -798,9 +985,20 @@ function drawDistMetric(runId, metricKey, opts) {
 
   var xs = pts.map(function(p) { return p.d; });
   var ys = pts.map(function(p) { return p[metricKey]; });
-  var xmin = Math.min.apply(null, xs), xmax = Math.max.apply(null, xs);
+  var dataMin = Math.min.apply(null, xs), dataMax = Math.max.apply(null, xs);
   var ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
   if (ymax === ymin) ymax = ymin + 1;
+
+  // Horizontal zoom window (driven by the scroll wheel). Stored on the holder so
+  // it survives redraws — e.g. switching metric tabs keeps you zoomed on the same
+  // segment — and is cleared when a fresh overlay opens or on double-click.
+  var holder = document.getElementById(holderId);
+  var xmin = dataMin, xmax = dataMax;
+  if (interactive && holder && holder._zoom) {
+    xmin = Math.max(dataMin, holder._zoom.lo);
+    xmax = Math.min(dataMax, holder._zoom.hi);
+    if (xmax - xmin < 1e-6) { xmin = dataMin; xmax = dataMax; holder._zoom = null; }
+  }
   var xspan = (xmax - xmin) || 1, yspan = (ymax - ymin) || 1;
 
   function px(d) { return padL + (d - xmin) / xspan * (W - padL - padR); }
@@ -829,7 +1027,7 @@ function drawDistMetric(runId, metricKey, opts) {
       '<text x="' + (padL - 6) + '" y="' + (vy + 3).toFixed(1) +
       '" font-size="9" fill="#555" text-anchor="end">' + fmtMetric(metricKey, val) + '</text>';
   }
-  // x labels at each whole km that fits
+  // x labels at each whole km within the visible (possibly zoomed) window
   var xlab = '';
   for (var km = Math.ceil(xmin); km <= Math.floor(xmax); km++) {
     if ((xmax - xmin) > 12 && km % 2 !== 0) continue;
@@ -848,31 +1046,39 @@ function drawDistMetric(runId, metricKey, opts) {
     : '';
 
   var gid = 'grad-' + holderId + '-' + metricKey;
+  var clipId = 'clip-' + holderId + '-' + metricKey;
   var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '"' + aspect + ' xmlns="http://www.w3.org/2000/svg">' +
     '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0" stop-color="' + metric.color + '" stop-opacity="0.35"/>' +
       '<stop offset="1" stop-color="' + metric.color + '" stop-opacity="0.02"/>' +
-    '</linearGradient></defs>' +
+    '</linearGradient>' +
+    '<clipPath id="' + clipId + '"><rect x="' + padL + '" y="' + padT +
+      '" width="' + (W - padL - padR) + '" height="' + (H - padT - padB) + '"/></clipPath>' +
+    '</defs>' +
     grid +
-    '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
-    '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+    '<g clip-path="url(#' + clipId + ')">' +
+      '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
+      '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+    '</g>' +
     xlab +
     cursorSvg +
     '</svg>';
 
-  var holder = document.getElementById(holderId);
   if (!holder) return;
   holder.innerHTML = svg + (interactive ? '<div class="dist-tip" id="' + holderId + '-tip"></div>' : '');
 
   if (!interactive) {
     holder.onmousemove = null;
     holder.onmouseleave = null;
+    holder.onwheel = null;
+    holder.ondblclick = null;
     return;
   }
 
   holder._distState = {
     holderId: holderId, runId: runId, metricKey: metricKey, label: metric.label, color: metric.color,
     pts: pts, xmin: xmin, xspan: xspan, ymin: ymin, yspan: yspan, invert: metric.invert,
+    dataMin: dataMin, dataMax: dataMax,
     W: W, H: H, padL: padL, padR: padR, padT: padT, padB: padB,
     poly: r.gps_polyline || []
   };
@@ -885,6 +1091,53 @@ function drawDistMetric(runId, metricKey, opts) {
     if (tip) tip.style.opacity = 0;
     hideRunCursor();
   };
+  // Scroll wheel zooms the horizontal (distance) axis around the cursor so long
+  // runs can be inspected segment by segment; double-click restores the full run.
+  holder.onwheel = function(e) { onDistWheel(e, holder); };
+  holder.ondblclick = function() {
+    if (!holder._zoom) return;
+    holder._zoom = null;
+    drawDistMetric(runId, metricKey, {holderId: holderId, interactive: true});
+  };
+}
+
+function onDistWheel(e, holder) {
+  var st = holder._distState;
+  if (!st) return;
+  e.preventDefault();
+  var svg = holder.querySelector('svg');
+  if (!svg) return;
+  var sr = svg.getBoundingClientRect();
+  var sx = (e.clientX - sr.left) / sr.width * st.W;   // mouse x in svg user units
+
+  var plotW = st.W - st.padL - st.padR;
+  var fracX = (sx - st.padL) / plotW;
+  fracX = Math.max(0, Math.min(1, fracX));
+  var dUnder = st.xmin + fracX * st.xspan;            // distance under the cursor
+
+  var dataSpan = st.dataMax - st.dataMin;
+  var minSpan = Math.min(dataSpan, 0.2);              // don't zoom tighter than ~200 m
+  var newSpan = st.xspan * (e.deltaY < 0 ? 0.82 : 1.22);
+
+  if (newSpan >= dataSpan) {                          // zoomed all the way back out
+    if (!holder._zoom) return;
+    holder._zoom = null;
+    drawDistMetric(st.runId, st.metricKey, {holderId: st.holderId, interactive: true});
+    onDistHover(e, holder);
+    return;
+  }
+  if (newSpan < minSpan) newSpan = minSpan;
+
+  // keep the distance under the cursor pinned in place while the window shrinks
+  var newLo = dUnder - fracX * newSpan;
+  var newHi = newLo + newSpan;
+  if (newLo < st.dataMin) { newLo = st.dataMin; newHi = newLo + newSpan; }
+  if (newHi > st.dataMax) { newHi = st.dataMax; newLo = newHi - newSpan; }
+  newLo = Math.max(st.dataMin, newLo);
+
+  holder._zoom = {lo: newLo, hi: newHi};
+  drawDistMetric(st.runId, st.metricKey, {holderId: st.holderId, interactive: true});
+  onDistHover(e, holder);                             // resync cursor to the new scale
 }
 
 function onDistHover(e, holder) {
@@ -939,7 +1192,8 @@ function onDistHover(e, holder) {
   if (best.lat != null && best.lon != null) {
     moveRunCursor(best.lat, best.lon);
   } else if (st.poly.length >= 2) {
-    var frac = (best.d - st.xmin) / st.xspan;
+    var dataSpan = (st.dataMax - st.dataMin) || 1;
+    var frac = (best.d - st.dataMin) / dataSpan;
     frac = Math.max(0, Math.min(1, frac));
     var fi = frac * (st.poly.length - 1);
     var lo = Math.floor(fi), hi = Math.min(lo + 1, st.poly.length - 1), t = fi - lo;
@@ -1205,7 +1459,7 @@ def generate(
     html_goals: str,
     html_analytics: str,
 ) -> str:
-    stats          = _overview_stats(rows, runs)
+    stats          = _overview_stats(rows, runs, threshold_mps)
     weeks          = weekly_mileage(rows)
     spark_cols     = render_spark(weeks)
     runs_json      = json.dumps(runs, ensure_ascii=False)
@@ -1217,6 +1471,8 @@ def generate(
         threshold_s_km = round(1000.0 / threshold_mps, 2)
     else:
         threshold_s_km = "null"
+
+    rec_html = _recommendation_html(stats.get("rec"))
 
     overview_html = f"""
 <div class="ov-section">
@@ -1245,6 +1501,7 @@ def generate(
     <div class="ov-card"><p class="ov-label">Form (TSB)</p><p class="ov-value {stats['tsb_class']}">{stats['tsb']:+.1f}</p><p class="ov-sub">{stats['tsb_note']}</p></div>
   </div>
 </div>
+{rec_html}
 
 <div class="ov-section">
   <p class="ov-section-title">All-time heatmap</p>
@@ -1334,6 +1591,7 @@ def generate(
         "        <div id=\"ro-map\" class=\"ro-map\"></div>\n"
         "        <div id=\"ro-tabs\" class=\"dist-tabs ro-tabs\"></div>\n"
         "        <div id=\"ro-chart\" class=\"dist-chart\"></div>\n"
+        "        <div class=\"ro-zoom-hint\">Scroll to zoom the distance axis · double-click to reset</div>\n"
         "      </div>\n"
         "    </div>\n"
         "  </div>\n"
