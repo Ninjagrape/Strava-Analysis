@@ -408,28 +408,36 @@ tr:last-child td{border-bottom:none;}
 """
 
 
-def _line_chart(series: list[dict], keys: list[tuple], w=720, h=160, pad=28):
+def _line_chart(series: list[dict], keys: list[tuple], w=720, h=160, pad=28, yfmt=None):
     """series: list of dicts with 'date' + value keys. keys: [(key,color,label)]."""
     if not series:
         return "<p class='note'>No data.</p>"
     n = len(series)
+    pad_l = 40  # wider left gutter to hold the y-axis scale
     all_vals = [s[k] for s in series for k, _, _ in keys]
     vmin, vmax = min(all_vals), max(all_vals)
     if vmax == vmin:
         vmax = vmin + 1
     span = vmax - vmin
+    yfmt = yfmt or (lambda v: f"{v:g}")
 
     def x(i):
-        return pad + i / max(1, n - 1) * (w - 2 * pad)
+        return pad_l + i / max(1, n - 1) * (w - pad_l - pad)
 
     def y(v):
         return h - pad - (v - vmin) / span * (h - 2 * pad)
 
     parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+    # y-axis scale: 3 gridlines with value labels on the left
+    for g in range(3):
+        gv = vmin + g / 2 * span
+        gy = y(gv)
+        parts.append(f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{w-pad}" y2="{gy:.1f}" stroke="#2a2a2a" stroke-width="1"/>')
+        parts.append(f'<text x="{pad_l-6}" y="{gy+3:.1f}" font-size="8" fill="#666" text-anchor="end">{yfmt(gv)}</text>')
     # zero line if range crosses zero
     if vmin < 0 < vmax:
         zy = y(0)
-        parts.append(f'<line x1="{pad}" y1="{zy:.1f}" x2="{w-pad}" y2="{zy:.1f}" stroke="#444" stroke-width="1" stroke-dasharray="3 3"/>')
+        parts.append(f'<line x1="{pad_l}" y1="{zy:.1f}" x2="{w-pad}" y2="{zy:.1f}" stroke="#444" stroke-width="1" stroke-dasharray="3 3"/>')
     for key, color, _ in keys:
         pts = " ".join(f"{x(i):.1f},{y(s[key]):.1f}" for i, s in enumerate(series))
         parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>')
@@ -441,15 +449,17 @@ def _line_chart(series: list[dict], keys: list[tuple], w=720, h=160, pad=28):
     return "".join(parts) + f'<div class="legend">{legend}</div>'
 
 
-def _bar_chart(labels, values, color="#5cb85c", w=720, h=140, pad=28, fmt=None, band=None):
+def _bar_chart(labels, values, color="#5cb85c", w=720, h=140, pad=28, fmt=None, band=None, yfmt=None):
     if not values:
         return "<p class='note'>No data.</p>"
     vmax = max(values) or 1
     vmin = min(0, min(values))
     span = (vmax - vmin) or 1
     n = len(values)
-    bw = (w - 2 * pad) / n * 0.7
-    gap = (w - 2 * pad) / n
+    pad_l = 40  # wider left gutter to hold the y-axis scale
+    bw = (w - pad_l - pad) / n * 0.7
+    gap = (w - pad_l - pad) / n
+    yfmt = yfmt or (lambda v: f"{v:g}")
 
     def y(v):
         return h - pad - (v - vmin) / span * (h - 2 * pad)
@@ -458,9 +468,15 @@ def _bar_chart(labels, values, color="#5cb85c", w=720, h=140, pad=28, fmt=None, 
     if band:  # shaded sweet-spot band (lo,hi) in value units
         lo, hi = band
         y_hi, y_lo = y(hi), y(lo)
-        parts.append(f'<rect x="{pad}" y="{y_hi:.1f}" width="{w-2*pad}" height="{abs(y_lo-y_hi):.1f}" fill="#5cb85c" opacity="0.10"/>')
+        parts.append(f'<rect x="{pad_l}" y="{y_hi:.1f}" width="{w-pad_l-pad}" height="{abs(y_lo-y_hi):.1f}" fill="#5cb85c" opacity="0.10"/>')
+    # y-axis scale: 3 gridlines with value labels on the left
+    for g in range(3):
+        gv = vmin + g / 2 * span
+        gy = y(gv)
+        parts.append(f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{w-pad}" y2="{gy:.1f}" stroke="#2a2a2a" stroke-width="1"/>')
+        parts.append(f'<text x="{pad_l-6}" y="{gy+3:.1f}" font-size="8" fill="#666" text-anchor="end">{yfmt(gv)}</text>')
     for i, v in enumerate(values):
-        bx = pad + i * gap + (gap - bw) / 2
+        bx = pad_l + i * gap + (gap - bw) / 2
         by = y(v)
         bh = abs(y(0) - by)
         c = color
@@ -473,7 +489,7 @@ def _bar_chart(labels, values, color="#5cb85c", w=720, h=140, pad=28, fmt=None, 
     # x labels (sparse)
     step = max(1, n // 12)
     for i in range(0, n, step):
-        lx = pad + i * gap + gap / 2
+        lx = pad_l + i * gap + gap / 2
         parts.append(f'<text x="{lx:.1f}" y="{h-8:.1f}" font-size="8" fill="#555" text-anchor="middle">{labels[i]}</text>')
     parts.append("</svg>")
     return "".join(parts)
@@ -607,7 +623,7 @@ def generate(rows: list[dict], updated: str) -> str:
         s = _last_days(acwr, win)
         return _bar_chart([x["date"].strftime("%#d/%#m") for x in s],
                           [round(x["acwr"], 2) for x in s], band=(0.8, 1.3),
-                          fmt=lambda v: f"{v:.1f}" if v else "")
+                          yfmt=lambda v: f"{v:.1f}")
     acwr_chart = _ranged(DAILY_RANGES, "3M", _acwr_render)
 
     def _strain_render(win):

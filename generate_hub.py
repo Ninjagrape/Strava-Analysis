@@ -420,7 +420,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
   padding:4px 10px;border-radius:6px;cursor:pointer;transition:color .1s,border-color .1s}
 .dist-tab:hover{color:#ccc}
 .dist-tab.active{color:#eee;border-color:#5cb85c;background:#1b2a1b}
-.dist-chart{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:8px;position:relative}
+.dist-chart{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:8px;position:relative;cursor:crosshair}
 .dist-chart svg{display:block;width:100%;height:auto}
 .dist-tip{position:absolute;pointer-events:none;background:#000;border:1px solid #3a3a3a;
   border-radius:6px;padding:4px 8px;font-size:11px;line-height:1.45;color:#eee;white-space:nowrap;
@@ -548,7 +548,6 @@ function closeRunOverlay() {
   if (overlayMap) { overlayMap.remove(); overlayMap = null; }
   activeCursorMarker = null;
   overlayRunId = null;
-  DIST_STATE = null;
 }
 
 function selectOverlayMetric(metricKey) {
@@ -644,7 +643,7 @@ function showRun(id) {
   // draw the default over-distance metric if a stream exists
   if (r.dist_stream && r.dist_stream.length) {
     var av = availableMetrics(r.dist_stream);
-    if (av.length) drawDistMetric(r.id, av[0].key, {holderId: 'dist-chart-' + r.id, interactive: false});
+    if (av.length) drawDistMetric(r.id, av[0].key, {holderId: 'dist-chart-' + r.id, interactive: true});
   }
 
   // Only init map if the Runs panel is currently visible
@@ -778,9 +777,11 @@ function fmtMetric(key, v) {
   return v;
 }
 
-// Holds the geometry of the currently-drawn chart so the hover handler can
-// invert a mouse x back to a distance and look up the point's value + position.
-var DIST_STATE = null;
+// Each interactive chart stashes its geometry on its own holder element (as
+// holder._distState) so the hover handler can invert a mouse x back to a
+// distance and look up the point's value + position. Storing it per-holder
+// (rather than one global) lets the inline detail chart and the overlay chart
+// both stay interactive without clobbering each other's state.
 
 function drawDistMetric(runId, metricKey, opts) {
   opts = opts || {};
@@ -869,7 +870,7 @@ function drawDistMetric(runId, metricKey, opts) {
     return;
   }
 
-  DIST_STATE = {
+  holder._distState = {
     holderId: holderId, runId: runId, metricKey: metricKey, label: metric.label, color: metric.color,
     pts: pts, xmin: xmin, xspan: xspan, ymin: ymin, yspan: yspan, invert: metric.invert,
     W: W, H: H, padL: padL, padR: padR, padT: padT, padB: padB,
@@ -887,7 +888,7 @@ function drawDistMetric(runId, metricKey, opts) {
 }
 
 function onDistHover(e, holder) {
-  var st = DIST_STATE;
+  var st = holder._distState;
   if (!st) return;
   var svg = holder.querySelector('svg');
   if (!svg) return;
@@ -954,7 +955,7 @@ function selectDistMetric(runId, metricKey) {
   document.querySelectorAll('#dist-tabs-' + runId + ' .dist-tab').forEach(function(t) {
     t.classList.toggle('active', t.dataset.metric === metricKey);
   });
-  drawDistMetric(runId, metricKey, {holderId: 'dist-chart-' + runId, interactive: false});
+  drawDistMetric(runId, metricKey, {holderId: 'dist-chart-' + runId, interactive: true});
 }
 
 function renderDistChart(r) {

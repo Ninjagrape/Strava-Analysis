@@ -6,8 +6,9 @@ and detects interval reps from the raw GPS/distance stream, then builds a self-c
 training hub (`dashboards/TrainingHub.html`) with best-efforts, goals, analytics, an all-time
 GPS heatmap, and a searchable per-run browser. Each run has its Strava description, a route
 map, per-km splits (with elevation gain/loss and cadence), and an over-distance
-pace/elevation/heart-rate/cadence profile. Clicking a route opens an expanded view where
-tracing the graph moves a marker along the map and shows the exact distance and value.
+pace/elevation/heart-rate/cadence profile that shows the exact distance and value as you
+hover along it. Clicking a route opens an expanded view where tracing the graph also moves
+a marker along the map.
 
 ## Requirements
 
@@ -205,7 +206,7 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
-| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph moves a marker along the route and labels the exact distance and value |
+| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
 
 ### Standalone dashboard scripts
 
