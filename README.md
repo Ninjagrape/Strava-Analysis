@@ -46,7 +46,22 @@ The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory 
 | `--csv` | auto-detected | Override: path to a specific `activities.csv` |
 | `--out` | `csv_data/YYYY-MM-DD_strava.csv` | Override: output CSV path |
 | `--sport` | `running` | Filter by sport. Options: `running`, `cycling`, `all` |
-| `--tmp` | `/tmp/strava_fit` | Temp directory for decompressed `.fit` files |
+| `--tmp` | `<system temp>/strava_fit` | Temp directory for decompressed `.fit` files |
+| `--rebuild` | off | Ignore the prior CSV cache and re-parse every `.fit` file (see Incremental compilation) |
+| `--workers` | CPU count | Number of parallel parse worker processes |
+| `--profile` | off | Print decompress/parse timing and hub-generation breakdown |
+
+### Incremental compilation
+
+Parsing `.fit` files is the slowest part of the pipeline, so `strava_compile.py` only parses
+files it hasn't seen before. The most recent `csv_data/*_strava.csv` doubles as a cache: any
+activity already present there is reused verbatim, and only newly added `.fit` files are
+parsed. Those new files are parsed in parallel across CPU cores. A repeat run over an
+unchanged archive parses nothing and finishes near-instantly.
+
+Run with `--rebuild` to discard the cache and re-parse everything. This is required after any
+change to the parser's output columns (`parse_fit` in `strava_compile.py`), since the cache
+would otherwise keep serving the old schema.
 
 ### How to get your Strava export
 
@@ -202,10 +217,10 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 
 | Tab | Contents |
 |---|---|
-| Overview | Summary stats, fitness/fatigue/form (CTL/ATL/TSB) indicators, an all-time GPS heatmap, and a weekly mileage sparkline |
+| Overview | Summary stats, fitness/fatigue/form (CTL/ATL/TSB) indicators, a "Plan for next 7 days" load recommendation (target weekly distance with safe range, longest run, climb, and easy-pace ceiling, derived from your ACWR and current form), an all-time GPS heatmap, and a weekly mileage sparkline |
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
-| Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
+| Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, calendar heatmap, and a weekly/monthly distance/elevation/time totals chart. Most charts have independent time-range toggles (3M/6M/1Y/All) |
 | Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
 
 ### Standalone dashboard scripts
@@ -308,6 +323,7 @@ All analyses use pace, distance, and elevation — no heart rate or power requir
 | VO₂max estimate (VDOT) | Monthly best Daniels VDOT from grade-adjusted 1mi–10K efforts; useful as a fitness trend rather than an absolute figure |
 | Average cadence by month | Steps/min (one foot); rising cadence at the same pace signals improving running economy |
 | Training log calendar | Daily training load heatmap — darker green = higher load, gaps are rest days |
+| Distance, elevation & time | Per-week or per-month totals for distance, elevation gain, or moving time, gap-filled so rest periods drop to the axis. Time window (3M/6M/1Y/All) and granularity (weekly/monthly) are independent toggles |
 
 ### Load score
 
@@ -318,6 +334,21 @@ load = grade_adjusted_distance_km × 10 × intensity²
 ```
 
 where `intensity = threshold_pace / session_GA_pace`, clamped to [0.5, 1.5]. The threshold pace is the 15th-percentile fastest GA pace across all sessions. This mirrors the TRIMP-less load that Runalyze uses when HR is absent.
+
+### Next-week load recommendation
+
+The "Plan for next 7 days" card on the Overview tab turns the ACWR injury model into a concrete weekly plan. It picks a target training load for the coming week from the acute:chronic workload ratio (acute = trailing 7-day load, chronic = trailing 28-day load scaled to a week) and current form (TSB):
+
+| Condition | Action | Target load |
+|---|---|---|
+| TSB < -25 or ACWR > 1.5 | Back off and recover | 0.80 × chronic |
+| TSB < -10 or ACWR > 1.3 | Hold steady | chronic |
+| TSB > 12 and ACWR < 1.1 | Build, room to spare | max(acute, chronic) × 1.10 |
+| otherwise | Build gradually | max(acute, chronic) × 1.05 |
+
+The target is capped at the 1.3 × chronic injury-risk ceiling. It is then translated back into real planning units using your own recent 28-day load-per-km and elevation-per-km ratios, so the figures match how you actually run: target weekly distance (with the 0.8–1.3 sweet-spot range), longest single run (~40% of the week), expected climb, and an easy-pace ceiling (~85% of threshold velocity). The card needs at least a 28-day baseline (14+ days of load) before it appears. Guidance only, not a substitute for how your body feels.
+
+Functions: `_load_recommendation(...)` and `_load_advice(tsb, acwr)` in `generate_hub.py`.
 
 ### Critical speed model
 
@@ -342,5 +373,6 @@ Strava-Analysis/
 └── README.md
 ```
 
-Decompressed `.fit` files are written to `/tmp/strava_fit/` and are not kept after the run.
+Decompressed `.fit` files are written to a `strava_fit/` folder in the system temp directory
+(override with `--tmp`) and are not kept after the run.
 The Strava export zip itself stays in your Downloads folder and is not modified.

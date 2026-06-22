@@ -11,9 +11,13 @@ generate_dashboards and generate_analytics.
 
 import json
 import math
+import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
 from generate_dashboards import (
     load_rows, fmt_pace, fmt_time, ga_time, is_interval,
@@ -1462,9 +1466,16 @@ def generate(
     stats          = _overview_stats(rows, runs, threshold_mps)
     weeks          = weekly_mileage(rows)
     spark_cols     = render_spark(weeks)
+    t0             = time.perf_counter()
     runs_json      = json.dumps(runs, ensure_ascii=False)
+    if PROFILE:
+        print(f"[profile] runs json.dumps: {time.perf_counter() - t0:.2f}s "
+              f"({len(runs_json) / 1_048_576:.1f} MB)")
+    t0             = time.perf_counter()
     heat_pts       = _heatmap_points(runs)
     heatmap_json   = json.dumps(heat_pts)
+    if PROFILE:
+        print(f"[profile] heatmap: {time.perf_counter() - t0:.2f}s ({len(heat_pts)} points)")
 
     # Embed threshold as seconds/km for JS zone colouring (null if unknown)
     if threshold_mps and threshold_mps > 0:
@@ -1640,22 +1651,28 @@ def main():
     else:
         print("No 5K best effort found; pace zones disabled")
 
+    t0 = time.perf_counter()
     runs = _build_runs(rows, threshold_mps)
+    if PROFILE:
+        print(f"[profile] _build_runs: {time.perf_counter() - t0:.2f}s ({len(runs)} runs)")
     print(f"Loaded {len(runs)} runs")
 
     print("Building dashboard panels…")
+    t0 = time.perf_counter()
     html_efforts   = body_best_efforts(rows, updated)
     html_goals     = body_goal_dashboard(rows, updated)
     html_analytics = body_analytics(rows, updated)
+    if PROFILE:
+        print(f"[profile] panels (efforts/goals/analytics): {time.perf_counter() - t0:.2f}s")
 
     dashboards_dir = here / "dashboards"
     dashboards_dir.mkdir(exist_ok=True)
 
     out = dashboards_dir / "TrainingHub.html"
-    out.write_text(
-        generate(rows, runs, updated, threshold_mps, html_efforts, html_goals, html_analytics),
-        encoding="utf-8",
-    )
+    html = generate(rows, runs, updated, threshold_mps, html_efforts, html_goals, html_analytics)
+    out.write_text(html, encoding="utf-8")
+    if PROFILE:
+        print(f"[profile] HTML size: {len(html.encode('utf-8')) / 1_048_576:.1f} MB")
     print(f"Written: {out}")
 
 

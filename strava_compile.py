@@ -1,6 +1,9 @@
 import argparse
+import concurrent.futures
 import gzip
 import os
+import tempfile
+import time
 import zipfile
 import shutil
 import csv
@@ -636,6 +639,67 @@ def extract_activity_id(filename: str) -> str:
     return stem
 
 
+# Keys that hold JSON-encoded streams; appended last so column order is stable.
+_STREAM_KEYS = ("fit_splits", "fit_km_splits", "fit_gps_polyline", "fit_distance_stream")
+
+
+def _fit_keys_from(stats: dict) -> list[str]:
+    """Ordered parsed-stat column list: scalar fields first, stream fields last.
+
+    parse_fit emits a mix of prefixes (fit_*, best_*, interval_best_*); take
+    every key, not just fit_-prefixed ones, so no derived column is dropped.
+    """
+    scalars = [k for k in stats if k not in _STREAM_KEYS]
+    return scalars + [k for k in _STREAM_KEYS if k in stats]
+
+
+def _parse_one(task: tuple) -> tuple:
+    """Worker: decompress (if needed) and parse one fit file.
+
+    Runs in a separate process, so it takes/returns only picklable values.
+    Returns (fit_id, stats|None, error_str|None, elapsed_s).
+    """
+    path_str, is_gz, tmp_dir_str = task
+    path = Path(path_str)
+    fit_id = extract_activity_id(path.name)
+    start = time.perf_counter()
+    try:
+        fit_path = decompress_fit_gz(path, Path(tmp_dir_str)) if is_gz else path
+        stats = parse_fit(fit_path)
+        return (fit_id, stats, None, time.perf_counter() - start)
+    except Exception as e:  # mirror the serial path: log and skip, never crash the pool
+        return (fit_id, None, str(e), time.perf_counter() - start)
+
+
+def load_prior_fit_cache(csv_dir: Path, activity_cols: set) -> dict:
+    """Map fit_id -> {parsed column: value} from the most recent prior CSV.
+
+    The enriched CSV is itself the cache: any activity already parsed there
+    can be reused verbatim, so only genuinely new .fit files need parsing.
+    Parsed columns are everything that is NOT a raw activities.csv column
+    (fit_*, best_*, interval_best_* alike). Only rows carrying parsed data
+    are cached.
+    """
+    cache: dict = {}
+    candidates = sorted(csv_dir.glob("*_strava.csv"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+    for prior in candidates:
+        try:
+            rows = load_activities_csv(prior)
+        except Exception:
+            continue
+        for row in rows:
+            fn = row.get("Filename", "")
+            fit_id = extract_activity_id(fn) if fn else ""
+            if not fit_id or fit_id in cache:
+                continue
+            fit_data = {k: v for k, v in row.items() if k not in activity_cols}
+            if any(v not in (None, "") for v in fit_data.values()):
+                cache[fit_id] = fit_data
+        break  # most recent CSV is sufficient
+    return cache
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -652,9 +716,17 @@ def main():
                         help="Override: output CSV path (default: alongside export, named YYYY-MM-DD_strava.csv)")
     parser.add_argument("--sport",     default="running",
                         help="Filter by sport (running/cycling/all). Default: running")
-    parser.add_argument("--tmp",       default="/tmp/strava_fit",
+    parser.add_argument("--tmp",       default=str(Path(tempfile.gettempdir()) / "strava_fit"),
                         help="Temp dir for decompressed .fit files")
+    parser.add_argument("--rebuild",   action="store_true",
+                        help="Ignore the prior CSV cache and re-parse every .fit file")
+    parser.add_argument("--workers",   type=int, default=None,
+                        help="Parallel parse workers (default: CPU count)")
+    parser.add_argument("--profile",   action="store_true",
+                        help="Print decompress/parse timing breakdown")
     args = parser.parse_args()
+
+    profile = args.profile or os.environ.get("STRAVA_PROFILE")
 
     downloads_dir = Path(args.downloads)
     tmp_dir = Path(args.tmp)
@@ -704,36 +776,69 @@ def main():
     activities = load_activities_csv(csv_path)
     print(f"Loaded {len(activities)} rows from {csv_path.name}")
 
-    parsed = {}
+    # Incremental cache: reuse fit data already parsed into a prior CSV, so only
+    # genuinely new .fit files need parsing. --rebuild forces a full re-parse.
+    # Parsed columns are identified as those absent from activities.csv, so a
+    # prior CSV's derived columns (fit_*, best_*, ...) are reused in full.
+    csv_dir = Path(__file__).parent / "csv_data"
+    activity_cols = set(activities[0].keys()) if activities else set()
+    cache = {} if args.rebuild else load_prior_fit_cache(csv_dir, activity_cols)
+
+    parsed = {}        # fit_id -> stats (cached or freshly parsed)
+    to_parse = []      # (path, is_gz) for ids not covered by the cache
+    seen = set()       # dedupe ids; .fit.gz wins over a bare .fit of the same id
+
+    def consider(path: Path, is_gz: bool):
+        fit_id = extract_activity_id(path.name)
+        if fit_id in seen:
+            return
+        seen.add(fit_id)
+        if fit_id in cache:
+            parsed[fit_id] = cache[fit_id]
+        else:
+            to_parse.append((path, is_gz))
 
     for gz in fit_gz_files:
-        fit_id = extract_activity_id(gz.name)
-        try:
-            fit_path = decompress_fit_gz(gz, tmp_dir)
-            stats = parse_fit(fit_path)
-            parsed[fit_id] = stats
-        except Exception as e:
-            print(f"  ERROR {gz.name}: {e}")
-
+        consider(gz, True)
     for fit in fit_files:
-        fit_id = extract_activity_id(fit.name)
-        if fit_id not in parsed:
-            try:
-                stats = parse_fit(fit)
-                parsed[fit_id] = stats
-            except Exception as e:
-                print(f"  ERROR {fit.name}: {e}")
+        consider(fit, False)
 
-    print(f"Successfully parsed {len(parsed)} .fit files")
+    cached_count = len(parsed)
+    workers = args.workers if args.workers and args.workers > 0 else (os.cpu_count() or 1)
+    parse_times: list[tuple[float, str]] = []  # (elapsed_s, name) for --profile
+    parse_start = time.perf_counter()
 
-    fit_keys = []
-    if parsed:
-        sample = next(iter(parsed.values()))
-        fit_keys = [k for k in sample.keys() if k not in ("fit_splits", "fit_km_splits", "fit_gps_polyline", "fit_distance_stream")]
-        fit_keys.append("fit_splits")
-        fit_keys.append("fit_km_splits")
-        fit_keys.append("fit_gps_polyline")
-        fit_keys.append("fit_distance_stream")
+    if to_parse:
+        if workers == 1 or len(to_parse) == 1:
+            for path, is_gz in to_parse:
+                fit_id, stats, err, elapsed = _parse_one((str(path), is_gz, str(tmp_dir)))
+                parse_times.append((elapsed, path.name))
+                if err:
+                    print(f"  ERROR {path.name}: {err}")
+                else:
+                    parsed[fit_id] = stats
+        else:
+            tasks = [(str(path), is_gz, str(tmp_dir)) for path, is_gz in to_parse]
+            with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as ex:
+                for fit_id, stats, err, elapsed in ex.map(_parse_one, tasks):
+                    if err:
+                        print(f"  ERROR parsing {fit_id}: {err}")
+                    else:
+                        parsed[fit_id] = stats
+                        parse_times.append((elapsed, fit_id))
+
+    parse_wall = time.perf_counter() - parse_start
+    print(f"Reused {cached_count} cached, parsed {len(to_parse)} new "
+          f"(.fit total {len(parsed)})")
+
+    if profile:
+        print(f"[profile] parse stage: {parse_wall:.1f}s wall, "
+              f"{workers} worker(s), {len(to_parse)} files parsed, "
+              f"{cached_count} reused from cache")
+        for elapsed, name in sorted(parse_times, reverse=True)[:5]:
+            print(f"[profile]   slowest: {name} {elapsed:.2f}s")
+
+    fit_keys = _fit_keys_from(next(iter(parsed.values()))) if parsed else []
 
     enriched = []
     matched = 0
