@@ -1,6 +1,7 @@
 # Generated output CSVs
 *_strava.csv
 enriched_activities.csv
+csv_data/
 
 # Segment detection caches (regenerated from runs)
 segments_cache.json
@@ -26,3 +27,4 @@ Thumbs.db
 
 # Claude
 .claude/
+graphify-out/

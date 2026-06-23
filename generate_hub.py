@@ -622,12 +622,15 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
   border:1px solid #3a3a3a}
 
 /* Expanded analysis overlay (map + over-distance graph on one screen) */
-.run-overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:600;display:none}
+.run-overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:700;display:none}
 .run-overlay.open{display:flex;justify-content:center}
 .ro-box{display:flex;flex-direction:column;width:100%;max-width:1300px;height:100%;
   padding:12px 14px;gap:8px;overflow:hidden}
-.ro-head{display:flex;justify-content:space-between;align-items:center;flex:0 0 auto}
+.ro-head{display:flex;justify-content:space-between;align-items:flex-start;flex:0 0 auto;gap:10px}
+.ro-head-text{display:flex;flex-direction:column;gap:3px;min-width:0}
 .ro-title{font-size:15px;font-weight:600;color:#eee}
+.ro-stats{display:flex;flex-wrap:wrap;gap:3px 14px;font-size:12px;color:#9a9a9a}
+.ro-stats b{color:#eee;font-weight:600}
 .ro-close{background:#222;border:1px solid #3a3a3a;color:#bbb;font-size:15px;line-height:1;
   width:30px;height:30px;border-radius:6px;cursor:pointer}
 .ro-close:hover{color:#fff;border-color:#5cb85c}
@@ -689,6 +692,7 @@ function openRunOverlay(runId) {
   overlayRunId = runId;
 
   document.getElementById('ro-title').textContent = r.name + ' · ' + r.date_long;
+  document.getElementById('ro-stats').innerHTML = roStats(r);
 
   var avail = availableMetrics(r.dist_stream || []);
   document.getElementById('ro-tabs').innerHTML = avail.map(function(m, i) {
@@ -799,6 +803,24 @@ function initSegments() {
   }, 50);
 }
 
+// Start = green disc, End = checkered finish flag. divIcons so the same markup
+// styles both the thumbnail and the expanded overlay map (sized via `px`).
+function addSegEndpoints(map, poly, px) {
+  if (!poly || poly.length < 2) return;
+  function mk(latlng, cls) {
+    return L.marker(latlng, {
+      interactive: false, keyboard: false,
+      icon: L.divIcon({
+        className: '',
+        html: '<div class="seg-mk ' + cls + '"></div>',
+        iconSize: [px, px], iconAnchor: [px / 2, px / 2]
+      })
+    }).addTo(map);
+  }
+  mk(poly[0], 'seg-mk-start');
+  mk(poly[poly.length - 1], 'seg-mk-end');
+}
+
 function initSegMap(seg) {
   var el = document.getElementById('seg-map-' + seg.id);
   if (!el || !seg.polyline || seg.polyline.length < 2) return;
@@ -810,22 +832,27 @@ function initSegMap(seg) {
   }).addTo(map);
   var colour = seg.type === 'climb' ? '#e0a020' : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
   var poly = L.polyline(seg.polyline, {color: colour, weight: 3, opacity: 0.95}).addTo(map);
-  L.circleMarker(seg.polyline[0], {radius: 4, color: colour, fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(map);
-  L.circleMarker(seg.polyline[seg.polyline.length - 1], {radius: 4, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(map);
+  addSegEndpoints(map, seg.polyline, 16);
   map.invalidateSize();
   map.fitBounds(poly.getBounds(), {padding: [12, 12]});
   segMaps[seg.id] = map;
 }
 
 function drawSegTrend(seg) {
-  var holder = document.getElementById('seg-trend-' + seg.id);
+  renderSegTrend(seg, document.getElementById('seg-trend-' + seg.id),
+                 {W: 360, H: 150, tipId: 'seg-tip-' + seg.id});
+}
+
+function renderSegTrend(seg, holder, opts) {
   if (!holder) return;
+  opts = opts || {};
   var efforts = seg.efforts.slice().sort(function(a, b) {
     return a.date_iso < b.date_iso ? -1 : (a.date_iso > b.date_iso ? 1 : 0);
   });
   if (efforts.length < 2) { holder.innerHTML = ''; return; }
 
-  var W = 360, H = 150, padL = 40, padR = 10, padT = 14, padB = 22;
+  var tipId = opts.tipId || ('seg-tip-' + seg.id);
+  var W = opts.W || 360, H = opts.H || 150, padL = 40, padR = 10, padT = 14, padB = 22;
   var ts = efforts.map(function(e) { return Date.parse(e.date_iso); });
   var ys = efforts.map(function(e) { return e.time_s; });
   var tmin = Math.min.apply(null, ts), tmax = Math.max.apply(null, ts);
@@ -841,7 +868,7 @@ function drawSegTrend(seg) {
   var grid = '';
   for (var g = 0; g <= 2; g++) {
     var vy = padT + g / 2 * (H - padT - padB);
-    var val = yhi - g / 2 * (yhi - ylo);
+    var val = ylo + g / 2 * (yhi - ylo);  // match py(): fastest (small) sits at the top
     grid += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (W - padR) +
       '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>' +
       '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
@@ -852,10 +879,15 @@ function drawSegTrend(seg) {
   }).join(' ');
   var dots = efforts.map(function(e, i) {
     var isPr = e.time_s === prT;
-    return '<circle cx="' + px(ts[i]).toFixed(1) + '" cy="' + py(ys[i]).toFixed(1) +
+    var cx = px(ts[i]).toFixed(1), cy = py(ys[i]).toFixed(1);
+    // Visible dot plus a larger transparent circle so hovering is forgiving.
+    return '<circle cx="' + cx + '" cy="' + cy +
       '" r="' + (isPr ? 4.5 : 3) + '" fill="' + (isPr ? '#5cb85c' : '#888') +
-      '" stroke="#1c1c1c" stroke-width="1.5"' +
-      ' data-d="' + e.date_long + '" data-t="' + e.time_str + '" class="seg-dot"/>';
+      '" stroke="#1c1c1c" stroke-width="1.5" pointer-events="none"/>' +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="11" fill="transparent"' +
+      ' data-d="' + esc(e.date_long) + '" data-t="' + esc(e.time_str) + '"' +
+      ' data-p="' + esc(e.pace_str || '') + '"' + (isPr ? ' data-pr="1"' : '') +
+      ' class="seg-dot" style="cursor:pointer"/>';
   }).join('');
   // date labels at first and last attempt
   var xlab = '<text x="' + padL + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="start">' +
@@ -868,20 +900,110 @@ function drawSegTrend(seg) {
     grid + xlab +
     '<path d="' + line + '" fill="none" stroke="#5cb85c" stroke-width="1.6" opacity="0.85"/>' +
     dots + '</svg>' +
-    '<div class="seg-trend-tip" id="seg-tip-' + seg.id + '"></div>';
+    '<div class="seg-trend-tip" id="' + tipId + '"></div>';
 
-  var tip = document.getElementById('seg-tip-' + seg.id);
+  var tip = document.getElementById(tipId);
   holder.querySelectorAll('.seg-dot').forEach(function(c) {
     c.addEventListener('mouseenter', function() {
       var r = holder.getBoundingClientRect();
       var cr = c.getBoundingClientRect();
-      tip.innerHTML = '<b>' + c.getAttribute('data-t') + '</b><br>' + c.getAttribute('data-d');
+      var pace = c.getAttribute('data-p');
+      tip.innerHTML = '<b>' + c.getAttribute('data-t') +
+        (c.getAttribute('data-pr') ? ' 🏆' : '') + '</b>' +
+        (pace ? ' · ' + pace + '/km' : '') +
+        '<br>' + c.getAttribute('data-d');
       tip.style.left = (cr.left - r.left + cr.width / 2) + 'px';
-      tip.style.top = (cr.top - r.top) + 'px';
+      tip.style.top = (cr.top - r.top + cr.height / 2) + 'px';
       tip.style.opacity = '1';
     });
     c.addEventListener('mouseleave', function() { tip.style.opacity = '0'; });
   });
+}
+
+var segOverlayMap = null;
+
+function openSegOverlay(id) {
+  var seg = SEGMENTS.find(function(s) { return s.id === id; });
+  if (!seg) return;
+  document.getElementById('so-title').textContent = seg.name || 'Segment';
+
+  var bits = [
+    '<span>' + esc(seg.length_str) + '</span>',
+    '<span><b>' + seg.n_efforts + '</b> attempts</span>',
+    '<span>PR <b>' + esc(seg.pr_time_str) + '</b> · ' + esc(seg.pr_date) + '</span>'
+  ];
+  if (seg.type === 'climb') {
+    bits.splice(1, 0, '<span>&uarr; ' + seg.gain_m + ' m · ' + seg.grade + '%</span>');
+  }
+  document.getElementById('so-stats').innerHTML = bits.join('');
+  document.getElementById('so-attempts').innerHTML = segAttemptList(seg);
+
+  document.getElementById('seg-overlay').classList.add('open');
+  setTimeout(function() {
+    var el = document.getElementById('so-map');
+    if (segOverlayMap) { segOverlayMap.remove(); segOverlayMap = null; }
+    el.innerHTML = '';
+    if (typeof L === 'undefined' || !seg.polyline || seg.polyline.length < 2) return;
+    var map = L.map(el, {preferCanvas: true});
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      subdomains: 'abcd', maxZoom: 19
+    }).addTo(map);
+    var colour = seg.type === 'climb' ? '#e0a020' : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
+    var poly = L.polyline(seg.polyline, {color: colour, weight: 4, opacity: 0.95}).addTo(map);
+    addSegEndpoints(map, seg.polyline, 22);
+    map.invalidateSize();
+    map.fitBounds(poly.getBounds(), {padding: [30, 30]});
+    segOverlayMap = map;
+    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 260, tipId: 'so-tip'});
+  }, 60);
+}
+
+function closeSegOverlay() {
+  document.getElementById('seg-overlay').classList.remove('open');
+  if (segOverlayMap) { segOverlayMap.remove(); segOverlayMap = null; }
+}
+
+// Compact run stats bar reused as the summary header on the expanded run overlay.
+function roStats(r) {
+  var bits = [
+    '<span><b>' + r.dist_km + '</b> km</span>',
+    '<span><b>' + r.moving_str + '</b></span>',
+    '<span>' + r.pace_str + '/km</span>'
+  ];
+  if (r.ga_pace_str && r.ga_pace_str !== '—') bits.push('<span>GA ' + r.ga_pace_str + '/km</span>');
+  if (r.gain > 0) bits.push('<span>&uarr; ' + r.gain + ' m</span>');
+  if (r.cadence) bits.push('<span>' + r.cadence + ' spm</span>');
+  return bits.join('');
+}
+
+// Attempt list inside the segment overlay: each row is one run that ran the segment.
+// Clicking a row opens that run's expanded analysis (same screen as the run page map).
+function segAttemptList(seg) {
+  var efforts = seg.efforts.slice().sort(function(a, b) {
+    return a.date_iso < b.date_iso ? 1 : (a.date_iso > b.date_iso ? -1 : 0);
+  });
+  return '<div class="so-att-head">' + efforts.length + ' attempts · newest first</div>' +
+    efforts.map(function(e) {
+      var isPr = e.time_s === seg.pr_time_s;
+      var r = RUNS.find(function(x) { return x.id === e.run_id; });
+      var clickable = r && r.gps_polyline && r.gps_polyline.length >= 5;
+      return '<div class="so-att' + (isPr ? ' so-att-pr' : '') + (clickable ? '' : ' so-att-dead') + '"' +
+        (clickable ? ' onclick="openRunFromSeg(' + e.run_id + ')" title="Open run analysis"' : '') + '>' +
+        '<div class="so-att-row">' +
+          '<span class="so-att-time">' + e.time_str + (isPr ? ' 🏆' : '') + '</span>' +
+          '<span class="so-att-name">' + esc(e.name) + '</span>' +
+        '</div>' +
+        '<div class="so-att-row so-att-sub">' +
+          '<span>' + e.date_long + '</span>' +
+          '<span>' + e.pace_str + '/km' + (e.ga_pace_str && e.ga_pace_str !== '—' ? ' · GA ' + e.ga_pace_str : '') + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+}
+
+function openRunFromSeg(runId) {
+  // Layered above the segment overlay; closing the run overlay returns here.
+  openRunOverlay(runId);
 }
 
 function fmtSegTime(s) {
@@ -1558,8 +1680,14 @@ document.getElementById('run-search').addEventListener('input', function() {
 document.getElementById('run-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeRunOverlay();
 });
+document.getElementById('seg-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeSegOverlay();
+});
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeRunOverlay();
+  if (e.key !== 'Escape') return;
+  // Close the topmost overlay first so a run opened from a segment returns to it.
+  if (document.getElementById('run-overlay').classList.contains('open')) closeRunOverlay();
+  else closeSegOverlay();
 });
 
 renderRunList(RUNS);
@@ -1720,7 +1848,10 @@ def generate(
         "<div id=\"run-overlay\" class=\"run-overlay\">\n"
         "  <div class=\"ro-box\">\n"
         "    <div class=\"ro-head\">\n"
-        "      <span id=\"ro-title\" class=\"ro-title\"></span>\n"
+        "      <div class=\"ro-head-text\">\n"
+        "        <span id=\"ro-title\" class=\"ro-title\"></span>\n"
+        "        <div id=\"ro-stats\" class=\"ro-stats\"></div>\n"
+        "      </div>\n"
         "      <button class=\"ro-close\" onclick=\"closeRunOverlay()\" title=\"Close (Esc)\">&times;</button>\n"
         "    </div>\n"
         "    <div class=\"ro-body\">\n"
@@ -1730,6 +1861,24 @@ def generate(
         "        <div id=\"ro-tabs\" class=\"dist-tabs ro-tabs\"></div>\n"
         "        <div id=\"ro-chart\" class=\"dist-chart\"></div>\n"
         "        <div class=\"ro-zoom-hint\">Scroll to zoom the distance axis · double-click to reset</div>\n"
+        "      </div>\n"
+        "    </div>\n"
+        "  </div>\n"
+        "</div>\n"
+
+        "<div id=\"seg-overlay\" class=\"seg-overlay\">\n"
+        "  <div class=\"so-box\">\n"
+        "    <div class=\"so-head\">\n"
+        "      <span id=\"so-title\" class=\"so-title\"></span>\n"
+        "      <button class=\"so-close\" onclick=\"closeSegOverlay()\" title=\"Close (Esc)\">&times;</button>\n"
+        "    </div>\n"
+        "    <div class=\"so-body\">\n"
+        "      <div id=\"so-map\" class=\"so-map\"></div>\n"
+        "      <div class=\"so-side\">\n"
+        "        <div id=\"so-trend\" class=\"so-trend\"></div>\n"
+        "        <p class=\"so-hint\">Hover a point for its time, pace and date · scroll or drag the map to zoom and pan</p>\n"
+        "        <div id=\"so-stats\" class=\"so-stats\"></div>\n"
+        "        <div id=\"so-attempts\" class=\"so-attempts\"></div>\n"
         "      </div>\n"
         "    </div>\n"
         "  </div>\n"

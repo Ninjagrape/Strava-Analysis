@@ -39,15 +39,27 @@ LOOP_CLOSE_M    = 60.0    # start/end closer than this -> loop
 LOOP_MIN_LEN_M  = 600.0
 CLIMB_MIN_GAIN  = 15.0    # metres of net ascent for a "climb"
 CLIMB_MIN_GRADE = 0.025   # ... and average grade
-LOOP_JACCARD    = 0.55    # cell-overlap to treat two runs' loops as the same loop
+LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
+LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
+LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
+LOOP_LEN_RATIO  = 1.35    # ... and their lengths agree within this ratio
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
 
 CACHE_DIR       = Path(__file__).parent / "csv_data"
 SEG_CACHE       = CACHE_DIR / "segments_cache.json"
 GEO_CACHE       = CACHE_DIR / "segment_geocode_cache.json"
+MATCH_CACHE     = CACHE_DIR / "segment_match_cache.json"
 
 NOMINATIM_URL   = "https://nominatim.openstreetmap.org/reverse"
+OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
 USER_AGENT      = "Strava-Analysis-Hub/1.0 (personal training dashboard)"
+
+# highway= values that are not runnable; everything else (residential, footway, path,
+# pedestrian, service, steps, track, …) is kept as graph edges for map-matching.
+MATCH_EXCLUDE   = {"motorway", "motorway_link", "trunk", "trunk_link",
+                   "construction", "proposed", "raceway"}
+MATCH_SNAP_M    = 35.0    # a resampled point further than this from any path is dropped
+MATCH_STEP_M    = 20.0    # resample spacing before snapping
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +328,8 @@ def _runs_signature(runs):
         if poly:
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
-    h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER}".encode())
+    h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1".encode())
     return h.hexdigest()
 
 
@@ -379,6 +392,7 @@ def build_segments(runs):
 
     _name_segments(segments)
     _disambiguate_names(segments)
+    _match_segments(segments)
     for i, s in enumerate(segments):
         s["id"] = i
 
@@ -410,8 +424,24 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None):
     seg_len = _median(efforts)
     if seg_len < MIN_LEN_M:
         return None
-    ref = min(efforts, key=lambda e: abs(e["dist_m"] - seg_len))
-    poly = _simplify([[p["lat"], p["lon"]] for p in ref["sub"]])
+    if force_type == "loop":
+        # Draw the loop from the consensus of every effort, not one noisy run, so the
+        # line follows the path's middle instead of wandering to whichever edge a single
+        # run drifted toward. Restrict to efforts near the typical length so an unusually
+        # short/long traversal does not distort the average; fall back to the roundest
+        # single effort if there are too few to average.
+        # Draw a single real run, the most representative one, so the line follows the
+        # actual streets. Restrict to efforts near the typical length, drop pinched
+        # out-and-back tracings (low roundness), then take the medoid of what remains.
+        band = [e for e in efforts if 0.80 * seg_len <= e["dist_m"] <= 1.25 * seg_len] or efforts
+        best_iso = max(_loop_roundness(e["sub"]) for e in band)
+        good = [e for e in band if _loop_roundness(e["sub"]) >= max(0.33, 0.6 * best_iso)] or band
+        midx = _medoid_index([e["sub"] for e in good])
+        ref = good[midx] if midx is not None else max(good, key=lambda e: _loop_roundness(e["sub"]))
+        poly = _simplify([[p["lat"], p["lon"]] for p in ref["sub"]])
+    else:
+        ref = min(efforts, key=lambda e: abs(e["dist_m"] - seg_len))
+        poly = _simplify([[p["lat"], p["lon"]] for p in ref["sub"]])
     if len(poly) < 2:
         return None
     endpoints_close = _haversine_m(poly[0][0], poly[0][1], poly[-1][0], poly[-1][1]) < LOOP_CLOSE_M
@@ -470,66 +500,214 @@ def _loop_record(cells, pts, i, j):
 
 
 def _run_loops(seq):
-    """All closed loops inside one run's cell sequence (at multiple scales). A loop
-    returns near an earlier cell, is long enough, and (unlike an out-and-back) visits
-    most of its cells only once. Nested near-duplicate loops are collapsed."""
+    """All minimal closed sub-loops inside one run's cell sequence.
+
+    As the track advances we remember the most recent index each cell was visited.
+    Whenever the current cell lands in the neighbourhood of a cell visited a little
+    earlier, the span between them closes a loop. Taking the *most recent* prior visit
+    yields the tightest loop, so a small circuit embedded in a longer run is recovered
+    at its true scale (the old first-to-last-visit rule reported only the single largest
+    loop per run, which fragmented across days). Loops must be long enough, mostly
+    single-pass (not an out-and-back retrace), and near-duplicates are collapsed."""
     cells = [c for c, _ in seq]
     pts = [p for _, p in seq]
-    pos = defaultdict(list)
-    for idx, c in enumerate(cells):
-        pos[c].append(idx)
-
+    last_pos = {}
     cand = []
-    for ps in pos.values():
-        if len(ps) < 2:
-            continue
-        i, j = ps[0], ps[-1]
-        d = pts[j]["d"] - pts[i]["d"]
-        if d < LOOP_MIN_LEN_M or d > 12000:
-            continue
-        sub = cells[i:j + 1]
-        if len(set(sub)) / len(sub) < 0.70:   # mostly-retraced => out-and-back
-            continue
-        cand.append((i, j, d))
+    for j, c in enumerate(cells):
+        for nb in _neighbours(c):
+            i = last_pos.get(nb)
+            if i is not None and j - i >= LOOP_MIN_CELLS:
+                d = pts[j]["d"] - pts[i]["d"]
+                if LOOP_MIN_LEN_M <= d <= 12000:
+                    sub = cells[i:j + 1]
+                    if len(set(sub)) / len(sub) >= LOOP_UNIQUE_FRAC:
+                        cand.append((i, j, d))
+        last_pos[c] = j
 
-    # Collapse near-identical loops, keeping the larger of any heavily-overlapping pair.
-    cand.sort(key=lambda x: -x[2])
-    loops = []
-    seen = []
+    # Keep the tightest version of each loop: shortest first, dropping later candidates
+    # that substantially overlap one already kept.
+    cand.sort(key=lambda x: x[2])
+    loops, seen = [], []
     for i, j, d in cand:
         cs = frozenset(cells[i:j + 1])
-        if any(len(cs & k) / max(1, min(len(cs), len(k))) > 0.8 for k in seen):
+        if any(len(cs & k) / max(1, min(len(cs), len(k))) > 0.7 for k in seen):
             continue
         seen.append(cs)
+        i, j = _refine_loop_ends(pts, i, j)
         loops.append(_loop_record(cells, pts, i, j))
     return loops
 
 
+def _refine_loop_ends(pts, i, j, window=4):
+    """Nudge the loop's start/end indices within a small window to the pair of points
+    that come closest together, so the rendered loop actually closes on itself (at the
+    real self-crossing, e.g. the foot of a ramp) instead of leaving a ~one-cell gap."""
+    best = (i, j)
+    best_d = _haversine_m(pts[i]["lat"], pts[i]["lon"], pts[j]["lat"], pts[j]["lon"])
+    lo_i, hi_i = max(0, i - window), min(len(pts) - 1, i + window)
+    lo_j, hi_j = max(0, j - window), min(len(pts) - 1, j + window)
+    for a in range(lo_i, hi_i + 1):
+        for b in range(lo_j, hi_j + 1):
+            if b - a < LOOP_MIN_CELLS:
+                continue
+            d = _haversine_m(pts[a]["lat"], pts[a]["lon"], pts[b]["lat"], pts[b]["lon"])
+            if d < best_d:
+                best_d, best = d, (a, b)
+    return best
+
+
+def _loop_centroid(sub):
+    n = len(sub) or 1
+    return (sum(p["lat"] for p in sub) / n, sum(p["lon"] for p in sub) / n)
+
+
+def _loop_roundness(sub):
+    """Isoperimetric quotient 4*pi*Area / Perimeter**2 of a traversal's ground track
+    (1.0 = circle, ~0 = a there-and-back sliver). Used to prefer a genuine loop shape
+    over a pinched out-and-back when choosing which effort to draw."""
+    if len(sub) < 4:
+        return 0.0
+    lat0 = sub[0]["lat"]
+    mx = 111320.0 * math.cos(math.radians(lat0))
+    xs = [(p["lon"] - sub[0]["lon"]) * mx for p in sub]
+    ys = [(p["lat"] - lat0) * 111320.0 for p in sub]
+    area = abs(sum(xs[i] * ys[i + 1] - xs[i + 1] * ys[i]
+                   for i in range(len(xs) - 1))) / 2.0
+    perim = sum(math.hypot(xs[i + 1] - xs[i], ys[i + 1] - ys[i])
+                for i in range(len(xs) - 1))
+    return (4 * math.pi * area / (perim * perim)) if perim else 0.0
+
+
+# --- Consensus loop path (average all efforts into one smooth medial line) ------
+# A single run's GPS wanders to the edge of the path; averaging the runs that share a
+# loop cancels that noise. More raw samples would not help (the streams are already
+# dense) — the win is combining runs, the same idea Strava approximates by road-snapping.
+
+CONSENSUS_N = 64   # points the consensus loop is resampled to
+
+
+def _ll_to_xy(points, lat0, lon0):
+    mx = 111320.0 * math.cos(math.radians(lat0))
+    return [((p["lon"] - lon0) * mx, (p["lat"] - lat0) * 111320.0) for p in points]
+
+
+def _xy_to_ll(xy, lat0, lon0):
+    mx = 111320.0 * math.cos(math.radians(lat0))
+    return [[lat0 + y / 111320.0, lon0 + x / mx] for x, y in xy]
+
+
+def _resample_closed(xy, n):
+    """Resample a closed loop to n points spaced equally by arc length."""
+    pts = xy + [xy[0]] if xy[0] != xy[-1] else xy[:]
+    cum = [0.0]
+    for i in range(1, len(pts)):
+        cum.append(cum[-1] + math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
+    total = cum[-1]
+    if total <= 0:
+        return [xy[0]] * n
+    out, j, step = [], 0, total / n
+    for i in range(n):
+        target = i * step
+        while j < len(cum) - 2 and cum[j + 1] < target:
+            j += 1
+        seg = cum[j + 1] - cum[j]
+        f = (target - cum[j]) / seg if seg > 0 else 0.0
+        out.append((pts[j][0] + f * (pts[j + 1][0] - pts[j][0]),
+                    pts[j][1] + f * (pts[j + 1][1] - pts[j][1])))
+    return out
+
+
+def _signed_area(xy):
+    return sum(xy[i][0] * xy[(i + 1) % len(xy)][1] - xy[(i + 1) % len(xy)][0] * xy[i][1]
+               for i in range(len(xy))) / 2.0
+
+
+def _best_roll(ref, eff):
+    """Cyclic offset of eff that best lines it up with ref (handles differing start points)."""
+    n = len(ref)
+    best_k, best_c = 0, None
+    for k in range(n):
+        c = 0.0
+        for i in range(n):
+            dx = ref[i][0] - eff[(i + k) % n][0]
+            dy = ref[i][1] - eff[(i + k) % n][1]
+            c += dx * dx + dy * dy
+        if best_c is None or c < best_c:
+            best_c, best_k = c, k
+    return best_k
+
+
+def _medoid_index(subs):
+    """Index of the most representative effort: the one whose loop shape is closest to
+    all the others. Averaging the runs rounds off the street corners (the drawn line ends
+    up cutting across blocks), so instead we draw a single real run, the one most typical
+    of the set, which by definition follows the actual streets. Each effort is resampled,
+    flipped to a common orientation and rotated to a common start so shapes are comparable;
+    we then pick the effort with the smallest total distance to the rest."""
+    usable = [i for i, s in enumerate(subs) if len(s) >= 4]
+    if len(usable) < 2:
+        return usable[0] if usable else None
+    allp = [p for i in usable for p in subs[i]]
+    lat0 = sum(p["lat"] for p in allp) / len(allp)
+    lon0 = sum(p["lon"] for p in allp) / len(allp)
+
+    reps = {}
+    for i in usable:
+        r = _resample_closed(_ll_to_xy(subs[i], lat0, lon0), CONSENSUS_N)
+        if _signed_area(r) < 0:          # normalise traversal direction
+            r = r[::-1]
+        reps[i] = r
+    template = max(reps.values(), key=lambda r: abs(_signed_area(r)))
+    aligned = {}
+    for i, r in reps.items():
+        k = _best_roll(template, r)
+        aligned[i] = [r[(t + k) % CONSENSUS_N] for t in range(CONSENSUS_N)]
+
+    best_i, best_cost = usable[0], None
+    for i in usable:
+        cost = 0.0
+        for jx in usable:
+            if jx == i:
+                continue
+            cost += sum(math.hypot(aligned[i][t][0] - aligned[jx][t][0],
+                                   aligned[i][t][1] - aligned[jx][t][1])
+                        for t in range(CONSENSUS_N))
+        if best_cost is None or cost < best_cost:
+            best_cost, best_i = cost, i
+    return best_i
+
+
 def _detect_loops(seqs, run_by_id):
-    """Find loops repeated across runs by clustering every run's loops on cell
-    overlap. Clustering compares against a fixed representative (not a growing
-    union) so a small loop nested inside a longer run still matches."""
+    """Find loops repeated across runs by clustering every run's minimal loops on
+    geographic centroid and length. A running-mean centroid keeps the same circuit
+    together despite small path variation, and clustering on location rather than exact
+    cell overlap means a loop still groups across days even when each day approaches it
+    slightly differently or runs it as part of a longer session."""
     per_run = []
     for rid, seq in seqs.items():
         for lp in _run_loops(seq):
             lp["run_id"] = rid
+            lp["cen"] = _loop_centroid(lp["sub"])
             per_run.append(lp)
 
-    clusters = []   # each: {"rep": frozenset, "rep_d": float, "members": [loop,...]}
+    clusters = []   # each: {"cen": (lat,lon), "med_d": float, "members": [loop,...]}
     for lp in sorted(per_run, key=lambda x: -x["dist_m"]):
         placed = False
         for cl in clusters:
-            inter = len(lp["cells"] & cl["rep"])
-            smaller = min(len(lp["cells"]), len(cl["rep"]))
-            ratio = lp["dist_m"] / cl["rep_d"] if cl["rep_d"] else 0
-            # Same geography AND comparable length — otherwise a small loop nested
-            # inside a larger circuit would be mispriced at the cluster's length.
-            if smaller and inter / smaller >= LOOP_JACCARD and DIST_LO <= ratio <= DIST_HI:
+            ratio = lp["dist_m"] / cl["med_d"] if cl["med_d"] else 0
+            near = _haversine_m(lp["cen"][0], lp["cen"][1],
+                                cl["cen"][0], cl["cen"][1]) <= LOOP_CLUSTER_M
+            if near and (1.0 / LOOP_LEN_RATIO) <= ratio <= LOOP_LEN_RATIO:
                 cl["members"].append(lp)
+                n = len(cl["members"])
+                cl["cen"] = (sum(m["cen"][0] for m in cl["members"]) / n,
+                             sum(m["cen"][1] for m in cl["members"]) / n)
+                ds = sorted(m["dist_m"] for m in cl["members"])
+                cl["med_d"] = ds[len(ds) // 2]
                 placed = True
                 break
         if not placed:
-            clusters.append({"rep": lp["cells"], "rep_d": lp["dist_m"], "members": [lp]})
+            clusters.append({"cen": lp["cen"], "med_d": lp["dist_m"], "members": [lp]})
 
     segments = []
     for cl in clusters:
@@ -565,6 +743,10 @@ def _dedupe(segments):
         s_runs = {e["run_id"] for e in s["efforts"]}
         dup = False
         for k in kept:
+            # A loop and a point-to-point benchmark over the same ground are different
+            # comparisons (one times a circuit, the other a stretch) — keep both.
+            if (s["type"] == "loop") != (k["type"] == "loop"):
+                continue
             k_runs = {e["run_id"] for e in k["efforts"]}
             inter = len(s_runs & k_runs)
             smaller = min(len(s_runs), len(k_runs))
@@ -698,6 +880,164 @@ def _ordered_unique(items):
 
 
 # ---------------------------------------------------------------------------
+# OSM map-matching: snap a segment's GPS trace onto the OpenStreetMap path network
+# (via Overpass) and route along it, so the drawn line follows real streets instead of
+# a single run's GPS wobble. Cached on disk; falls back to the raw trace when offline.
+# ---------------------------------------------------------------------------
+
+def _match_segments(segments):
+    cache = _load_json(MATCH_CACHE) or {}
+    dirty = False
+    for s in segments:
+        key = _geo_key(s["polyline"])
+        if key in cache:
+            if cache[key]:
+                s["polyline"] = cache[key]
+            continue
+        matched = _match_polyline(s["polyline"], closed=(s["type"] == "loop"))
+        # Only trust a match whose length stays close to the benchmark; a large change
+        # means the snap wandered onto the wrong roads, so keep the raw trace instead.
+        if matched:
+            ml = _polyline_len(matched)
+            if not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"]):
+                matched = None
+        cache[key] = matched or []
+        dirty = True
+        if matched:
+            s["polyline"] = matched
+        time.sleep(1.0)   # be polite to the public Overpass endpoint
+    if dirty:
+        _save_json(MATCH_CACHE, cache)
+
+
+def _overpass_ways(bbox):
+    s, w, n, e = bbox
+    query = (f"[out:json][timeout:25];"
+             f"way[highway]({s},{w},{n},{e});(._;>;);out;")
+    data = urllib.parse.urlencode({"data": query}).encode()
+    req = urllib.request.Request(OVERPASS_URL, data=data,
+                                 headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=40) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _build_walk_graph(osm):
+    """Return (node_coords, adjacency) for runnable ways only."""
+    coords = {}
+    for el in osm.get("elements", []):
+        if el.get("type") == "node":
+            coords[el["id"]] = (el["lat"], el["lon"])
+    adj = defaultdict(list)
+    for el in osm.get("elements", []):
+        if el.get("type") != "way":
+            continue
+        hw = el.get("tags", {}).get("highway")
+        if not hw or hw in MATCH_EXCLUDE:
+            continue
+        nd = [n for n in el.get("nodes", []) if n in coords]
+        for a, b in zip(nd, nd[1:]):
+            d = _haversine_m(coords[a][0], coords[a][1], coords[b][0], coords[b][1])
+            adj[a].append((b, d))
+            adj[b].append((a, d))
+    return coords, adj
+
+
+def _polyline_len(poly):
+    return sum(_haversine_m(poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1])
+               for i in range(1, len(poly)))
+
+
+def _walk_edges(adj):
+    """Unique undirected edges (node-id pairs) of the walking graph."""
+    seen, edges = set(), []
+    for u in adj:
+        for v, _ in adj[u]:
+            key = (u, v) if u < v else (v, u)
+            if key not in seen:
+                seen.add(key)
+                edges.append(key)
+    return edges
+
+
+def _resample_track(poly, step):
+    pts = [(p[0], p[1]) for p in poly]
+    cum = [0.0]
+    for i in range(1, len(pts)):
+        cum.append(cum[-1] + _haversine_m(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]))
+    total = cum[-1]
+    if total <= 0:
+        return pts
+    out, j, t = [], 0, 0.0
+    while t <= total:
+        while j < len(cum) - 1 and cum[j + 1] < t:
+            j += 1
+        nxt = min(j + 1, len(pts) - 1)
+        seg = cum[nxt] - cum[j]
+        f = (t - cum[j]) / seg if seg > 0 else 0.0
+        out.append((pts[j][0] + f * (pts[nxt][0] - pts[j][0]),
+                    pts[j][1] + f * (pts[nxt][1] - pts[j][1])))
+        t += step
+    return out
+
+
+def _match_polyline(poly, closed):
+    """Snap a polyline onto the OSM walking network by projecting each point to the
+    nearest path edge (not routing between snaps — that detours wildly when the trace
+    runs between parallel streets). The result follows real roads while preserving the
+    run's shape and length. Returns None on failure (offline, no nearby paths, sparse)."""
+    if len(poly) < 3:
+        return None
+    lats = [a for a, _ in poly]
+    lons = [b for _, b in poly]
+    pad = 0.0015
+    bbox = (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
+    try:
+        osm = _overpass_ways(bbox)
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return None
+
+    coords, adj = _build_walk_graph(osm)
+    edges = _walk_edges(adj)
+    if len(edges) < 3:
+        return None
+
+    # Work in local metres about the trace's centre.
+    lat0 = sum(lats) / len(lats)
+    lon0 = sum(lons) / len(lons)
+    mx = 111320.0 * math.cos(math.radians(lat0))
+
+    def to_xy(lat, lon):
+        return ((lon - lon0) * mx, (lat - lat0) * 111320.0)
+
+    exy = [(to_xy(*coords[a]), to_xy(*coords[b])) for a, b in edges]
+
+    pts = []
+    for la, lo in _resample_track(poly, MATCH_STEP_M):
+        px, py = to_xy(la, lo)
+        best_d2, best_q = None, None
+        for (ax, ay), (bx, by) in exy:
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+            qx, qy = ax + t * dx, ay + t * dy
+            d2 = (px - qx) ** 2 + (py - qy) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2, best_q = d2, (qx, qy)
+        if best_d2 is None or best_d2 > MATCH_SNAP_M ** 2:
+            continue
+        qx, qy = best_q
+        c = [round(lat0 + qy / 111320.0, 5), round(lon0 + qx / mx, 5)]
+        if not pts or pts[-1] != c:
+            pts.append(c)
+
+    if closed and pts and pts[0] != pts[-1]:
+        pts.append(pts[0])
+    if len(pts) < 4:
+        return None
+    return _simplify(pts, 200)
+
+
+# ---------------------------------------------------------------------------
 # JSON cache IO
 # ---------------------------------------------------------------------------
 
@@ -766,7 +1106,8 @@ def body_segments(segments, updated):
             f"<div class=\"seg-card\" data-seg=\"{s['id']}\">"
             "  <div class=\"seg-card-head\">"
             f"    <span class=\"seg-badge\" style=\"color:{colour};border-color:{colour}\">{label}</span>"
-            f"    <span class=\"seg-title\">{_esc(s['name'])}</span>"
+            f"    <span class=\"seg-title\" onclick=\"openSegOverlay({s['id']})\" "
+            f"title=\"Open interactive map\">{_esc(s['name'])}</span>"
             "  </div>"
             "  <div class=\"seg-stats\">"
             f"    <span class=\"seg-meta\">{s['length_str']}</span>{climb_meta}"
@@ -811,7 +1152,9 @@ SEGMENTS_CSS = """
 .seg-card-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .seg-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
   padding:2px 8px;border-radius:999px;border:1px solid currentColor;background:rgba(255,255,255,.04)}
-.seg-title{font-size:15px;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg-title{font-size:15px;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;cursor:pointer}
+.seg-title:hover{color:#5cb85c;text-decoration:underline}
 .seg-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-bottom:10px}
 .seg-meta{font-size:11px;color:#888}
 .seg-pr-stat{font-size:11px;color:#5cb85c;font-weight:600;margin-left:auto}
@@ -832,4 +1175,47 @@ SEGMENTS_CSS = """
 .seg-trend-tip{position:absolute;pointer-events:none;background:#000;border:1px solid #3a3a3a;
   border-radius:6px;padding:3px 7px;font-size:10.5px;color:#eee;white-space:nowrap;
   transform:translate(-50%,calc(-100% - 8px));opacity:0;transition:opacity .08s;z-index:5}
+
+/* Route endpoint markers: green start disc, checkered finish flag for the end */
+.seg-mk{width:100%;height:100%;box-sizing:border-box;border-radius:50%;
+  border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.55)}
+.seg-mk-start{background:#2ecc40}
+.seg-mk-end{background-color:#fff;
+  background-image:
+    linear-gradient(45deg,#111 25%,transparent 25%,transparent 75%,#111 75%),
+    linear-gradient(45deg,#111 25%,transparent 25%,transparent 75%,#111 75%);
+  background-size:6px 6px;background-position:0 0,3px 3px}
+
+/* Expanded segment overlay (interactive map + trend) */
+.seg-overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:600;display:none}
+.seg-overlay.open{display:flex;justify-content:center}
+.so-box{display:flex;flex-direction:column;width:100%;max-width:1300px;height:100%;
+  padding:12px 14px;gap:8px;overflow:hidden}
+.so-head{display:flex;justify-content:space-between;align-items:center;flex:0 0 auto;gap:10px}
+.so-title{font-size:16px;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.so-close{background:#222;border:1px solid #3a3a3a;color:#bbb;font-size:15px;line-height:1;
+  width:30px;height:30px;border-radius:6px;cursor:pointer;flex:0 0 auto}
+.so-close:hover{color:#fff;border-color:#5cb85c}
+.so-body{flex:1 1 auto;display:flex;gap:12px;min-height:0}
+.so-map{flex:1 1 auto;min-height:200px;border-radius:8px;border:1px solid #3a3a3a;background:#111}
+.so-side{flex:0 0 440px;max-width:46%;display:flex;flex-direction:column;gap:10px;min-height:0}
+.so-trend{flex:0 0 auto;height:260px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
+.so-trend svg{display:block;width:100%;height:100%}
+.so-stats{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:#aaa}
+.so-stats b{color:#eee;font-weight:600}
+.so-hint{font-size:10px;color:#666;margin-top:-2px}
+.so-attempts{flex:1 1 auto;overflow-y:auto;min-height:0;border-top:1px solid #2a2a2a;padding-top:6px}
+.so-att-head{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em;margin:2px 0 6px}
+.so-att{padding:7px 9px;border:1px solid #2e2e2e;border-radius:7px;margin-bottom:6px;
+  cursor:pointer;background:#1e1e1e;transition:border-color .1s,background .1s}
+.so-att:hover{border-color:#5cb85c;background:#232a23}
+.so-att-dead{cursor:default;opacity:.55}
+.so-att-dead:hover{border-color:#2e2e2e;background:#1e1e1e}
+.so-att-pr{border-color:#3a5a3a}
+.so-att-row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.so-att-time{font-size:13px;font-weight:700;color:#eee;font-variant-numeric:tabular-nums}
+.so-att-pr .so-att-time{color:#5cb85c}
+.so-att-name{font-size:11.5px;color:#aaa;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.so-att-sub{margin-top:2px;font-size:10.5px;color:#777}
+@media(max-width:760px){.so-body{flex-direction:column}.so-side{flex:0 0 auto;max-width:none}}
 """
