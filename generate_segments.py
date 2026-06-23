@@ -36,7 +36,9 @@ MIN_LEN_M       = 400.0   # ... and be at least this long
 MATCH_COVER     = 0.80    # fraction of segment cells a run must visit to "complete"
 DIST_LO, DIST_HI = 0.70, 1.40   # allowed traversal distance vs segment length
 LOOP_CLOSE_M    = 60.0    # start/end closer than this -> loop
-LOOP_MIN_LEN_M  = 600.0
+LOOP_MIN_LEN_M  = 600.0   # phase 1: floor for *identifying* a distinct loop (high enough
+                          # that sub-loops of a bigger circuit don't fragment it)
+LOOP_LAP_MIN    = 300.0   # phase 2: floor when re-scanning a run to count individual laps
 CLIMB_MIN_GAIN  = 15.0    # metres of net ascent for a "climb"
 CLIMB_MIN_GRADE = 0.025   # ... and average grade
 LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
@@ -44,6 +46,22 @@ LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only onc
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
 LOOP_LEN_RATIO  = 1.35    # ... and their lengths agree within this ratio
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
+
+# Anchored segments: named routes that recur too rarely as *closed* loops to be mined.
+# Strava counts these off a fixed segment line, mining needs >= MIN_RUNS closed laps,
+# so a loop you usually run inside a longer route (no GPS self-crossing) stays invisible.
+# Each anchor pins the loop by approximate centre + length; the drawn line is derived
+# from the cleanest matching run, and every run is matched against it with a distance-
+# bounded sliding window so the entry point can be anywhere on the loop (Strava-style).
+ANCHORS = [
+    {"name": "Shirley Belmont Loop", "cen": (-33.8323, 151.1947), "len_m": 1080},
+]
+ANCHOR_TOL_M    = 25.0    # a run point this close to the line counts as "on" it
+ANCHOR_COVER    = 0.80    # fraction of the line a window must cover to complete
+ANCHOR_NEAR_M   = 130.0   # cleanest instance must be within this of the anchor centre
+ANCHOR_LINE_STEP = 10.0   # resample spacing of the derived line
+ANCHOR_CLOSE_M  = 55.0    # a lap's start and end must be this close (a real loop closes;
+                          # a pass that starts at home and ends mid-road is not a lap)
 
 CACHE_DIR       = Path(__file__).parent / "csv_data"
 SEG_CACHE       = CACHE_DIR / "segments_cache.json"
@@ -60,6 +78,8 @@ MATCH_EXCLUDE   = {"motorway", "motorway_link", "trunk", "trunk_link",
                    "construction", "proposed", "raceway"}
 MATCH_SNAP_M    = 35.0    # a resampled point further than this from any path is dropped
 MATCH_STEP_M    = 20.0    # resample spacing before snapping
+MATCH_MAX_DEV_M = 12.0    # if the matched line strays this far (mean) from the actual
+                          # trace it snapped to the wrong roads, so keep the raw trace
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +349,8 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1".encode())
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,"
+             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1".encode())
     return h.hexdigest()
 
 
@@ -385,6 +406,9 @@ def build_segments(runs):
     # where each run returns near an earlier point, then clustering across runs.
     segments.extend(_detect_loops(seqs, run_by_id))
 
+    # Anchored loops: named routes mining can't recover, matched off a fixed line.
+    segments.extend(_build_anchored_segments(seqs, tracks, ref_lat, run_by_id))
+
     segments = _dedupe(segments)
     # Best benchmarks first: most-run, then longest.
     segments.sort(key=lambda s: (-s["n_efforts"], -s["length_m"]))
@@ -416,20 +440,21 @@ def _collect_efforts(chain_cells, seg_len_est, seqs):
     return efforts
 
 
-def _segment_from_efforts(efforts, run_by_id, force_type=None):
-    """Turn a set of per-run traversals into a segment dict, or None if it fails
-    the conservative length / span filters."""
-    if len(efforts) < MIN_RUNS:
+def _segment_from_efforts(efforts, run_by_id, force_type=None,
+                          min_runs=MIN_RUNS, min_span=MIN_SPAN_DAYS):
+    """Turn per-run traversals into a segment dict, or None if it fails the conservative
+    length / span filters. `efforts` may contain several entries for one run when the
+    route was repeated within a session (laps) — each becomes its own attempt, but the
+    run-count and span gates are measured on distinct runs so one lap-heavy day can't
+    qualify a segment on its own. Anchored (user-declared) segments relax these gates,
+    since a pinned loop is legitimate even when its only valid laps are one session's."""
+    distinct_runs = {e["run_id"] for e in efforts}
+    if len(distinct_runs) < min_runs:
         return None
     seg_len = _median(efforts)
     if seg_len < MIN_LEN_M:
         return None
     if force_type == "loop":
-        # Draw the loop from the consensus of every effort, not one noisy run, so the
-        # line follows the path's middle instead of wandering to whichever edge a single
-        # run drifted toward. Restrict to efforts near the typical length so an unusually
-        # short/long traversal does not distort the average; fall back to the roundest
-        # single effort if there are too few to average.
         # Draw a single real run, the most representative one, so the line follows the
         # actual streets. Restrict to efforts near the typical length, drop pinched
         # out-and-back tracings (low roundness), then take the medoid of what remains.
@@ -449,23 +474,37 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None):
     seg_type = force_type or _classify(seg_len, net_elev, gain_m, endpoints_close)
     len_km = seg_len / 1000.0
 
+    # Number repeated efforts within one run so laps in a single session read as
+    # "… (lap 2)", ordered by when each lap happened.
+    lap_no = {}
+    per_run = defaultdict(list)
+    for e in efforts:
+        per_run[e["run_id"]].append(e)
+    for es in per_run.values():
+        if len(es) > 1:
+            for k, e in enumerate(sorted(es, key=lambda x: x["sub"][0]["t"] if x.get("sub") else 0), 1):
+                lap_no[id(e)] = k
+
     rows = []
     for e in efforts:
         r = run_by_id[e["run_id"]]
         t = e["time_s"]
         gx = ga_time(t, e["gain_m"], len_km) if len_km else t
+        name = r["name"]
+        if id(e) in lap_no:
+            name = f"{name} (lap {lap_no[id(e)]})"
         rows.append({
             "run_id":   e["run_id"],
             "date_iso": r["date_iso"],
             "date_long": r["date_long"],
-            "name":     r["name"],
+            "name":     name,
             "time_s":   round(t, 1),
             "time_str": fmt_time(t),
             "pace_str": fmt_pace(t, seg_len),
             "ga_pace_str": fmt_pace(gx, seg_len) if gx > 0 else "—",
         })
     rows.sort(key=lambda x: x["date_iso"])
-    if _span_days(rows) < MIN_SPAN_DAYS:
+    if _span_days(rows) < min_span:
         return None
     pr = min(rows, key=lambda x: x["time_s"])
     return {
@@ -499,16 +538,16 @@ def _loop_record(cells, pts, i, j):
     }
 
 
-def _run_loops(seq):
-    """All minimal closed sub-loops inside one run's cell sequence.
+def _run_loops(seq, min_len=LOOP_MIN_LEN_M):
+    """Minimal closed sub-loops inside one run's cell sequence, each at least `min_len`.
 
     As the track advances we remember the most recent index each cell was visited.
     Whenever the current cell lands in the neighbourhood of a cell visited a little
     earlier, the span between them closes a loop. Taking the *most recent* prior visit
-    yields the tightest loop, so a small circuit embedded in a longer run is recovered
-    at its true scale (the old first-to-last-visit rule reported only the single largest
-    loop per run, which fragmented across days). Loops must be long enough, mostly
-    single-pass (not an out-and-back retrace), and near-duplicates are collapsed."""
+    yields the tightest loop. Of overlapping candidates we keep the shortest (the tightest
+    real lap); candidates over disjoint time windows are separate laps and are all kept,
+    so repeating a loop within one session yields one entry per lap. Loops must be long
+    enough and mostly single-pass (not an out-and-back retrace)."""
     cells = [c for c, _ in seq]
     pts = [p for _, p in seq]
     last_pos = {}
@@ -518,23 +557,20 @@ def _run_loops(seq):
             i = last_pos.get(nb)
             if i is not None and j - i >= LOOP_MIN_CELLS:
                 d = pts[j]["d"] - pts[i]["d"]
-                if LOOP_MIN_LEN_M <= d <= 12000:
+                if min_len <= d <= 12000:
                     sub = cells[i:j + 1]
                     if len(set(sub)) / len(sub) >= LOOP_UNIQUE_FRAC:
                         cand.append((i, j, d))
         last_pos[c] = j
 
-    # Keep the tightest version of each loop: shortest first, dropping later candidates
-    # that substantially overlap one already kept.
-    cand.sort(key=lambda x: x[2])
-    loops, seen = [], []
+    cand.sort(key=lambda x: x[2])   # shortest (tightest lap) first
+    loops, kept = [], []            # kept: index intervals already taken
     for i, j, d in cand:
-        cs = frozenset(cells[i:j + 1])
-        if any(len(cs & k) / max(1, min(len(cs), len(k))) > 0.7 for k in seen):
+        if any(i < kj and j > ki for ki, kj in kept):   # same time window as a kept lap
             continue
-        seen.append(cs)
-        i, j = _refine_loop_ends(pts, i, j)
-        loops.append(_loop_record(cells, pts, i, j))
+        kept.append((i, j))
+        ri, rj = _refine_loop_ends(pts, i, j)
+        loops.append(_loop_record(cells, pts, ri, rj))
     return loops
 
 
@@ -677,19 +713,11 @@ def _medoid_index(subs):
     return best_i
 
 
-def _detect_loops(seqs, run_by_id):
-    """Find loops repeated across runs by clustering every run's minimal loops on
-    geographic centroid and length. A running-mean centroid keeps the same circuit
-    together despite small path variation, and clustering on location rather than exact
-    cell overlap means a loop still groups across days even when each day approaches it
-    slightly differently or runs it as part of a longer session."""
-    per_run = []
-    for rid, seq in seqs.items():
-        for lp in _run_loops(seq):
-            lp["run_id"] = rid
-            lp["cen"] = _loop_centroid(lp["sub"])
-            per_run.append(lp)
-
+def _cluster_loops(per_run):
+    """Group loop instances by geographic centroid and length. A running-mean centroid
+    keeps the same circuit together despite small path variation; clustering on location
+    rather than exact cell overlap groups a loop across days even when approached
+    slightly differently or run inside a longer session."""
     clusters = []   # each: {"cen": (lat,lon), "med_d": float, "members": [loop,...]}
     for lp in sorted(per_run, key=lambda x: -x["dist_m"]):
         placed = False
@@ -708,19 +736,195 @@ def _detect_loops(seqs, run_by_id):
                 break
         if not placed:
             clusters.append({"cen": lp["cen"], "med_d": lp["dist_m"], "members": [lp]})
+    return clusters
 
+
+def _detect_loops(seqs, run_by_id):
+    """Two passes. Phase 1 identifies distinct loops at a stable scale (a higher floor so
+    a small sub-loop of a bigger circuit can't fragment it). Phase 2 re-scans each run
+    with a low floor to find every individual lap and assigns each lap to the identifying
+    loop it falls in (same place, comparable length) — so repeating a short loop within a
+    session counts as several attempts without the short floor breaking identification."""
+    def scan(min_len):
+        out = []
+        for rid, seq in seqs.items():
+            for lp in _run_loops(seq, min_len):
+                lp["run_id"] = rid
+                lp["cen"] = _loop_centroid(lp["sub"])
+                out.append(lp)
+        return out
+
+    ident = _cluster_loops(scan(LOOP_MIN_LEN_M))
+    ident = [cl for cl in ident if len({m["run_id"] for m in cl["members"]}) >= MIN_RUNS]
+
+    laps = scan(LOOP_LAP_MIN)
     segments = []
-    for cl in clusters:
-        by_run = {}   # fastest loop per run
-        for m in cl["members"]:
-            if m["run_id"] not in by_run or m["time_s"] < by_run[m["run_id"]]["time_s"]:
-                by_run[m["run_id"]] = m
-        if len(by_run) < MIN_RUNS:
-            continue
-        seg = _segment_from_efforts(list(by_run.values()), run_by_id, force_type="loop")
+    for cl in ident:
+        members = [lp for lp in laps
+                   if _haversine_m(lp["cen"][0], lp["cen"][1], cl["cen"][0], cl["cen"][1]) <= LOOP_CLUSTER_M
+                   and (1.0 / LOOP_LEN_RATIO) <= (lp["dist_m"] / cl["med_d"] if cl["med_d"] else 0) <= LOOP_LEN_RATIO]
+        # Each run's laps are already distinct in time (from _run_loops); fall back to the
+        # phase-1 members if the lap re-scan somehow found fewer runs.
+        if len({m["run_id"] for m in members}) < MIN_RUNS:
+            members = cl["members"]
+        seg = _segment_from_efforts(members, run_by_id, force_type="loop")
         if seg:
             segments.append(seg)
     return segments
+
+
+# ---------------------------------------------------------------------------
+# Anchored segments (fixed-line matching, the way Strava counts efforts)
+# ---------------------------------------------------------------------------
+
+def _loop_instances(seq):
+    """Every self-crossing loop candidate in one run, at all scales, used to derive an
+    anchor's drawn line from the user's cleanest pass. Each: {dist_m, round, cen, sub}."""
+    cells = [c for c, _ in seq]
+    pts = [p for _, p in seq]
+    last_pos = {}
+    out = []
+    for j, c in enumerate(cells):
+        for nb in _neighbours(c):
+            i = last_pos.get(nb)
+            if i is not None and j - i >= LOOP_MIN_CELLS:
+                d = pts[j]["d"] - pts[i]["d"]
+                if LOOP_LAP_MIN <= d <= 12000:
+                    sub = cells[i:j + 1]
+                    if len(set(sub)) / len(sub) >= LOOP_UNIQUE_FRAC:
+                        out.append({"dist_m": d, "round": _loop_roundness(pts[i:j + 1]),
+                                    "cen": _loop_centroid(pts[i:j + 1]), "sub": pts[i:j + 1]})
+        last_pos[c] = j
+    return out
+
+
+def _derive_anchor_line(anchor, seqs):
+    """The roundest run instance near the anchor's centre and length becomes its line."""
+    cen, ln = anchor["cen"], anchor["len_m"]
+    best = None
+    for seq in seqs.values():
+        for c in _loop_instances(seq):
+            if (_haversine_m(c["cen"][0], c["cen"][1], cen[0], cen[1]) <= ANCHOR_NEAR_M
+                    and 0.7 * ln <= c["dist_m"] <= 1.4 * ln):
+                if best is None or c["round"] > best["round"]:
+                    best = c
+    return best
+
+
+def _resample_ll(pts, step):
+    """Even ~`step` m spacing along a list of {lat,lon} points -> [(lat,lon), ...]."""
+    out = [(pts[0]["lat"], pts[0]["lon"])]
+    for a, b in zip(pts, pts[1:]):
+        seg = _haversine_m(a["lat"], a["lon"], b["lat"], b["lon"])
+        if seg <= 0:
+            continue
+        n = max(1, int(seg / step))
+        for k in range(1, n + 1):
+            f = k / n
+            out.append((a["lat"] + f * (b["lat"] - a["lat"]),
+                        a["lon"] + f * (b["lon"] - a["lon"])))
+    return out
+
+
+def _match_anchor_spans(line_pts, loop_len, track, ref_lat):
+    """All distance-bounded windows of one run's track that cover >= ANCHOR_COVER of the
+    loop line. The window is grown to roughly the loop length, so a run merely clipping
+    part of the line can't qualify, and the entry point may be anywhere on the loop. Lap
+    repeats in one session yield several non-overlapping windows. Returns (i0, i1) pairs."""
+    dlat = ANCHOR_TOL_M / 111320.0
+    dlon = ANCHOR_TOL_M / (111320.0 * max(0.1, math.cos(math.radians(ref_lat))))
+    grid = defaultdict(list)
+    for idx, (la, lo) in enumerate(line_pts):
+        grid[(int(la / dlat), int(lo / dlon))].append(idx)
+    n_line = len(line_pts)
+
+    # For each track point, the set of line indices it sits on (within ANCHOR_TOL_M).
+    cover = []
+    for p in track:
+        kr, kc = int(p["lat"] / dlat), int(p["lon"] / dlon)
+        on = set()
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                for idx in grid.get((kr + dr, kc + dc), ()):
+                    if _haversine_m(p["lat"], p["lon"], line_pts[idx][0], line_pts[idx][1]) <= ANCHOR_TOL_M:
+                        on.add(idx)
+        cover.append(on)
+
+    from collections import Counter
+    cnt = Counter()
+    n = len(track)
+    b = 0
+    spans = []
+    for a in range(n):
+        if b < a:
+            b = a
+            cnt = Counter()
+            for idx in cover[a]:
+                cnt[idx] += 1
+        while b + 1 < n and (track[b]["d"] - track[a]["d"]) < loop_len * 0.95:
+            b += 1
+            for idx in cover[b]:
+                cnt[idx] += 1
+        wdist = track[b]["d"] - track[a]["d"]
+        closes = _haversine_m(track[a]["lat"], track[a]["lon"],
+                              track[b]["lat"], track[b]["lon"]) <= ANCHOR_CLOSE_M
+        if (closes and loop_len * 0.80 <= wdist <= loop_len * 1.45
+                and len(cnt) / n_line >= ANCHOR_COVER):
+            spans.append((a, b, track[b]["t"] - track[a]["t"]))
+        for idx in cover[a]:
+            cnt[idx] -= 1
+            if cnt[idx] <= 0:
+                del cnt[idx]
+
+    spans.sort(key=lambda x: x[2])           # fastest first
+    kept, used = [], []
+    for a, b, _t in spans:
+        if any(not (b <= ka or a >= kb) for ka, kb in used):
+            continue
+        used.append((a, b))
+        kept.append((a, b))
+    return kept
+
+
+def _span_effort(track, a, b, rid):
+    """Build an effort record (compatible with _segment_from_efforts) from a track span."""
+    sub = track[a:b + 1]
+    gain = sum(max(0.0, (sub[k]["elev"] or 0) - (sub[k - 1]["elev"] or 0))
+               for k in range(1, len(sub))
+               if sub[k]["elev"] is not None and sub[k - 1]["elev"] is not None)
+    net = ((sub[-1]["elev"] or 0) - (sub[0]["elev"] or 0)) \
+        if sub[0]["elev"] is not None and sub[-1]["elev"] is not None else 0.0
+    return {"run_id": rid, "time_s": sub[-1]["t"] - sub[0]["t"],
+            "dist_m": sub[-1]["d"] - sub[0]["d"], "sub": sub, "net_elev": net, "gain_m": gain}
+
+
+def _build_anchored_segments(seqs, tracks, ref_lat, run_by_id):
+    """Fixed-line segments for the ANCHORS that mining can't recover (too few closed laps)."""
+    segs = []
+    for anchor in ANCHORS:
+        inst = _derive_anchor_line(anchor, seqs)
+        if not inst:
+            continue
+        line = _resample_ll(inst["sub"], ANCHOR_LINE_STEP)
+        loop_len = inst["dist_m"]
+        efforts = []
+        for rid, track in tracks.items():
+            for a, b in _match_anchor_spans(line, loop_len, track, ref_lat):
+                efforts.append(_span_effort(track, a, b, rid))
+        if len(efforts) < 2:        # need a couple of real laps to be worth showing
+            continue
+        # A pinned loop is legitimate even when its only valid laps are one session's,
+        # so the distinct-run and span gates are relaxed (closure already filters non-laps).
+        seg = _segment_from_efforts(efforts, run_by_id, force_type="loop",
+                                    min_runs=1, min_span=0)
+        if not seg:
+            continue
+        # Draw the clean derived line (not a re-derived medoid) and pin the curated name.
+        seg["name"] = anchor["name"]
+        seg["polyline"] = [[round(la, 5), round(lo, 5)] for la, lo in _simplify(line)]
+        seg["anchored"] = True
+        segs.append(seg)
+    return segs
 
 
 def _span_days(rows):
@@ -740,6 +944,9 @@ def _dedupe(segments):
     kept = []
     order = sorted(segments, key=lambda s: (-s["n_efforts"], -s["length_m"]))
     for s in order:
+        if s.get("anchored"):        # curated fixed-line segments are always kept
+            kept.append(s)
+            continue
         s_runs = {e["run_id"] for e in s["efforts"]}
         dup = False
         for k in kept:
@@ -752,7 +959,14 @@ def _dedupe(segments):
             smaller = min(len(s_runs), len(k_runs))
             if smaller and inter / smaller > 0.7:
                 lo, hi = sorted((s["length_m"], k["length_m"]))
-                if hi and lo / hi > 0.6:
+                ca, cb = _poly_centroid(s["polyline"]), _poly_centroid(k["polyline"])
+                same_place = _haversine_m(ca[0], ca[1], cb[0], cb[1]) < 250
+                # Near-total run overlap AND same location means it's the one feature
+                # reached two ways (e.g. a climb approached from different streets, so one
+                # is longer) — merge regardless of length, keeping the higher-effort one.
+                # The location check stops distinct routes run on the same days merging.
+                near_total = inter / smaller >= 0.9 and same_place and s["type"] != "loop"
+                if near_total or (hi and lo / hi > 0.6):
                     dup = True
                     break
         if not dup:
@@ -780,10 +994,37 @@ def _reverse_geocode(lat, lon, zoom=18):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _located_names(cache):
+    """(centroid, name) for every cached entry, so a name survives small polyline jitter
+    between rebuilds. The cache is keyed on exact endpoints, which miss when the drawn
+    line shifts run-to-run; matching by location instead keeps names stable."""
+    out = []
+    for k, name in cache.items():
+        try:
+            pts = [tuple(float(x) for x in p.split(",")) for p in k.split("|")]
+            out.append(((sum(p[0] for p in pts) / len(pts),
+                         sum(p[1] for p in pts) / len(pts)), name))
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def _nearest_name(cen, located, max_m):
+    best, best_d = None, max_m
+    for (la, lo), name in located:
+        d = _haversine_m(cen[0], cen[1], la, lo)
+        if d <= best_d:
+            best, best_d = name, d
+    return best
+
+
 def _name_segments(segments):
     cache = _load_json(GEO_CACHE) or {}
+    located = _located_names(cache)
     dirty = False
     for s in segments:
+        if s.get("name"):            # anchored segments carry a curated name already
+            continue
         key = _geo_key(s["polyline"])
         if key in cache:
             s["name"] = cache[key]
@@ -792,9 +1033,13 @@ def _name_segments(segments):
         if name:
             cache[key] = name
             s["name"] = name
+            located.append((_poly_centroid(s["polyline"]), name))
             dirty = True
         else:
-            s["name"] = _fallback_name(s)
+            # Network lookup failed (offline / rate-limited): reuse the nearest name we
+            # already resolved before showing raw coordinates.
+            s["name"] = _nearest_name(_poly_centroid(s["polyline"]), located, 120.0) \
+                or _fallback_name(s)
     if dirty:
         _save_json(GEO_CACHE, cache)
 
@@ -895,11 +1140,13 @@ def _match_segments(segments):
                 s["polyline"] = cache[key]
             continue
         matched = _match_polyline(s["polyline"], closed=(s["type"] == "loop"))
-        # Only trust a match whose length stays close to the benchmark; a large change
-        # means the snap wandered onto the wrong roads, so keep the raw trace instead.
+        # Only trust a match that both keeps roughly the benchmark length and stays close
+        # to the actual trace; otherwise the snap wandered onto the wrong roads and the
+        # raw trace is more faithful.
         if matched:
             ml = _polyline_len(matched)
-            if not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"]):
+            dev = _polyline_deviation(matched, s["polyline"])
+            if not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"]) or dev > MATCH_MAX_DEV_M:
                 matched = None
         cache[key] = matched or []
         dirty = True
@@ -945,6 +1192,38 @@ def _build_walk_graph(osm):
 def _polyline_len(poly):
     return sum(_haversine_m(poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1])
                for i in range(1, len(poly)))
+
+
+def _poly_centroid(poly):
+    n = len(poly) or 1
+    return (sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n)
+
+
+def _polyline_deviation(a, b):
+    """Mean distance (m) from each point of `a` to the nearest segment of polyline `b`."""
+    lat0, lon0 = a[0][0], a[0][1]
+    mx = 111320.0 * math.cos(math.radians(lat0))
+
+    def xy(p):
+        return ((p[1] - lon0) * mx, (p[0] - lat0) * 111320.0)
+
+    bxy = [xy(p) for p in b]
+    total = 0.0
+    for p in a:
+        px, py = xy(p)
+        best = None
+        for k in range(1, len(bxy)):
+            ax, ay = bxy[k - 1]
+            bx, by = bxy[k]
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+            qx, qy = ax + t * dx, ay + t * dy
+            d = math.hypot(px - qx, py - qy)
+            if best is None or d < best:
+                best = d
+        total += best or 0.0
+    return total / len(a) if a else 0.0
 
 
 def _walk_edges(adj):
