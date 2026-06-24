@@ -28,3 +28,6 @@ Thumbs.db
 # Claude
 .claude/
 graphify-out/
+
+# Todo
+todo

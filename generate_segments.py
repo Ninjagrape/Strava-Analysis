@@ -80,6 +80,10 @@ MATCH_SNAP_M    = 35.0    # a resampled point further than this from any path is
 MATCH_STEP_M    = 20.0    # resample spacing before snapping
 MATCH_MAX_DEV_M = 12.0    # if the matched line strays this far (mean) from the actual
                           # trace it snapped to the wrong roads, so keep the raw trace
+MATCH_TURN_DEG  = 55.0    # a direction change sharper than this counts as a "reversal"
+MATCH_MAX_TURN_GAIN = 0.06  # if snapping adds more reversals-per-point than this above the
+                            # raw trace it has flickered between adjacent ways (a zig-zag no
+                            # run made), so keep the smooth raw trace instead
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +353,7 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,"
              f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1".encode())
     return h.hexdigest()
 
@@ -1140,13 +1144,17 @@ def _match_segments(segments):
                 s["polyline"] = cache[key]
             continue
         matched = _match_polyline(s["polyline"], closed=(s["type"] == "loop"))
-        # Only trust a match that both keeps roughly the benchmark length and stays close
-        # to the actual trace; otherwise the snap wandered onto the wrong roads and the
-        # raw trace is more faithful.
+        # Only trust a match that keeps roughly the benchmark length, stays close to the
+        # actual trace, and is no jaggier than the real run. Otherwise the snap wandered
+        # onto the wrong roads or flickered between adjacent parallel ways (a zig-zag the
+        # runner never ran), and the smooth raw trace is more faithful.
         if matched:
             ml = _polyline_len(matched)
             dev = _polyline_deviation(matched, s["polyline"])
-            if not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"]) or dev > MATCH_MAX_DEV_M:
+            turn_gain = _reversal_rate(matched) - _reversal_rate(s["polyline"])
+            if (not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"])
+                    or dev > MATCH_MAX_DEV_M
+                    or turn_gain > MATCH_MAX_TURN_GAIN):
                 matched = None
         cache[key] = matched or []
         dirty = True
@@ -1189,6 +1197,18 @@ def _build_walk_graph(osm):
     return coords, adj
 
 
+def _walk_edges(adj):
+    """Unique undirected edges (node-id pairs) of the walking graph."""
+    seen, edges = set(), []
+    for u in adj:
+        for v, _ in adj[u]:
+            key = (u, v) if u < v else (v, u)
+            if key not in seen:
+                seen.add(key)
+                edges.append(key)
+    return edges
+
+
 def _polyline_len(poly):
     return sum(_haversine_m(poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1])
                for i in range(1, len(poly)))
@@ -1197,6 +1217,22 @@ def _polyline_len(poly):
 def _poly_centroid(poly):
     n = len(poly) or 1
     return (sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n)
+
+
+def _reversal_rate(poly):
+    """Fraction of vertices where the path turns sharper than MATCH_TURN_DEG. A smooth run
+    has few; a snap that flickers between two parallel ways spikes this, so comparing the
+    matched line's rate against the raw trace's flags zig-zag artefacts."""
+    if len(poly) < 3:
+        return 0.0
+    sharp = 0
+    for i in range(2, len(poly)):
+        ax, ay = poly[i - 1][1] - poly[i - 2][1], poly[i - 1][0] - poly[i - 2][0]
+        bx, by = poly[i][1] - poly[i - 1][1], poly[i][0] - poly[i - 1][0]
+        ang = abs(math.degrees(math.atan2(ax * by - ay * bx, ax * bx + ay * by)))
+        if ang > MATCH_TURN_DEG:
+            sharp += 1
+    return sharp / (len(poly) - 2)
 
 
 def _polyline_deviation(a, b):
@@ -1224,18 +1260,6 @@ def _polyline_deviation(a, b):
                 best = d
         total += best or 0.0
     return total / len(a) if a else 0.0
-
-
-def _walk_edges(adj):
-    """Unique undirected edges (node-id pairs) of the walking graph."""
-    seen, edges = set(), []
-    for u in adj:
-        for v, _ in adj[u]:
-            key = (u, v) if u < v else (v, u)
-            if key not in seen:
-                seen.add(key)
-                edges.append(key)
-    return edges
 
 
 def _resample_track(poly, step):

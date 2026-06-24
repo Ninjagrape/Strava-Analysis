@@ -4,7 +4,7 @@ Processes a Strava data export into an enriched CSV, merging `activities.csv` me
 per-second record data parsed from each activity's `.fit.gz` file. Computes best efforts
 and detects interval reps from the raw GPS/distance stream, then builds a self-contained
 training hub (`dashboards/TrainingHub.html`) with best-efforts, goals, analytics, an all-time
-GPS heatmap, and a searchable per-run browser. Each run has its Strava description, a route
+GPS heatmap, auto-detected benchmark segments, and a searchable per-run browser. Each run has its Strava description, a route
 map, per-km splits (with elevation gain/loss and cadence), and an over-distance
 pace/elevation/heart-rate/cadence profile that shows the exact distance and value as you
 hover along it. Clicking a route opens an expanded view where tracing the graph also moves
@@ -222,6 +222,7 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, calendar heatmap, and a weekly/monthly distance/elevation/time totals chart. Most charts have independent time-range toggles (3M/6M/1Y/All) |
 | Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
+| Segments | Auto-detected benchmark routes you repeat — loops, climbs, and point-to-point stretches — each with a route map, every timed attempt, a personal record, and a trend chart of time over date. Clicking a segment opens an interactive map and attempt list (see [Benchmark segments](#benchmark-segments-generate_segmentspy)) |
 
 ### Standalone dashboard scripts
 
@@ -307,6 +308,57 @@ Function: `derive_training_target(riegel_a, riegel_b, target_dist_m)` → `(lo_s
 | **on target** (green) | Current best falls within the target range |
 | **gap** (orange) | Current best is slower than the Riegel prediction — shows where fitness is falling behind the curve |
 
+## Benchmark segments (`generate_segments.py`)
+
+The Segments tab mines recurring routes from your GPS tracks and turns them into Strava-style
+benchmarks — no manual segment creation, no Strava segment API. For each detected route it
+collects every run that completed it, times each attempt, finds the personal record, and draws
+the route on a map. A segment only qualifies once it has been completed by at least
+`MIN_RUNS` (4) distinct runs, spanning `MIN_SPAN_DAYS` (14) days, over a length of at least
+`MIN_LEN_M` (400 m), so one-off routes and short connectors never clutter the panel.
+
+Three kinds are detected:
+
+| Type | What it is | How it is found |
+|---|---|---|
+| **Segment** | A repeated point-to-point stretch | Corridor mining: the busiest directed cell-to-cell transitions across all runs are grown into maximal shared corridors, then every run is matched against each corridor with a distance-bounded sliding window |
+| **Climb** | A corridor with sustained ascent | A corridor whose net gain and average grade clear `CLIMB_MIN_GAIN` / `CLIMB_MIN_GRADE`; the benchmark is oriented uphill so it times the climb |
+| **Loop** | A closed circuit you lap | Self-crossing detection per run (where the track returns near an earlier point), clustered across runs by centroid and length. A two-pass scan identifies the loop at a stable scale, then re-scans each run at a lower floor so repeats within one session each count as a lap |
+
+Routes that recur too rarely as *closed* laps to be mined (a loop you usually run inside a
+longer route, with no GPS self-crossing) can be pinned as **anchored** segments via the
+`ANCHORS` list — an approximate centre and length — and are then matched off a fixed line the
+way Strava counts efforts.
+
+### Timing and ranking
+
+Each attempt's elapsed time comes from the per-record time stream; pace and grade-adjusted
+pace (via the same Minetti model as the rest of the hub) are shown per attempt, and the
+fastest attempt is flagged as the PR. Repeats of a loop within a single session are numbered
+`(lap 2)`, `(lap 3)`, … so they read correctly in the attempt list.
+
+### Drawing the route line
+
+A segment's drawn line is a single real run — the **medoid** effort, the one whose shape is
+most typical of the set — rather than an average of all runs, which would round off street
+corners. That line is then snapped onto the OpenStreetMap walking network (via Overpass) so it
+follows real paths instead of one run's GPS wobble. The snap is only trusted when it stays
+faithful to the actual run; it is discarded in favour of the raw trace when it:
+
+- strays too far in length (outside 0.7–1.4× the benchmark), or
+- drifts too far from the real trace (`MATCH_MAX_DEV_M`, mean), or
+- becomes **jaggier than the run itself** — more sharp direction-reversals per point than the
+  raw trace by `MATCH_MAX_TURN_GAIN`. This catches the snap flickering between two parallel
+  paths a few metres apart (e.g. a footway and the road beside it), which draws a zig-zag no
+  run ever ran.
+
+Segment names come from OpenStreetMap reverse geocoding (Nominatim) — nearby road, feature, and
+suburb names compose labels like *"Shirley Road to Cable Street (Wollstonecraft)"* or
+*"Morton Street loop (Waverton)"*. Network lookups (Overpass and Nominatim) are rate-limited and
+**cached on disk** in `csv_data/`, and the whole detection result is cached on a signature of the
+run set, so a rebuild over unchanged runs reuses everything and makes no network calls. All
+detection thresholds are tunable constants at the top of `generate_segments.py`.
+
 ## Analytics dashboard (`generate_analytics.py`)
 
 All analyses use pace, distance, and elevation — no heart rate or power required. These analyses appear in the hub's Analytics tab; running the script standalone outputs `dashboards/analytics_dashboard.html`.
@@ -363,8 +415,12 @@ Strava-Analysis/
 ├── generate_hub.py             # step 2 — builds the consolidated hub (TrainingHub.html)
 ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 ├── generate_analytics.py       # analytics logic; also runs standalone
-├── csv_data/                   # output CSVs (gitignored)
-│   └── YYYY-MM-DD_strava.csv
+├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
+├── csv_data/                   # output CSVs and caches (gitignored)
+│   ├── YYYY-MM-DD_strava.csv
+│   ├── segments_cache.json         # detected segments, keyed on a run-set signature
+│   ├── segment_geocode_cache.json  # cached OSM (Nominatim) segment names
+│   └── segment_match_cache.json    # cached OSM (Overpass) map-matched route lines
 ├── dashboards/                 # output HTML dashboards (gitignored)
 │   ├── TrainingHub.html        # the consolidated training hub (main output)
 │   ├── top_runs_by_distance.html   # only if generate_dashboards.py is run alone

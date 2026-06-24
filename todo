@@ -1,3 +1,52 @@
-[] Benchmark segments readme
-[] Fix Morton st loop snap to OSM issues
+## General
+[] Anticipate runs may or may not have HR data
+
+## Repo
+[] Organise repo, getting too messy
+
+## Segment
+[] Fix Morton st loop snap to OSM corner cut
+[] Fix Shirley Belmont loop route incorrect tracking
 [] Detect Shirley Climb
+[] Per segment detail
+
+[] Overlay # of Runs over weekly/monthly mileage
+[] Run type classification on top of just interval training
+[] tracing the "missing" mileage on interval session pauses
+
+## Overview tab
+[] Move distance, elev and time graph here from analysis
+[] Move training log from analysis
+[] Move time in pace zones from analysis
+
+
+## Per run page features
+[] Sort by speed, distance, time and elevation
+
+## Simple plots
+[] Distribution of pace and distance and elevation
+[] Pace vs Distance scatter graph, dist v elevation scatter
+
+## Analysis improvements
+[] Pace of users: 1km Pace, 5km Pace, Tempo Pace etc. These figures will also be used for filtering run tab. Dont just use 1 anchor for these like in goals but average all runs after classification on run session type.
+
+[] Predicted speeds graph with confidence interval
+
+[] Power rankings against age group
+[] Seiler inspired decoupling if HR data exists
+[] Race readiness + tapering tracker
+[] Aerobic cost (pace/HR) over time
+[] Eddington distribution and progression
+
+[] Recovery tracking??? Gamify this stat too to encourage recovery
+
+[] Monthly consistency vs Improvement
+
+# Monthly Consistency vs Improvement
+This chart shows how training consistency within each month relates to changes in aerobic efficiency over time.
+
+Consistency (CV) measures how variable your runs are during a month. Lower values mean more stable training, while higher values indicate more variability.
+
+The vertical axis shows the percentage change in aerobic efficiency compared to the previous month. Positive values indicate improvement, while negative values indicate decline.
+
+This relationship is correlational and should be interpreted alongside training load, terrain, and intensity distribution.
