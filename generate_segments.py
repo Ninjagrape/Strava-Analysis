@@ -354,7 +354,7 @@ def _runs_signature(runs):
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
              f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,"
-             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1".encode())
+             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2".encode())
     return h.hexdigest()
 
 
@@ -803,16 +803,27 @@ def _loop_instances(seq):
 
 
 def _derive_anchor_line(anchor, seqs):
-    """The roundest run instance near the anchor's centre and length becomes its line."""
+    """The most typical run instance near the anchor's centre and length becomes its line.
+
+    Picking the *roundest* instance backfires: cutting a corner straight across a block
+    raises a loop's isoperimetric roundness, so the roundest lap is usually the one that
+    strays off the streets and across buildings. Instead drop the degenerate out-and-back
+    slivers (a low-roundness floor) and take the medoid of what remains — the lap whose
+    shape is most typical of the set, which by definition follows the actual roads. This
+    mirrors how mined loops choose their drawn line in _segment_from_efforts."""
     cen, ln = anchor["cen"], anchor["len_m"]
-    best = None
+    cands = []
     for seq in seqs.values():
         for c in _loop_instances(seq):
             if (_haversine_m(c["cen"][0], c["cen"][1], cen[0], cen[1]) <= ANCHOR_NEAR_M
                     and 0.7 * ln <= c["dist_m"] <= 1.4 * ln):
-                if best is None or c["round"] > best["round"]:
-                    best = c
-    return best
+                cands.append(c)
+    if not cands:
+        return None
+    best_iso = max(c["round"] for c in cands)
+    good = [c for c in cands if c["round"] >= max(0.33, 0.6 * best_iso)] or cands
+    midx = _medoid_index([c["sub"] for c in good])
+    return good[midx] if midx is not None else max(good, key=lambda c: c["round"])
 
 
 def _resample_ll(pts, step):
