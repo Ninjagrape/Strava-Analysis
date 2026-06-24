@@ -627,6 +627,24 @@ def generate(rows: list[dict], updated: str) -> str:
     cur_mono = mono[-1]["monotony"] if mono else 0
     cur_strain = mono[-1]["strain"] if mono else 0
 
+    # Personalized safe-strain ceiling: this athlete's own recent normal, mean + 1 SD of
+    # trailing weekly strain, excluding the current week so a live spike doesn't raise its
+    # own bar. Strain has no universal cutoff like monotony's 2.0 because it scales with load.
+    strain_hist = [x["strain"] for x in mono[:-7] if x["strain"] > 0][-90:]
+    safe_strain = strain_high = 0.0
+    if len(strain_hist) >= 8:
+        s_mean = sum(strain_hist) / len(strain_hist)
+        s_sd = math.sqrt(sum((x - s_mean) ** 2 for x in strain_hist) / len(strain_hist))
+        safe_strain = s_mean + s_sd
+        strain_high = s_mean + 2 * s_sd
+    if safe_strain > 0:
+        strain_class = ("green" if cur_strain < safe_strain
+                        else "amber" if cur_strain < strain_high else "red")
+        strain_sub = f"safe &lt; {safe_strain:.0f} (your baseline)"
+    else:
+        strain_class = ""
+        strain_sub = "weekly load × monotony"
+
     tsb_class = "green" if cur_tsb > 5 else ("amber" if cur_tsb > -10 else "red")
     tsb_note = ("fresh / tapered" if cur_tsb > 5 else
                 "neutral, building" if cur_tsb > -10 else "fatigued, watch recovery")
@@ -767,7 +785,7 @@ def generate(rows: list[dict], updated: str) -> str:
   <div class="card">
     <div class="stat-row">
       <div class="stat"><p class="stat-label">Monotony</p><p class="stat-value {mono_class}">{cur_mono:.2f}</p><p class="stat-sub">lower is better; &gt;2 is risky</p></div>
-      <div class="stat"><p class="stat-label">Strain (latest week)</p><p class="stat-value">{cur_strain:.0f}</p><p class="stat-sub">weekly load × monotony</p></div>
+      <div class="stat"><p class="stat-label">Strain (latest week)</p><p class="stat-value {strain_class}">{cur_strain:.0f}</p><p class="stat-sub">{strain_sub}</p></div>
     </div>
     {strain_chart}
     <p class="note">The chart plots <strong>strain</strong> (weekly load × monotony), not monotony — so its scale runs into the hundreds. High strain with high monotony (same load every day, no easy/hard variation) is the classic overtraining signature.</p>

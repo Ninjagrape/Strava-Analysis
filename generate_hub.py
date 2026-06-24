@@ -920,7 +920,130 @@ function renderSegTrend(seg, holder, opts) {
   });
 }
 
+// Elevation-over-distance profile for one segment's reference lap. Area chart with a
+// vertical cursor that snaps to the nearest sample on hover.
+function renderElevProfile(seg, holder, opts) {
+  if (!holder) return;
+  opts = opts || {};
+  var prof = seg.elev_profile || [];
+  if (prof.length < 2) {
+    holder.innerHTML = '<div class="so-elev-empty">No elevation data for this segment</div>';
+    return;
+  }
+  var W = opts.W || 440, H = opts.H || 150, padL = 40, padR = 10, padT = 12, padB = 20;
+  var tipId = opts.tipId || 'so-elev-tip';
+  var ds = prof.map(function(p) { return p[0]; });
+  var es = prof.map(function(p) { return p[1]; });
+  // Cumulative length of the drawn route, so a distance on the chart maps to a point on the map.
+  var mapPoly = seg.polyline || [];
+  var cum = [0], totalLen = 0;
+  if (typeof L !== 'undefined') {
+    for (var ci = 1; ci < mapPoly.length; ci++) {
+      totalLen += L.latLng(mapPoly[ci - 1]).distanceTo(L.latLng(mapPoly[ci]));
+      cum.push(totalLen);
+    }
+  }
+  var dmin = ds[0], dmax = Math.max.apply(null, ds);
+  var emin = Math.min.apply(null, es), emax = Math.max.apply(null, es);
+  if (dmax === dmin) dmax = dmin + 1;
+  var span = emax - emin;
+  var elo = emin - span * 0.12 - 0.5, ehi = emax + span * 0.12 + 0.5;
+  if (ehi === elo) ehi = elo + 1;
+
+  function px(d) { return padL + (d - dmin) / (dmax - dmin) * (W - padL - padR); }
+  function py(e) { return padT + (ehi - e) / (ehi - elo) * (H - padT - padB); }
+
+  var grid = '';
+  for (var g = 0; g <= 2; g++) {
+    var val = elo + g / 2 * (ehi - elo);
+    var vy = py(val);
+    grid += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (W - padR) +
+      '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>' +
+      '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
+      '" font-size="9" fill="#555" text-anchor="end">' + Math.round(val) + 'm</text>';
+  }
+  var lpath = prof.map(function(p, i) {
+    return (i ? 'L' : 'M') + px(p[0]).toFixed(1) + ',' + py(p[1]).toFixed(1);
+  }).join(' ');
+  var area = 'M' + px(dmin).toFixed(1) + ',' + (H - padB).toFixed(1) + ' ' +
+    prof.map(function(p) { return 'L' + px(p[0]).toFixed(1) + ',' + py(p[1]).toFixed(1); }).join(' ') +
+    ' L' + px(dmax).toFixed(1) + ',' + (H - padB).toFixed(1) + ' Z';
+  var xlab = '<text x="' + padL + '" y="' + (H - 6) + '" font-size="9" fill="#555" text-anchor="start">0</text>' +
+    '<text x="' + (W - padR) + '" y="' + (H - 6) + '" font-size="9" fill="#555" text-anchor="end">' +
+      (dmax / 1000).toFixed(2) + ' km</text>';
+
+  holder.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
+    grid + xlab +
+    '<path d="' + area + '" fill="#8a6db5" fill-opacity="0.16" stroke="none"/>' +
+    '<path d="' + lpath + '" fill="none" stroke="#8a6db5" stroke-width="1.6" opacity="0.95"/>' +
+    '<line id="' + tipId + '-cur" x1="0" y1="' + padT + '" x2="0" y2="' + (H - padB) +
+      '" stroke="#8a6db5" stroke-width="1" opacity="0"/>' +
+    '<rect x="' + padL + '" y="' + padT + '" width="' + (W - padL - padR) + '" height="' + (H - padT - padB) +
+      '" fill="transparent" class="so-elev-hit" style="cursor:crosshair"/>' +
+    '</svg>' +
+    '<div class="seg-trend-tip" id="' + tipId + '"></div>';
+
+  var tip = document.getElementById(tipId);
+  var cursor = document.getElementById(tipId + '-cur');
+  var hit = holder.querySelector('.so-elev-hit');
+  var svg = holder.querySelector('svg');
+  hit.addEventListener('mousemove', function(ev) {
+    var rect = svg.getBoundingClientRect();
+    var fx = (ev.clientX - rect.left) / rect.width * W;
+    var d = dmin + (fx - padL) / (W - padL - padR) * (dmax - dmin);
+    d = Math.max(dmin, Math.min(dmax, d));
+    var best = 0, bd = Infinity;
+    for (var i = 0; i < ds.length; i++) {
+      var dd = Math.abs(ds[i] - d);
+      if (dd < bd) { bd = dd; best = i; }
+    }
+    var sx = px(ds[best]), sy = py(es[best]);
+    cursor.setAttribute('x1', sx.toFixed(1));
+    cursor.setAttribute('x2', sx.toFixed(1));
+    cursor.setAttribute('opacity', '1');
+    var hr = holder.getBoundingClientRect();
+    tip.innerHTML = '<b>' + Math.round(es[best]) + ' m</b> · ' + (ds[best] / 1000).toFixed(2) + ' km';
+    tip.style.left = (sx / W * hr.width) + 'px';
+    tip.style.top = (sy / H * hr.height) + 'px';
+    tip.style.opacity = '1';
+    // Mirror the cursor onto the route map at the matching distance along the line.
+    if (typeof L !== 'undefined' && segOverlayMap && mapPoly.length >= 2 && totalLen > 0) {
+      var frac = (ds[best] - dmin) / (dmax - dmin);
+      var ll = latlngAtCum(mapPoly, cum, frac * totalLen);
+      if (!segElevMarker) {
+        segElevMarker = L.circleMarker(ll, {radius: 6, color: '#fff', weight: 2,
+          fillColor: '#8a6db5', fillOpacity: 1, pane: 'markerPane'}).addTo(segOverlayMap);
+      } else {
+        segElevMarker.setLatLng(ll);
+        if (!segOverlayMap.hasLayer(segElevMarker)) segElevMarker.addTo(segOverlayMap);
+      }
+    }
+  });
+  hit.addEventListener('mouseleave', function() {
+    tip.style.opacity = '0';
+    cursor.setAttribute('opacity', '0');
+    if (segElevMarker && segOverlayMap && segOverlayMap.hasLayer(segElevMarker)) {
+      segOverlayMap.removeLayer(segElevMarker);
+    }
+  });
+}
+
+// Point on a route polyline at a given cumulative distance (metres), linearly interpolated.
+function latlngAtCum(poly, cum, target) {
+  for (var j = 1; j < poly.length; j++) {
+    if (cum[j] >= target) {
+      var segLen = cum[j] - cum[j - 1];
+      var t = segLen > 0 ? (target - cum[j - 1]) / segLen : 0;
+      return [poly[j - 1][0] + (poly[j][0] - poly[j - 1][0]) * t,
+              poly[j - 1][1] + (poly[j][1] - poly[j - 1][1]) * t];
+    }
+  }
+  return poly[poly.length - 1];
+}
+
 var segOverlayMap = null;
+var segElevMarker = null;
 
 function openSegOverlay(id) {
   var seg = SEGMENTS.find(function(s) { return s.id === id; });
@@ -942,6 +1065,7 @@ function openSegOverlay(id) {
   setTimeout(function() {
     var el = document.getElementById('so-map');
     if (segOverlayMap) { segOverlayMap.remove(); segOverlayMap = null; }
+    segElevMarker = null;
     el.innerHTML = '';
     if (typeof L === 'undefined' || !seg.polyline || seg.polyline.length < 2) return;
     var map = L.map(el, {preferCanvas: true});
@@ -954,13 +1078,15 @@ function openSegOverlay(id) {
     map.invalidateSize();
     map.fitBounds(poly.getBounds(), {padding: [30, 30]});
     segOverlayMap = map;
-    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 260, tipId: 'so-tip'});
+    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 190, tipId: 'so-tip'});
+    renderElevProfile(seg, document.getElementById('so-elev'), {W: 440, H: 150, tipId: 'so-elev-tip'});
   }, 60);
 }
 
 function closeSegOverlay() {
   document.getElementById('seg-overlay').classList.remove('open');
   if (segOverlayMap) { segOverlayMap.remove(); segOverlayMap = null; }
+  segElevMarker = null;
 }
 
 // Compact run stats bar reused as the summary header on the expanded run overlay.
@@ -1875,7 +2001,10 @@ def generate(
         "    <div class=\"so-body\">\n"
         "      <div id=\"so-map\" class=\"so-map\"></div>\n"
         "      <div class=\"so-side\">\n"
+        "        <p class=\"so-sub-label\">Finish time over attempts</p>\n"
         "        <div id=\"so-trend\" class=\"so-trend\"></div>\n"
+        "        <p class=\"so-sub-label\">Elevation over distance</p>\n"
+        "        <div id=\"so-elev\" class=\"so-elev\"></div>\n"
         "        <p class=\"so-hint\">Hover a point for its time, pace and date · scroll or drag the map to zoom and pan</p>\n"
         "        <div id=\"so-stats\" class=\"so-stats\"></div>\n"
         "        <div id=\"so-attempts\" class=\"so-attempts\"></div>\n"

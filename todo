@@ -6,7 +6,6 @@
 
 ## Segment
 [] Fix Morton st loop snap to OSM corner cut
-[] Fix Shirley Belmont loop route incorrect tracking
 [] Detect Shirley Climb
 [] Per segment detail
 

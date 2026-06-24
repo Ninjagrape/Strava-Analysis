@@ -354,7 +354,7 @@ def _runs_signature(runs):
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
              f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,"
-             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2".encode())
+             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2,elevprofile1".encode())
     return h.hexdigest()
 
 
@@ -518,6 +518,7 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
         "gain_m":    round(gain_m),
         "grade":     round((net_elev / seg_len) * 100, 1) if seg_len else 0.0,
         "polyline":  [[round(a, 5), round(b, 5)] for a, b in poly],
+        "elev_profile": _elev_profile(ref["sub"]),
         "efforts":   rows,
         "n_efforts": len(rows),
         "span_days": _span_days(rows),
@@ -525,6 +526,21 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
         "pr_time_str": pr["time_str"],
         "pr_date":   pr["date_long"],
     }
+
+
+def _elev_profile(sub, max_pts=64):
+    """Elevation-over-distance samples [[metres_from_start, elev_m], ...] for a segment's
+    reference lap, downsampled with a uniform stride so the payload stays small. Returns []
+    when the lap has no usable elevation stream."""
+    raw = [[p["d"] - sub[0]["d"], p["elev"]] for p in sub if p.get("elev") is not None]
+    if len(raw) < 2:
+        return []
+    step = max(1, len(raw) // max_pts)
+    out = [[round(raw[i][0]), round(raw[i][1], 1)] for i in range(0, len(raw), step)]
+    last = [round(raw[-1][0]), round(raw[-1][1], 1)]
+    if out[-1] != last:
+        out.append(last)
+    return out
 
 
 def _loop_record(cells, pts, i, j):
@@ -1513,12 +1529,16 @@ SEGMENTS_CSS = """
 .so-body{flex:1 1 auto;display:flex;gap:12px;min-height:0}
 .so-map{flex:1 1 auto;min-height:200px;border-radius:8px;border:1px solid #3a3a3a;background:#111}
 .so-side{flex:0 0 440px;max-width:46%;display:flex;flex-direction:column;gap:10px;min-height:0}
-.so-trend{flex:0 0 auto;height:260px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
+.so-trend{flex:0 0 auto;height:190px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
 .so-trend svg{display:block;width:100%;height:100%}
+.so-elev{flex:0 0 auto;height:150px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
+.so-elev svg{display:block;width:100%;height:100%}
+.so-elev-empty{display:flex;align-items:center;justify-content:center;height:100%;font-size:11px;color:#555}
+.so-sub-label{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em;margin:2px 0 -2px}
 .so-stats{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:#aaa}
 .so-stats b{color:#eee;font-weight:600}
 .so-hint{font-size:10px;color:#666;margin-top:-2px}
-.so-attempts{flex:1 1 auto;overflow-y:auto;min-height:0;border-top:1px solid #2a2a2a;padding-top:6px}
+.so-attempts{flex:1 1 auto;overflow-y:auto;min-height:120px;border-top:1px solid #2a2a2a;padding-top:6px}
 .so-att-head{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em;margin:2px 0 6px}
 .so-att{padding:7px 9px;border:1px solid #2e2e2e;border-radius:7px;margin-bottom:6px;
   cursor:pointer;background:#1e1e1e;transition:border-color .1s,background .1s}
