@@ -7,7 +7,6 @@
 ## Segment
 [] Fix Morton st loop snap to OSM corner cut
 [] Detect Shirley Climb
-[] Per segment detail
 
 [] Overlay # of Runs over weekly/monthly mileage
 [] Run type classification on top of just interval training

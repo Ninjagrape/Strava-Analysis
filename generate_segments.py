@@ -39,12 +39,18 @@ LOOP_CLOSE_M    = 60.0    # start/end closer than this -> loop
 LOOP_MIN_LEN_M  = 600.0   # phase 1: floor for *identifying* a distinct loop (high enough
                           # that sub-loops of a bigger circuit don't fragment it)
 LOOP_LAP_MIN    = 300.0   # phase 2: floor when re-scanning a run to count individual laps
+LOOP_MIN_SEG_M  = 350.0   # a loop's *drawn* single lap may be shorter than the point-to-point
+                          # floor: a small lapped circuit (e.g. The Colonnade, ~400 m) is a
+                          # legitimate benchmark, and its self-crossing closes a touch short
+                          # of the true perimeter, so the median lap can dip just under 400.
 CLIMB_MIN_GAIN  = 15.0    # metres of net ascent for a "climb"
 CLIMB_MIN_GRADE = 0.025   # ... and average grade
 LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
 LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
 LOOP_LEN_RATIO  = 1.35    # ... and their lengths agree within this ratio
+CORRIDOR_END_TOL_M = 80.0 # two point-to-point segments whose starts and ends both align
+                          # within this are the same stretch (GPS-split into two)
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
 
 # Anchored segments: named routes that recur too rarely as *closed* loops to be mined.
@@ -353,7 +359,7 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,"
              f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2,elevprofile1".encode())
     return h.hexdigest()
 
@@ -456,7 +462,7 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
     if len(distinct_runs) < min_runs:
         return None
     seg_len = _median(efforts)
-    if seg_len < MIN_LEN_M:
+    if seg_len < (LOOP_MIN_SEG_M if force_type == "loop" else MIN_LEN_M):
         return None
     if force_type == "loop":
         # Draw a single real run, the most representative one, so the line follows the
@@ -969,9 +975,27 @@ def _span_days(rows):
         return 0
 
 
+def _same_directed_corridor(a, b):
+    """True when two point-to-point segments trace the same ground the same way: both
+    starts align and both ends align within CORRIDOR_END_TOL_M, and their lengths agree
+    within ~30%. A reverse traversal fails (one's start aligns with the other's end), so a
+    road run both ways stays two segments. Catches the same stretch split into two when
+    different runs' GPS land in slightly different start/end cells."""
+    pa, pb = a["polyline"], b["polyline"]
+    if not pa or not pb:
+        return False
+    head = _haversine_m(pa[0][0], pa[0][1], pb[0][0], pb[0][1])
+    tail = _haversine_m(pa[-1][0], pa[-1][1], pb[-1][0], pb[-1][1])
+    if head > CORRIDOR_END_TOL_M or tail > CORRIDOR_END_TOL_M:
+        return False
+    lo, hi = sorted((a["length_m"], b["length_m"]))
+    return hi > 0 and lo / hi > 0.7
+
+
 def _dedupe(segments):
     """Drop segments that substantially overlap another with more attempts.
-    Overlap = sharing >70% of effort run-ids and similar length."""
+    Overlap = sharing >70% of effort run-ids and similar length, or tracing the same
+    directed corridor (same start and end) regardless of run-id overlap."""
     kept = []
     order = sorted(segments, key=lambda s: (-s["n_efforts"], -s["length_m"]))
     for s in order:
@@ -985,6 +1009,12 @@ def _dedupe(segments):
             # comparisons (one times a circuit, the other a stretch) — keep both.
             if (s["type"] == "loop") != (k["type"] == "loop"):
                 continue
+            # Same stretch, same direction, split into two near-identical point-to-point
+            # segments because runs landed in slightly different start/end cells (so their
+            # effort sets only partly overlap and the run-id test below misses them).
+            if s["type"] != "loop" and _same_directed_corridor(s, k):
+                dup = True
+                break
             k_runs = {e["run_id"] for e in k["efforts"]}
             inter = len(s_runs & k_runs)
             smaller = min(len(s_runs), len(k_runs))
