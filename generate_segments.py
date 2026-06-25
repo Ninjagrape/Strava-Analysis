@@ -45,6 +45,11 @@ LOOP_MIN_SEG_M  = 350.0   # a loop's *drawn* single lap may be shorter than the 
                           # of the true perimeter, so the median lap can dip just under 400.
 CLIMB_MIN_GAIN  = 15.0    # metres of net ascent for a "climb"
 CLIMB_MIN_GRADE = 0.025   # ... and average grade
+CLIMB_REV_COVER = 0.75    # re-matching a descent corridor's reverse to time the climb uses
+                          # a looser cell coverage than MATCH_COVER: the chain's cells come
+                          # from the downhill runs, and ascents take a slightly different
+                          # line, so 0.80 is too strict one way round. The climb still has to
+                          # clear the full run-count, span and grade gates.
 LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
 LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
@@ -283,11 +288,11 @@ def _chain_length_m(chain, ref_lat):
                for i in range(1, len(pts)))
 
 
-def _match_run(chain_cells, seg_len, seq):
+def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER):
     """Return the fastest completion of a chain within one run's cell sequence, or None.
 
     seq: list of (cell, point). A completion enters near the chain's first cell,
-    exits near its last cell (in order), covers >= MATCH_COVER of the chain's
+    exits near its last cell (in order), covers >= cover_min of the chain's
     cells in between, and travels a plausible distance."""
     cells = [c for c, _ in seq]
     pts = [p for _, p in seq]
@@ -310,7 +315,7 @@ def _match_run(chain_cells, seg_len, seq):
             if dist < seg_len * DIST_LO or dist > seg_len * DIST_HI:
                 continue
             covered = len(chain_set & set(cells[sp:ep + 1])) / n_chain
-            if covered < MATCH_COVER:
+            if covered < cover_min:
                 continue
             t = pts[ep]["t"] - pts[sp]["t"]
             if t <= 0:
@@ -359,7 +364,7 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,"
              f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2,elevprofile1".encode())
     return h.hexdigest()
 
@@ -401,16 +406,20 @@ def build_segments(runs):
         efforts = _collect_efforts(chain, seg_len0, seqs)
         if len(efforts) < MIN_RUNS:
             continue
-        # Orient climbs uphill: if this corridor's reference traversal is a notable
-        # descent, re-match the reversed direction so the benchmark times the climb.
         ref = min(efforts, key=lambda e: abs(e["dist_m"] - _median(efforts)))
-        if ref["net_elev"] <= -CLIMB_MIN_GAIN:
-            rev = _collect_efforts(chain[::-1], seg_len0, seqs)
-            if len(rev) >= MIN_RUNS:
-                chain, efforts = chain[::-1], rev
         seg = _segment_from_efforts(efforts, run_by_id)
         if seg:
             segments.append(seg)
+        # A hill is descended more often than climbed, so the ascent stays hidden behind
+        # its busier downhill direction. When this corridor is a real descent, time the
+        # reverse as a climb in its own right and add it as a separate benchmark. The
+        # reverse uses a looser coverage (CLIMB_REV_COVER) because the chain's cells follow
+        # the downhill line and ascents take a slightly different one.
+        if seg and ref["net_elev"] <= -CLIMB_MIN_GAIN:
+            rev = _collect_efforts(chain[::-1], seg_len0, seqs, cover_min=CLIMB_REV_COVER)
+            seg_up = _segment_from_efforts(rev, run_by_id)
+            if seg_up and seg_up["type"] == "climb":
+                segments.append(seg_up)
 
     # Closed loops (the Coal Loader, Belmont/Shirley loops) — found by detecting
     # where each run returns near an earlier point, then clustering across runs.
@@ -440,10 +449,10 @@ def _median(efforts):
     return d[len(d) // 2]
 
 
-def _collect_efforts(chain_cells, seg_len_est, seqs):
+def _collect_efforts(chain_cells, seg_len_est, seqs, cover_min=MATCH_COVER):
     efforts = []
     for rid, seq in seqs.items():
-        m = _match_run(chain_cells, seg_len_est, seq)
+        m = _match_run(chain_cells, seg_len_est, seq, cover_min)
         if m:
             m["run_id"] = rid
             efforts.append(m)
@@ -992,6 +1001,17 @@ def _same_directed_corridor(a, b):
     return hi > 0 and lo / hi > 0.7
 
 
+def _is_reverse_corridor(a, b):
+    """Two point-to-point segments over the same ground in opposite directions (one's start
+    aligns with the other's end). A climb and its descent are distinct benchmarks, so dedupe
+    must keep both."""
+    pa, pb = a["polyline"], b["polyline"]
+    if not pa or not pb:
+        return False
+    return (_haversine_m(pa[0][0], pa[0][1], pb[-1][0], pb[-1][1]) <= CORRIDOR_END_TOL_M
+            and _haversine_m(pa[-1][0], pa[-1][1], pb[0][0], pb[0][1]) <= CORRIDOR_END_TOL_M)
+
+
 def _dedupe(segments):
     """Drop segments that substantially overlap another with more attempts.
     Overlap = sharing >70% of effort run-ids and similar length, or tracing the same
@@ -1008,6 +1028,10 @@ def _dedupe(segments):
             # A loop and a point-to-point benchmark over the same ground are different
             # comparisons (one times a circuit, the other a stretch) — keep both.
             if (s["type"] == "loop") != (k["type"] == "loop"):
+                continue
+            # A climb and its reverse descent run the same ground opposite ways — distinct
+            # benchmarks, so never merge them.
+            if s["type"] != "loop" and _is_reverse_corridor(s, k):
                 continue
             # Same stretch, same direction, split into two near-identical point-to-point
             # segments because runs landed in slightly different start/end cells (so their
