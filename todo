@@ -6,11 +6,10 @@
 
 ## Segment
 [] Fix Morton st loop snap to OSM corner cut
-[] Detect Shirley Climb
 
 [] Overlay # of Runs over weekly/monthly mileage
 [] Run type classification on top of just interval training
-[] tracing the "missing" mileage on interval session pauses
+[x] tracing the "missing" mileage on interval session pauses
 
 ## Overview tab
 [] Move distance, elev and time graph here from analysis

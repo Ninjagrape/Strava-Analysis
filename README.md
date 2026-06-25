@@ -221,7 +221,7 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, calendar heatmap, and a weekly/monthly distance/elevation/time totals chart. Most charts have independent time-range toggles (3M/6M/1Y/All) |
-| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
+| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Recording pauses (auto-pause, manual pause, or a stopped-then-resumed session) are marked on both the route map (amber markers, with a dashed red connector across any genuine positional jump) and the over-distance graph (amber vertical marks labelled with each stop's duration); runs that paused also show a "Pauses" stat. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
 | Segments | Auto-detected benchmark routes you repeat — loops, climbs, and point-to-point stretches — each with a route map, every timed attempt, a personal record, and a trend chart of time over date. Clicking a segment opens an interactive map and attempt list (see [Benchmark segments](#benchmark-segments-generate_segmentspy)) |
 
 ### Standalone dashboard scripts
@@ -307,6 +307,32 @@ Function: `derive_training_target(riegel_a, riegel_b, target_dist_m)` → `(lo_s
 | **exceeds** (green) | Current best is faster than even the aggressive target (target_lo) |
 | **on target** (green) | Current best falls within the target range |
 | **gap** (orange) | Current best is slower than the Riegel prediction — shows where fitness is falling behind the curve |
+
+### Pause / gap detection
+
+Runs where the watch stopped recording — auto-pause, a manual pause, or a stopped-then-resumed
+session — have each pause marked on the per-run route map and over-distance graph. Detection runs
+in `generate_hub.py` from the already-compiled `fit_distance_stream` (it uses the per-sample
+elapsed-time field `t`), so **no `--rebuild` is required** — a plain `python generate_hub.py`
+picks it up. The stream is sampled by distance, so during a pause no distance accrues and the
+stop collapses into a single sample whose elapsed time jumps; that jump is the signal.
+
+A sample is treated as a pause when its time gap clears an adaptive floor: at least
+`PAUSE_MIN_GAP_S` seconds, and at least `PAUSE_GAP_MULTIPLIER` times the run's median sample
+interval. The multiplier makes the threshold scale with the run, so genuinely slow running (which
+lengthens every sample's interval uniformly) is not mistaken for a stop. Across a representative
+export the sum of detected pause durations per run matches that session's rest time
+(`fit_elapsed_time_s − fit_moving_time_s`) closely.
+
+| Constant | Default | Description |
+|---|---|---|
+| `PAUSE_MIN_GAP_S` | `20` | Absolute floor (seconds); shorter gaps are ignored |
+| `PAUSE_GAP_MULTIPLIER` | `5` | A gap also has to be at least this many times the run's median sample interval |
+| `PAUSE_JUMP_M` | `60` | If a single pause's straight-line move (stop point to resume point) exceeds the distance the device recorded by more than this, it is treated as a stop-and-resume-elsewhere gap and the map draws a dashed red connector across it |
+
+If real stops are being missed, lower `PAUSE_GAP_MULTIPLIER` or `PAUSE_MIN_GAP_S`; if slow
+segments are being flagged, raise them. The constants are at the top of the pause-detection
+section in `generate_hub.py`.
 
 ## Benchmark segments (`generate_segments.py`)
 

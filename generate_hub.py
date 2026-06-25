@@ -178,6 +178,89 @@ def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[flo
 
 
 # ---------------------------------------------------------------------------
+# Pause / gap detection
+# ---------------------------------------------------------------------------
+
+# A pause is a recording gap (auto-pause, manual pause, or a stopped-then-resumed
+# session). fit_distance_stream is sampled by distance (~every 20 m) and each point
+# carries `t` = elapsed seconds since the run start, so a pause collapses into a
+# single inter-sample step whose `t` jumps while `d` barely moves. We flag a step as
+# a pause when its time delta clears an adaptive floor: at least PAUSE_MIN_GAP_S
+# absolute, and at least PAUSE_GAP_MULTIPLIER × the run's median step time. The
+# multiplier keeps genuinely slow running (which raises every step's dt uniformly)
+# from being mistaken for a stop.
+PAUSE_MIN_GAP_S      = 20    # absolute floor (seconds); ignore steps shorter than this
+PAUSE_GAP_MULTIPLIER = 5     # ... and require dt >= this × the run's median step dt
+PAUSE_JUMP_M         = 60.0  # positional jump beyond this between pause endpoints = a gap segment
+
+
+def _nearest_coord(dist_stream: list[dict], start_idx: int, step: int) -> dict | None:
+    """Walk the stream from start_idx in the given direction (+1/-1) until a point
+    carrying coordinates is found. Returns that point, or None if none exists."""
+    i = start_idx
+    n = len(dist_stream)
+    while 0 <= i < n:
+        p = dist_stream[i]
+        if p.get("lat") is not None and p.get("lon") is not None:
+            return p
+        i += step
+    return None
+
+
+def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
+    """Detect recording pauses from an over-distance stream.
+
+    Returns a list of one dict per pause:
+        {"d": km, "dur": seconds[, "lat", "lon"][, "lat2", "lon2"]}
+    `d` is the distance at which recording stopped (for the graph mark). `lat`/`lon`
+    is the pause location on the route map (omitted for GPS-less runs, which still
+    get graph marks). `lat2`/`lon2` are present only when the position genuinely
+    jumped between stopping and resuming — a stop-and-resume-elsewhere gap — so the
+    map can draw a dashed connector across the missing stretch; a plain stationary
+    pause has no second point and is shown as a single marker.
+    """
+    if not dist_stream or len(dist_stream) < 5:
+        return []
+
+    dts = [dist_stream[i].get("t", 0) - dist_stream[i - 1].get("t", 0)
+           for i in range(1, len(dist_stream))]
+    dts_sorted = sorted(dts)
+    median_dt = dts_sorted[len(dts_sorted) // 2]
+    if median_dt <= 0:
+        return []
+
+    floor = max(PAUSE_MIN_GAP_S, PAUSE_GAP_MULTIPLIER * median_dt)
+
+    pauses = []
+    for i in range(1, len(dist_stream)):
+        prev = dist_stream[i - 1]
+        cur = dist_stream[i]
+        dt = cur.get("t", 0) - prev.get("t", 0)
+        if dt < floor:
+            continue
+        d = prev.get("d", 0.0)
+        pause = {"d": round(d, 3), "dur": round(dt)}
+        # Place the marker at the pause location (nearest coordinate-bearing sample).
+        marker = _nearest_coord(dist_stream, i - 1, -1) or _nearest_coord(dist_stream, i, +1)
+        if marker is not None:
+            pause["lat"] = marker["lat"]
+            pause["lon"] = marker["lon"]
+        # A real stop-and-resume-elsewhere gap is one where the straight-line move
+        # across the gap far exceeds the distance the device actually recorded
+        # (a teleport: large geographic jump, almost no logged distance). A plain
+        # stationary pause has geo ≈ recorded distance, so no connector is drawn.
+        if all(cur.get(k) is not None for k in ("lat", "lon")) and \
+           all(prev.get(k) is not None for k in ("lat", "lon")):
+            geo_m = _haversine_km(prev["lat"], prev["lon"], cur["lat"], cur["lon"]) * 1000.0
+            recorded_m = (cur.get("d", 0.0) - prev.get("d", 0.0)) * 1000.0
+            if geo_m - recorded_m > PAUSE_JUMP_M:
+                pause["lat2"] = cur["lat"]
+                pause["lon2"] = cur["lon"]
+        pauses.append(pause)
+    return pauses
+
+
+# ---------------------------------------------------------------------------
 # Data preparation
 # ---------------------------------------------------------------------------
 
@@ -247,6 +330,9 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             dist_stream = []
 
+        # Recording pauses/gaps derived from the stream's elapsed-time field
+        pauses = _detect_pauses(dist_stream)
+
         # Per-run best efforts
         best_efforts = []
         for label, col, dist_be in BEST_EFFORT_DEFS:
@@ -282,6 +368,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "best_efforts": best_efforts,
             "gps_polyline": gps_polyline,
             "dist_stream": dist_stream,
+            "pauses": pauses,
         })
 
     runs.sort(key=lambda r: r["date_iso"], reverse=True)
@@ -674,6 +761,7 @@ function initRunMap(r) {
       var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(currentRunMap);
       L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
       L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
+      addPauseMarkers(currentRunMap, r);
       // A plain click on the route opens the expanded map + graph analysis view.
       currentRunMap.on('click', function() { openRunOverlay(r.id); });
       currentRunMap.fitBounds(poly.getBounds(), {padding: [24, 24]});
@@ -721,6 +809,7 @@ function openRunOverlay(runId) {
       var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(overlayMap);
       L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(overlayMap);
       L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(overlayMap);
+      addPauseMarkers(overlayMap, r);
       activeCursorMarker = L.circleMarker(r.gps_polyline[0], {
         radius: 6, color: '#fff', fillColor: '#e07020', weight: 2,
         opacity: 0, fillOpacity: 0, pane: 'markerPane'
@@ -763,6 +852,33 @@ function moveRunCursor(lat, lon) {
 
 function hideRunCursor() {
   if (activeCursorMarker) activeCursorMarker.setStyle({opacity: 0, fillOpacity: 0});
+}
+
+// Format a pause duration in seconds as m:ss (or h:mm:ss for long stops).
+function fmtPauseDur(s) {
+  s = Math.round(s);
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  var mm = (h && m < 10 ? '0' : '') + m, ss = (sec < 10 ? '0' : '') + sec;
+  return (h ? h + ':' + mm + ':' + ss : m + ':' + ss);
+}
+
+// Drop an amber marker where the run paused. When a single pause also has a resume
+// point far from where it stopped (lat2/lon2 — a stopped-then-resumed-elsewhere gap),
+// draw a dashed red line across that one pause's missing stretch. Stationary pauses
+// have no resume point and are shown as a lone marker.
+function addPauseMarkers(map, r) {
+  if (!r || !r.pauses || !r.pauses.length || typeof L === 'undefined') return;
+  r.pauses.forEach(function(p) {
+    if (p.lat == null || p.lon == null) return;
+    if (p.lat2 != null && p.lon2 != null) {
+      L.polyline([[p.lat, p.lon], [p.lat2, p.lon2]], {
+        color: '#d9534f', weight: 3, opacity: 0.9, dashArray: '6,6'
+      }).addTo(map);
+    }
+    L.circleMarker([p.lat, p.lon], {
+      radius: 5, color: '#f0ad4e', fillColor: '#f0ad4e', fillOpacity: 0.9, weight: 2, pane: 'markerPane'
+    }).bindTooltip('Paused ' + fmtPauseDur(p.dur), {direction: 'top'}).addTo(map);
+  });
 }
 
 document.querySelectorAll('.tab').forEach(function(btn) {
@@ -1099,7 +1215,18 @@ function roStats(r) {
   if (r.ga_pace_str && r.ga_pace_str !== '—') bits.push('<span>GA ' + r.ga_pace_str + '/km</span>');
   if (r.gain > 0) bits.push('<span>&uarr; ' + r.gain + ' m</span>');
   if (r.cadence) bits.push('<span>' + r.cadence + ' spm</span>');
+  var ps = pauseSummary(r);
+  if (ps) bits.push('<span style="color:#f0ad4e">&#9208; ' + ps + '</span>');
   return bits.join('');
+}
+
+// "2 pauses · 3:45 total" for runs that paused, else ''. Used in the stats rows
+// to make the map/graph pause marks discoverable.
+function pauseSummary(r) {
+  if (!r.pauses || !r.pauses.length) return '';
+  var total = r.pauses.reduce(function(a, p) { return a + p.dur; }, 0);
+  var n = r.pauses.length;
+  return n + ' pause' + (n > 1 ? 's' : '') + ' · ' + fmtPauseDur(total) + ' total';
 }
 
 // Attempt list inside the segment overlay: each row is one run that ran the segment.
@@ -1222,6 +1349,7 @@ function renderDetail(r) {
     (r.gain > 0 ? stat('Elevation', '↑' + r.gain + ' m ↓' + r.descent + ' m') : '') +
     (r.cadence ? stat('Cadence', r.cadence + ' spm') : '') +
     (r.calories ? stat('Calories', r.calories + ' kcal') : '') +
+    (pauseSummary(r) ? stat('Pauses', pauseSummary(r)) : '') +
     kmExtraStats(r) +
     '</div>';
 
@@ -1405,6 +1533,18 @@ function drawDistMetric(runId, metricKey, opts) {
       '" font-size="9" fill="#555" text-anchor="middle">' + km + '</text>';
   }
 
+  // Pause marks: a dashed amber vertical line where the run paused, labelled with
+  // the stop's duration. Only those inside the visible (possibly zoomed) window.
+  var pauseSvg = '';
+  (r.pauses || []).forEach(function(p) {
+    if (p.d < xmin || p.d > xmax) return;
+    var x = px(p.d).toFixed(1);
+    pauseSvg += '<line x1="' + x + '" y1="' + padT + '" x2="' + x + '" y2="' + (H - padB) +
+      '" stroke="#f0ad4e" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>' +
+      '<text x="' + x + '" y="' + (padT + 8) +
+      '" font-size="8" fill="#f0ad4e" text-anchor="middle">&#9208; ' + fmtPauseDur(p.dur) + '</text>';
+  });
+
   // The interactive cursor (guide line + dot + tooltip) is only drawn when the
   // chart links to a visible map — i.e. inside the expanded overlay.
   var aspect = interactive ? ' preserveAspectRatio="none"' : '';
@@ -1429,6 +1569,7 @@ function drawDistMetric(runId, metricKey, opts) {
     '<g clip-path="url(#' + clipId + ')">' +
       '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
       '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+      pauseSvg +
     '</g>' +
     xlab +
     cursorSvg +
