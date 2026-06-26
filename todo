@@ -1,5 +1,6 @@
 ## General
 [] Anticipate runs may or may not have HR data
+[] Check existing methodology for hard coding
 
 ## Repo
 [] Organise repo, getting too messy
@@ -8,17 +9,13 @@
 [] Fix Morton st loop snap to OSM corner cut
 
 [] Overlay # of Runs over weekly/monthly mileage
-[] Run type classification on top of just interval training
-[x] tracing the "missing" mileage on interval session pauses
+
 
 ## Overview tab
 [] Move distance, elev and time graph here from analysis
 [] Move training log from analysis
 [] Move time in pace zones from analysis
 
-
-## Per run page features
-[] Sort by speed, distance, time and elevation
 
 ## Simple plots
 [] Distribution of pace and distance and elevation

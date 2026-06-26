@@ -178,6 +178,75 @@ def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[flo
 
 
 # ---------------------------------------------------------------------------
+# Run-type classification (relative to the runner's own data)
+# ---------------------------------------------------------------------------
+
+MISC_MAX_KM         = 1.0    # below this = miscellaneous (stair sprints, elevation challenges, etc.)
+LONG_RUN_PERCENTILE = 0.75   # distance at/above this percentile of all runs = long candidate
+LONG_RUN_MIN_RATIO  = 1.30   # ...and at least this multiple of the median run distance
+LONG_RUN_MIN_KM     = 10.0   # ...and never below this absolute floor
+RACE_Z5_SHARE       = 0.40   # >= this share of zoned time in zone 5 (frac>=1.03) = race
+THRESHOLD_Z4_SHARE  = 0.30   # >= this share in zone 4 (0.93-1.03) = threshold session
+TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
+RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.77) = recovery
+
+
+def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
+    """Assign one training category to a run.
+
+    Intensity buckets (race/threshold/tempo) use the share of zoned time from
+    `pace_zones`; they require a *sustained* share, so an easy long run falls
+    through to "long" while a genuine workout outranks distance. Distance is
+    judged relative to the runner's own distribution, so "long" tracks fitness
+    rather than a fixed cutoff. Falls back to "easy" when there's no signal
+    (e.g. no personal threshold yet, so the zone times are all zero).
+
+    Suspiciously short efforts (stair sprints for a segment record, an elevation
+    challenge done on one flight of steps, etc.) are bucketed as "misc" before
+    anything else, which also keeps them out of the intervals bucket.
+    """
+    if run["dist_km"] < MISC_MAX_KM:
+        return "misc"
+
+    if run["is_interval"]:
+        return "intervals"
+
+    zones = run.get("pace_zones") or []
+    total = sum(zones)
+    z1 = z3 = z4 = z5 = 0.0
+    if total > 0:
+        z1, _z2, z3, z4, z5 = (z / total for z in zones)
+        if z5 >= RACE_Z5_SHARE:
+            return "race"
+        if z4 >= THRESHOLD_Z4_SHARE:
+            return "threshold"
+        if (z3 + z4) >= TEMPO_Z34_SHARE:
+            return "tempo"
+
+    if dist_median > 0 and run["dist_km"] >= LONG_RUN_MIN_KM \
+            and run["dist_km"] >= dist_p75 \
+            and run["dist_km"] >= LONG_RUN_MIN_RATIO * dist_median:
+        return "long"
+
+    if z1 >= RECOVERY_Z1_SHARE:
+        return "recovery"
+
+    return "easy"
+
+
+def _percentile(sorted_vals: list[float], q: float) -> float:
+    """Linear-interpolated percentile of an already-sorted list (q in [0,1])."""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+# ---------------------------------------------------------------------------
 # Pause / gap detection
 # ---------------------------------------------------------------------------
 
@@ -191,7 +260,6 @@ def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[flo
 # from being mistaken for a stop.
 PAUSE_MIN_GAP_S      = 20    # absolute floor (seconds); ignore steps shorter than this
 PAUSE_GAP_MULTIPLIER = 5     # ... and require dt >= this × the run's median step dt
-PAUSE_JUMP_M         = 60.0  # positional jump beyond this between pause endpoints = a gap segment
 
 
 def _nearest_coord(dist_stream: list[dict], start_idx: int, step: int) -> dict | None:
@@ -211,13 +279,14 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
     """Detect recording pauses from an over-distance stream.
 
     Returns a list of one dict per pause:
-        {"d": km, "dur": seconds[, "lat", "lon"][, "lat2", "lon2"]}
+        {"d": km, "dur": seconds[, "lat", "lon"][, "rlat", "rlon"]}
     `d` is the distance at which recording stopped (for the graph mark). `lat`/`lon`
-    is the pause location on the route map (omitted for GPS-less runs, which still
-    get graph marks). `lat2`/`lon2` are present only when the position genuinely
-    jumped between stopping and resuming — a stop-and-resume-elsewhere gap — so the
-    map can draw a dashed connector across the missing stretch; a plain stationary
-    pause has no second point and is shown as a single marker.
+    is the pause (stop) location on the route map (omitted for GPS-less runs, which
+    still get graph marks). `rlat`/`rlon` are the resume location, present when the
+    route advanced between stopping and resuming, letting the map dot that stretch —
+    whether slow movement during the pause or a stop-and-resume-elsewhere gap (the
+    polyline hops near-straight across the latter). A plain stationary pause where
+    stop and resume coincide has no resume point and shows as a lone marker.
     """
     if not dist_stream or len(dist_stream) < 5:
         return []
@@ -240,22 +309,23 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
             continue
         d = prev.get("d", 0.0)
         pause = {"d": round(d, 3), "dur": round(dt)}
-        # Place the marker at the pause location (nearest coordinate-bearing sample).
-        marker = _nearest_coord(dist_stream, i - 1, -1) or _nearest_coord(dist_stream, i, +1)
-        if marker is not None:
-            pause["lat"] = marker["lat"]
-            pause["lon"] = marker["lon"]
-        # A real stop-and-resume-elsewhere gap is one where the straight-line move
-        # across the gap far exceeds the distance the device actually recorded
-        # (a teleport: large geographic jump, almost no logged distance). A plain
-        # stationary pause has geo ≈ recorded distance, so no connector is drawn.
-        if all(cur.get(k) is not None for k in ("lat", "lon")) and \
-           all(prev.get(k) is not None for k in ("lat", "lon")):
-            geo_m = _haversine_km(prev["lat"], prev["lon"], cur["lat"], cur["lon"]) * 1000.0
-            recorded_m = (cur.get("d", 0.0) - prev.get("d", 0.0)) * 1000.0
-            if geo_m - recorded_m > PAUSE_JUMP_M:
-                pause["lat2"] = cur["lat"]
-                pause["lon2"] = cur["lon"]
+        # Stop / resume locations: nearest coordinate-bearing samples on each side of
+        # the gap (coords are sparse, so we walk outward). `stop` places the marker;
+        # `stop`->`resume` is the short route stretch the map dots, mirroring the
+        # dotted pause segment on the over-distance chart.
+        stop   = _nearest_coord(dist_stream, i - 1, -1) or _nearest_coord(dist_stream, i, +1)
+        resume = _nearest_coord(dist_stream, i, +1)
+        if stop is not None:
+            pause["lat"] = stop["lat"]
+            pause["lon"] = stop["lon"]
+        # Tag the resume point whenever the route advanced between stopping and
+        # resuming so the map can dot that stretch. This covers both slow movement
+        # during a pause and stop-and-resume-elsewhere gaps (where the polyline simply
+        # hops near-straight across the missing stretch) — both render the same way.
+        if stop is not None and resume is not None and \
+           (resume["lat"] != stop["lat"] or resume["lon"] != stop["lon"]):
+            pause["rlat"] = resume["lat"]
+            pause["rlon"] = resume["lon"]
         pauses.append(pause)
     return pauses
 
@@ -370,6 +440,14 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "dist_stream": dist_stream,
             "pauses": pauses,
         })
+
+    # Classify each run once the full distance distribution is known, so "long"
+    # is judged relative to the runner's own history rather than a fixed cutoff.
+    dists = sorted(r["dist_km"] for r in runs)
+    dist_median = _percentile(dists, 0.50)
+    dist_p75 = _percentile(dists, LONG_RUN_PERCENTILE)
+    for r in runs:
+        r["run_type"] = _classify_run(r, dist_p75, dist_median)
 
     runs.sort(key=lambda r: r["date_iso"], reverse=True)
     return runs
@@ -648,8 +726,42 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .ri-bottom{display:flex;align-items:center;gap:8px}
 .ri-pace{font-size:11px;color:#777}
 .ri-gain{font-size:10px;color:#4a9a4a}
-.ri-tag{font-size:9px;background:#1e2e1e;color:#5cb85c;border-radius:4px;
-  padding:1px 5px;border:1px solid #2a3a2a}
+.ri-tag{font-size:9px;border-radius:4px;padding:1px 5px;border:1px solid currentColor;
+  background:rgba(255,255,255,.04);white-space:nowrap}
+/* Per-category colours, shared by run-list badges (.rt-*) and filter chips. */
+.rt-recovery{color:#7aa7d6}
+.rt-easy{color:#5cb85c}
+.rt-long{color:#3fb6a8}
+.rt-tempo{color:#e0a020}
+.rt-threshold{color:#e8772e}
+.rt-intervals{color:#9b7ede}
+.rt-race{color:#d9534f}
+.rt-misc{color:#888}
+
+/* Filter chips */
+.run-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.chip{font-size:10px;padding:2px 8px;border-radius:999px;cursor:pointer;
+  background:#222;border:1px solid #3a3a3a;color:#888;transition:background .1s,color .1s}
+.chip:hover{background:#2a2a2a;color:#ccc}
+.chip.active{background:#1b2a1b;border-color:#5cb85c;color:#eee}
+
+/* Sort + stat-range filters */
+.run-sort{display:flex;gap:4px;margin-top:8px;align-items:center}
+.run-sort select{flex:1;background:#222;border:1px solid #3a3a3a;border-radius:6px;
+  color:#eee;padding:4px 6px;font-size:11px;outline:none}
+.run-sort select:focus{border-color:#5cb85c}
+.run-sort button{background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#888;
+  width:26px;padding:4px 0;font-size:12px;cursor:pointer;transition:color .1s,border-color .1s}
+.run-sort button:hover{color:#ccc}
+.run-sort button.active{border-color:#5cb85c;color:#eee}
+.run-stat-filters{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.run-stat-filters[hidden]{display:none}
+.sf-row{display:flex;align-items:center;gap:4px}
+.sf-label{font-size:10px;color:#888;width:38px;flex:none}
+.sf-row input{flex:1;width:0;background:#222;border:1px solid #3a3a3a;border-radius:4px;
+  color:#eee;padding:3px 5px;font-size:10px;outline:none}
+.sf-row input:focus{border-color:#5cb85c}
+.sf-unit{font-size:9px;color:#555;width:32px;flex:none}
 
 /* Run detail */
 #run-detail-pane{flex:1;overflow-y:auto;padding:1.25rem}
@@ -758,13 +870,11 @@ function initRunMap(r) {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
         subdomains: 'abcd', maxZoom: 19
       }).addTo(currentRunMap);
-      var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(currentRunMap);
-      L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
-      L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(currentRunMap);
+      var bounds = drawRunRoute(currentRunMap, r);
       addPauseMarkers(currentRunMap, r);
       // A plain click on the route opens the expanded map + graph analysis view.
       currentRunMap.on('click', function() { openRunOverlay(r.id); });
-      currentRunMap.fitBounds(poly.getBounds(), {padding: [24, 24]});
+      currentRunMap.fitBounds(bounds, {padding: [24, 24]});
     } catch(e) { console.warn('Run map init failed:', e); }
   }, 50);
 }
@@ -806,15 +916,12 @@ function openRunOverlay(runId) {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
         subdomains: 'abcd', maxZoom: 19
       }).addTo(overlayMap);
-      var poly = L.polyline(r.gps_polyline, {color: '#5cb85c', weight: 3, opacity: 0.9}).addTo(overlayMap);
-      L.circleMarker(r.gps_polyline[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(overlayMap);
-      L.circleMarker(r.gps_polyline[r.gps_polyline.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(overlayMap);
+      var bounds = drawRunRoute(overlayMap, r);
       addPauseMarkers(overlayMap, r);
       activeCursorMarker = L.circleMarker(r.gps_polyline[0], {
         radius: 6, color: '#fff', fillColor: '#e07020', weight: 2,
         opacity: 0, fillOpacity: 0, pane: 'markerPane'
       }).addTo(overlayMap);
-      var bounds = poly.getBounds();
       // invalidateSize first so Leaflet knows the real container size, then fit.
       overlayMap.invalidateSize();
       overlayMap.fitBounds(bounds, {padding: [24, 24]});
@@ -862,19 +969,82 @@ function fmtPauseDur(s) {
   return (h ? h + ':' + mm + ':' + ss : m + ':' + ss);
 }
 
-// Drop an amber marker where the run paused. When a single pause also has a resume
-// point far from where it stopped (lat2/lon2 — a stopped-then-resumed-elsewhere gap),
-// draw a dashed red line across that one pause's missing stretch. Stationary pauses
-// have no resume point and are shown as a lone marker.
+// Index of the polyline vertex nearest a given coordinate (squared planar distance;
+// fine at run scale). Used to locate where a pause's stop/resume points sit along
+// the recorded route.
+function nearestPolyIdx(line, lat, lon) {
+  var best = 0, bestD = Infinity;
+  for (var i = 0; i < line.length; i++) {
+    var dla = line[i][0] - lat, dlo = line[i][1] - lon;
+    var d = dla * dla + dlo * dlo;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// Polyline index ranges [i0, i1] covered while the run was paused but still moving
+// (pauses carrying a resume point rlat/rlon). Sorted and merged so overlapping
+// pauses at the same spot don't leave solid slivers between dotted stretches.
+function pausedRouteRanges(r) {
+  var line = r.gps_polyline || [];
+  var raw = [];
+  (r.pauses || []).forEach(function(p) {
+    if (p.rlat == null || p.rlon == null || p.lat == null || p.lon == null) return;
+    var i0 = nearestPolyIdx(line, p.lat, p.lon);
+    var i1 = nearestPolyIdx(line, p.rlat, p.rlon);
+    if (i1 < i0) { var t = i0; i0 = i1; i1 = t; }
+    if (i1 > i0) raw.push([i0, i1]);
+  });
+  raw.sort(function(a, b) { return a[0] - b[0]; });
+  var merged = [];
+  raw.forEach(function(rg) {
+    var last = merged[merged.length - 1];
+    if (last && rg[0] <= last[1]) last[1] = Math.max(last[1], rg[1]);
+    else merged.push([rg[0], rg[1]]);
+  });
+  return merged;
+}
+
+// Draw the run's route, breaking the solid green line into dotted amber stretches
+// wherever the run moved during a pause (mirrors the dotted pause segments on the
+// over-distance chart). Adds start/end markers and returns the route bounds.
+function drawRunRoute(map, r) {
+  var line = r.gps_polyline;
+  var GREEN = {color: '#5cb85c', weight: 3, opacity: 0.9};
+  var DOTS  = {color: '#f0ad4e', weight: 3, opacity: 0.9, dashArray: '2,6'};
+  var ranges = pausedRouteRanges(r);
+  var bounds;
+  if (!ranges.length) {
+    bounds = L.polyline(line, GREEN).addTo(map).getBounds();
+  } else {
+    bounds = L.latLngBounds([]);
+    var cursor = 0;
+    ranges.forEach(function(rg) {
+      // Solid up to the pause; ranges share their boundary vertex so the line stays
+      // visually continuous across the solid→dotted→solid transitions.
+      if (rg[0] > cursor) {
+        bounds.extend(L.polyline(line.slice(cursor, rg[0] + 1), GREEN).addTo(map).getBounds());
+      }
+      bounds.extend(L.polyline(line.slice(rg[0], rg[1] + 1), DOTS).addTo(map).getBounds());
+      cursor = Math.max(cursor, rg[1]);
+    });
+    if (cursor < line.length - 1) {
+      bounds.extend(L.polyline(line.slice(cursor), GREEN).addTo(map).getBounds());
+    }
+  }
+  L.circleMarker(line[0], {radius: 5, color: '#5cb85c', fillColor: '#fff', fillOpacity: 1, weight: 2}).addTo(map);
+  L.circleMarker(line[line.length - 1], {radius: 5, color: '#e07020', fillColor: '#e07020', fillOpacity: 1, weight: 2}).addTo(map);
+  return bounds;
+}
+
+// Drop an amber marker where the run paused. The paused stretch of route itself is
+// drawn dotted by drawRunRoute (including stop-and-resume-elsewhere gaps, where the
+// polyline already hops near-straight across the missing stretch), so no separate
+// connector is needed here.
 function addPauseMarkers(map, r) {
   if (!r || !r.pauses || !r.pauses.length || typeof L === 'undefined') return;
   r.pauses.forEach(function(p) {
     if (p.lat == null || p.lon == null) return;
-    if (p.lat2 != null && p.lon2 != null) {
-      L.polyline([[p.lat, p.lon], [p.lat2, p.lon2]], {
-        color: '#d9534f', weight: 3, opacity: 0.9, dashArray: '6,6'
-      }).addTo(map);
-    }
     L.circleMarker([p.lat, p.lon], {
       radius: 5, color: '#f0ad4e', fillColor: '#f0ad4e', fillOpacity: 0.9, weight: 2, pane: 'markerPane'
     }).bindTooltip('Paused ' + fmtPauseDur(p.dur), {direction: 'top'}).addTo(map);
@@ -1291,6 +1461,25 @@ function paceZoneIdx(pace_s) {
 
 // ── Run list ──────────────────────────────────────────────────────────────
 
+// Category metadata, ordered as it appears in the filter bar. The key matches
+// run_type from _classify_run(); cls is the CSS suffix for the badge/chip colour.
+var RUN_TYPES = [
+  {key: 'recovery',  label: 'Recovery'},
+  {key: 'easy',      label: 'Easy'},
+  {key: 'long',      label: 'Long'},
+  {key: 'tempo',     label: 'Tempo'},
+  {key: 'threshold', label: 'Threshold'},
+  {key: 'intervals', label: 'Intervals'},
+  {key: 'race',      label: 'Race'},
+  {key: 'misc',      label: 'Misc'}
+];
+var RUN_TYPE_LABEL = RUN_TYPES.reduce(function(m, t) { m[t.key] = t.label; return m; }, {});
+
+function runTypeBadge(t) {
+  if (!t || !RUN_TYPE_LABEL[t]) return '';
+  return '<span class="ri-tag rt-' + t + '">' + RUN_TYPE_LABEL[t] + '</span>';
+}
+
 function renderRunList(runs) {
   var el = document.getElementById('run-list-items');
   if (!runs.length) {
@@ -1308,7 +1497,7 @@ function renderRunList(runs) {
       '<div class="ri-bottom">' +
         '<span class="ri-pace">' + r.pace_str + '</span>' +
         (r.gain > 10 ? '<span class="ri-gain">↑' + r.gain + 'm</span>' : '') +
-        (r.is_interval ? '<span class="ri-tag">Intervals</span>' : '') +
+        runTypeBadge(r.run_type) +
       '</div></div>';
   }).join('');
 }
@@ -1481,10 +1670,24 @@ function drawDistMetric(runId, metricKey, opts) {
   var pts = stream.filter(function(p) { return p[metricKey] != null && p.d != null; });
   if (pts.length < 2) return;
 
+  // Pause distances (where recording stopped). The sample at this distance carries
+  // a forward-window pace measured across the gap, so it spikes; we dash the line
+  // segments touching it and exclude it from the y-scale so it doesn't dominate.
+  var EPS = 1e-6;
+  var pauseDs = (r.pauses || []).map(function(p) { return p.d; });
+  function isPausePoint(d) {
+    return pauseDs.some(function(pd) { return Math.abs(pd - d) <= EPS; });
+  }
+  function segIsPaused(d0, d1) {
+    return pauseDs.some(function(pd) { return pd >= d0 - EPS && pd <= d1 + EPS; });
+  }
+
   var xs = pts.map(function(p) { return p.d; });
-  var ys = pts.map(function(p) { return p[metricKey]; });
+  var scaleYs = pts.filter(function(p) { return !isPausePoint(p.d); })
+                   .map(function(p) { return p[metricKey]; });
+  if (scaleYs.length < 2) scaleYs = pts.map(function(p) { return p[metricKey]; });
   var dataMin = Math.min.apply(null, xs), dataMax = Math.max.apply(null, xs);
-  var ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
+  var ymin = Math.min.apply(null, scaleYs), ymax = Math.max.apply(null, scaleYs);
   if (ymax === ymin) ymax = ymin + 1;
 
   // Horizontal zoom window (driven by the scroll wheel). Stored on the holder so
@@ -1506,10 +1709,24 @@ function drawDistMetric(runId, metricKey, opts) {
     return H - padB - t * (H - padT - padB);
   }
 
-  // area + line path
-  var line = pts.map(function(p, i) {
-    return (i ? 'L' : 'M') + px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1);
-  }).join(' ');
+  // area + line path. The line is split into a solid path (normal running) and a
+  // dashed path (segments crossing a pause): rather than overlaying a separate
+  // marker, the paused portion of the line itself is drawn dotted. The pen lifts
+  // (fresh 'M') across pauses so the solid stroke is broken, not overdrawn.
+  function pt(p) { return px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1); }
+  var solidPath = '', dashPath = '', prevPaused = null;
+  for (var li = 0; li < pts.length; li++) {
+    if (li > 0) {
+      var paused = segIsPaused(pts[li - 1].d, pts[li].d);
+      if (paused) {
+        dashPath += 'M' + pt(pts[li - 1]) + 'L' + pt(pts[li]) + ' ';
+      } else {
+        if (prevPaused !== false) solidPath += 'M' + pt(pts[li - 1]) + ' ';
+        solidPath += 'L' + pt(pts[li]) + ' ';
+      }
+      prevPaused = paused;
+    }
+  }
   var area = 'M' + px(pts[0].d).toFixed(1) + ',' + (H - padB) +
     pts.map(function(p) { return 'L' + px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1); }).join('') +
     'L' + px(pts[pts.length - 1].d).toFixed(1) + ',' + (H - padB) + 'Z';
@@ -1533,15 +1750,14 @@ function drawDistMetric(runId, metricKey, opts) {
       '" font-size="9" fill="#555" text-anchor="middle">' + km + '</text>';
   }
 
-  // Pause marks: a dashed amber vertical line where the run paused, labelled with
-  // the stop's duration. Only those inside the visible (possibly zoomed) window.
+  // Pause labels: the paused stretch of the line is drawn dotted (dashPath); here we
+  // just add the stop's duration above each pause. Only those inside the visible
+  // (possibly zoomed) window.
   var pauseSvg = '';
   (r.pauses || []).forEach(function(p) {
     if (p.d < xmin || p.d > xmax) return;
     var x = px(p.d).toFixed(1);
-    pauseSvg += '<line x1="' + x + '" y1="' + padT + '" x2="' + x + '" y2="' + (H - padB) +
-      '" stroke="#f0ad4e" stroke-width="1" stroke-dasharray="2,3" opacity="0.85"/>' +
-      '<text x="' + x + '" y="' + (padT + 8) +
+    pauseSvg += '<text x="' + x + '" y="' + (padT + 8) +
       '" font-size="8" fill="#f0ad4e" text-anchor="middle">&#9208; ' + fmtPauseDur(p.dur) + '</text>';
   });
 
@@ -1568,7 +1784,8 @@ function drawDistMetric(runId, metricKey, opts) {
     grid +
     '<g clip-path="url(#' + clipId + ')">' +
       '<path d="' + area + '" fill="url(#' + gid + ')"/>' +
-      '<path d="' + line + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+      '<path d="' + solidPath + '" fill="none" stroke="' + metric.color + '" stroke-width="1.6"/>' +
+      (dashPath ? '<path d="' + dashPath + '" fill="none" stroke="#f0ad4e" stroke-width="1.6" stroke-dasharray="2,3"/>' : '') +
       pauseSvg +
     '</g>' +
     xlab +
@@ -1933,15 +2150,119 @@ function initOverviewMap() {
 
 // ── Search & init ─────────────────────────────────────────────────────────
 
-document.getElementById('run-search').addEventListener('input', function() {
-  var q = this.value.toLowerCase();
-  var filtered = q ? RUNS.filter(function(r) {
-    return r.name.toLowerCase().indexOf(q) >= 0 || r.date_long.toLowerCase().indexOf(q) >= 0;
-  }) : RUNS;
+var activeType = 'all';
+var sortKey = 'date';
+var sortDir = -1;            // -1 = descending (largest/most-recent first), 1 = ascending
+var statFilters = {};        // metric key -> {min, max}
+
+// Numeric accessors for sorting; speed in km/h, time as seconds, elevation in m.
+var SORT_ACCESS = {
+  date:  function(r) { return r.date_iso; },
+  dist:  function(r) { return r.dist_km; },
+  time:  function(r) { return r.moving_s; },
+  speed: function(r) { return r.moving_s > 0 ? r.dist_km / (r.moving_s / 3600) : 0; },
+  elev:  function(r) { return r.gain; }
+};
+
+// Metrics exposed as min/max range filters (date is sort-only).
+var FILTER_METRICS = [
+  {key: 'dist',  label: 'Dist',  unit: 'km',   val: function(r) { return r.dist_km; }},
+  {key: 'time',  label: 'Time',  unit: 'min',  val: function(r) { return r.moving_s / 60; }},
+  {key: 'speed', label: 'Speed', unit: 'km/h', val: function(r) { return r.moving_s > 0 ? r.dist_km / (r.moving_s / 3600) : 0; }},
+  {key: 'elev',  label: 'Elev',  unit: 'm',    val: function(r) { return r.gain; }}
+];
+
+function passesStatFilters(r) {
+  for (var i = 0; i < FILTER_METRICS.length; i++) {
+    var m = FILTER_METRICS[i], f = statFilters[m.key];
+    if (!f) continue;
+    var v = m.val(r);
+    if (f.min != null && v < f.min) return false;
+    if (f.max != null && v > f.max) return false;
+  }
+  return true;
+}
+
+function applyRunFilters() {
+  var q = (document.getElementById('run-search').value || '').toLowerCase();
+  var filtered = RUNS.filter(function(r) {
+    var matchType = activeType === 'all' || r.run_type === activeType;
+    var matchText = !q || r.name.toLowerCase().indexOf(q) >= 0 ||
+      r.date_long.toLowerCase().indexOf(q) >= 0;
+    return matchType && matchText && passesStatFilters(r);
+  });
+  var acc = SORT_ACCESS[sortKey] || SORT_ACCESS.date;
+  filtered.sort(function(a, b) {
+    var va = acc(a), vb = acc(b);
+    return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+  });
   renderRunList(filtered);
   if (filtered.length) showRun(filtered[0].id);
   else document.getElementById('run-detail-content').innerHTML = '<p class="placeholder-msg">No runs match</p>';
+}
+
+// Render the min/max range inputs and wire them to the filter state.
+function buildStatFilters() {
+  var box = document.getElementById('run-stat-filters');
+  box.innerHTML = FILTER_METRICS.map(function(m) {
+    return '<div class="sf-row">' +
+      '<span class="sf-label">' + m.label + '</span>' +
+      '<input type="number" class="sf-min" data-key="' + m.key + '" placeholder="min" step="any" min="0">' +
+      '<input type="number" class="sf-max" data-key="' + m.key + '" placeholder="max" step="any" min="0">' +
+      '<span class="sf-unit">' + m.unit + '</span>' +
+    '</div>';
+  }).join('');
+  box.querySelectorAll('input').forEach(function(inp) {
+    inp.addEventListener('input', function() {
+      var key = this.getAttribute('data-key');
+      var f = statFilters[key] || (statFilters[key] = {min: null, max: null});
+      var v = this.value === '' ? null : parseFloat(this.value);
+      if (this.classList.contains('sf-min')) f.min = v; else f.max = v;
+      applyRunFilters();
+    });
+  });
+}
+
+document.getElementById('run-sort-key').addEventListener('change', function() {
+  sortKey = this.value;
+  applyRunFilters();
 });
+document.getElementById('run-sort-dir').addEventListener('click', function() {
+  sortDir = -sortDir;
+  this.textContent = sortDir < 0 ? '↓' : '↑';
+  applyRunFilters();
+});
+document.getElementById('run-filter-toggle').addEventListener('click', function() {
+  var box = document.getElementById('run-stat-filters');
+  box.hidden = !box.hidden;
+  this.classList.toggle('active', !box.hidden);
+});
+
+// Build the filter chip bar — only categories that actually occur, each with a count.
+function buildRunChips() {
+  var counts = RUNS.reduce(function(m, r) { m[r.run_type] = (m[r.run_type] || 0) + 1; return m; }, {});
+  var chips = ['<span class="chip active" data-type="all">All ' + RUNS.length + '</span>'];
+  RUN_TYPES.forEach(function(t) {
+    if (counts[t.key]) {
+      chips.push('<span class="chip rt-' + t.key + '" data-type="' + t.key + '">' +
+        t.label + ' ' + counts[t.key] + '</span>');
+    }
+  });
+  var bar = document.getElementById('run-chips');
+  bar.innerHTML = chips.join('');
+  bar.querySelectorAll('.chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      activeType = this.getAttribute('data-type');
+      bar.querySelectorAll('.chip').forEach(function(c) { c.classList.remove('active'); });
+      this.classList.add('active');
+      applyRunFilters();
+    });
+  });
+}
+buildRunChips();
+buildStatFilters();
+
+document.getElementById('run-search').addEventListener('input', applyRunFilters);
 
 // Close the expanded analysis overlay on backdrop click or Escape.
 document.getElementById('run-overlay').addEventListener('click', function(e) {
@@ -1957,8 +2278,7 @@ document.addEventListener('keydown', function(e) {
   else closeSegOverlay();
 });
 
-renderRunList(RUNS);
-if (RUNS.length) showRun(RUNS[0].id);
+applyRunFilters();
 initOverviewMap();
 """
 
@@ -2101,6 +2421,19 @@ def generate(
         "    <aside id=\"run-list-pane\">\n"
         "      <div class=\"run-search\">\n"
         "        <input type=\"text\" id=\"run-search\" placeholder=\"Filter runs…\">\n"
+        "        <div class=\"run-chips\" id=\"run-chips\"></div>\n"
+        "        <div class=\"run-sort\">\n"
+        "          <select id=\"run-sort-key\">\n"
+        "            <option value=\"date\">Date</option>\n"
+        "            <option value=\"dist\">Distance</option>\n"
+        "            <option value=\"time\">Time</option>\n"
+        "            <option value=\"speed\">Speed</option>\n"
+        "            <option value=\"elev\">Elevation</option>\n"
+        "          </select>\n"
+        "          <button id=\"run-sort-dir\" title=\"Ascending / descending\">↓</button>\n"
+        "          <button id=\"run-filter-toggle\" title=\"Filter by stats\">⚙</button>\n"
+        "        </div>\n"
+        "        <div class=\"run-stat-filters\" id=\"run-stat-filters\" hidden></div>\n"
         "      </div>\n"
         "      <div id=\"run-list-items\"></div>\n"
         "    </aside>\n"

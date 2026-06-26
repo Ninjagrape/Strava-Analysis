@@ -4,7 +4,8 @@ Processes a Strava data export into an enriched CSV, merging `activities.csv` me
 per-second record data parsed from each activity's `.fit.gz` file. Computes best efforts
 and detects interval reps from the raw GPS/distance stream, then builds a self-contained
 training hub (`dashboards/TrainingHub.html`) with best-efforts, goals, analytics, an all-time
-GPS heatmap, auto-detected benchmark segments, and a searchable per-run browser. Each run has its Strava description, a route
+GPS heatmap, auto-detected benchmark segments, and a per-run browser that classifies each run
+by training type and can be searched, sorted, and filtered by stats. Each run has its Strava description, a route
 map, per-km splits (with elevation gain/loss and cadence), and an over-distance
 pace/elevation/heart-rate/cadence profile that shows the exact distance and value as you
 hover along it. Clicking a route opens an expanded view where tracing the graph also moves
@@ -221,8 +222,49 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, calendar heatmap, and a weekly/monthly distance/elevation/time totals chart. Most charts have independent time-range toggles (3M/6M/1Y/All) |
-| Runs | Searchable run list; selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Recording pauses (auto-pause, manual pause, or a stopped-then-resumed session) are marked on both the route map (amber markers, with a dashed red connector across any genuine positional jump) and the over-distance graph (amber vertical marks labelled with each stop's duration); runs that paused also show a "Pauses" stat. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
+| Runs | Run list where each run is tagged with a training-type badge (see [Run classification](#run-classification)) and can be searched by name/date, filtered by type chip and by min/max ranges on distance, time, speed, and elevation, and sorted by date, distance, time, speed, or elevation (ascending or descending). Selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Recording pauses (auto-pause, manual pause, or a stopped-then-resumed session) are marked consistently on both views: on the over-distance graph the line segment spanning each pause is drawn as an amber dotted stretch (replacing the solid line) and labelled with the stop's duration, and on the route map the stretch traversed during each pause — including any positional jump from a stopped-then-resumed session — is drawn as an amber dotted polyline with a marker at the stop. Runs that paused also show a "Pauses" stat. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
 | Segments | Auto-detected benchmark routes you repeat — loops, climbs, and point-to-point stretches — each with a route map, every timed attempt, a personal record, and a trend chart of time over date. Clicking a segment opens an interactive map and attempt list (see [Benchmark segments](#benchmark-segments-generate_segmentspy)) |
+
+### Run classification
+
+Every run in the Runs tab is sorted into one training category, shown as a coloured badge in
+the list and usable as a one-click filter chip. Classification happens in `generate_hub.py`
+(`_classify_run`) from data already in the CSV, so **no `--rebuild` is needed** — a plain
+`python generate_hub.py` re-tags everything. The categories are judged **relative to your own
+data** (your distance distribution and your personal threshold pace) rather than fixed cutoffs,
+so they track your fitness over time.
+
+Each run gets the first category it matches, in priority order:
+
+| Category | Rule |
+|---|---|
+| **Misc** | Distance below `MISC_MAX_KM` — suspiciously short efforts (stair sprints for a segment record, an elevation challenge on one flight of steps). Checked first, so these never count as intervals |
+| **Intervals** | Flagged as an interval session (rest ≥ 20% of elapsed time, the same `is_interval` signal used elsewhere) and at least `MISC_MAX_KM` long |
+| **Race** | A sustained hard effort — zone-5 time (faster than threshold) is at least `RACE_Z5_SHARE` of the run's zoned time |
+| **Threshold** | Zone-4 (threshold) time is at least `THRESHOLD_Z4_SHARE` of zoned time |
+| **Tempo** | Combined zone-3 + zone-4 time is at least `TEMPO_Z34_SHARE` of zoned time |
+| **Long** | Distance is in the top quarter of your runs *and* ≥ `LONG_RUN_MIN_RATIO` × your median run *and* ≥ `LONG_RUN_MIN_KM` |
+| **Recovery** | Mostly easy — zone-1 time is at least `RECOVERY_Z1_SHARE` of zoned time |
+| **Easy** | The fallback for everything else (also where runs land when there's no personal threshold yet, so the pace zones are empty) |
+
+Because the intensity categories (Race/Threshold/Tempo) require a *sustained* share of hard
+running, an easy long run falls through to **Long**, while a genuine workout outranks distance.
+The thresholds are tunable constants near the top of the run-type section in `generate_hub.py`:
+
+```python
+MISC_MAX_KM         = 1.0    # below this = miscellaneous (stair sprints, elevation challenges, etc.)
+LONG_RUN_PERCENTILE = 0.75   # distance at/above this percentile of all runs = long candidate
+LONG_RUN_MIN_RATIO  = 1.30   # ...and at least this multiple of the median run distance
+LONG_RUN_MIN_KM     = 10.0   # ...and never below this absolute floor
+RACE_Z5_SHARE       = 0.40   # >= this share of zoned time in zone 5 (frac>=1.03) = race
+THRESHOLD_Z4_SHARE  = 0.30   # >= this share in zone 4 (0.93-1.03) = threshold session
+TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
+RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.77) = recovery
+```
+
+The pace zones themselves are anchored to your threshold speed (best 5K pace as a proxy for
+lactate threshold); see [Time in pace zones](#analytics-dashboard-generate_analyticspy) for the
+zone boundaries.
 
 ### Standalone dashboard scripts
 
@@ -324,11 +366,19 @@ lengthens every sample's interval uniformly) is not mistaken for a stop. Across 
 export the sum of detected pause durations per run matches that session's rest time
 (`fit_elapsed_time_s − fit_moving_time_s`) closely.
 
+Both views render a pause in the same amber dotted style. On the over-distance graph the
+line segment that crosses each pause is replaced by an amber dotted stretch (the pause's
+distorted pace sample is also excluded from the y-axis scale so the real running pace fills
+the chart), labelled with the stop's duration. On the route map each detected pause is
+mapped to its nearest GPS points before and after the stop, and the polyline stretch between
+them is drawn as an amber dotted segment. This covers stopped-then-resumed sessions where the
+athlete moved between stopping and resuming: that traversal is part of the recorded route, so
+it simply dots along the polyline rather than needing a separate straight connector.
+
 | Constant | Default | Description |
 |---|---|---|
 | `PAUSE_MIN_GAP_S` | `20` | Absolute floor (seconds); shorter gaps are ignored |
 | `PAUSE_GAP_MULTIPLIER` | `5` | A gap also has to be at least this many times the run's median sample interval |
-| `PAUSE_JUMP_M` | `60` | If a single pause's straight-line move (stop point to resume point) exceeds the distance the device recorded by more than this, it is treated as a stop-and-resume-elsewhere gap and the map draws a dashed red connector across it |
 
 If real stops are being missed, lower `PAUSE_GAP_MULTIPLIER` or `PAUSE_MIN_GAP_S`; if slow
 segments are being flagged, raise them. The constants are at the top of the pause-detection
