@@ -1,6 +1,6 @@
 ## General
 [] Anticipate runs may or may not have HR data
-[x] Optimise runtime
+[x] Optimise runtime even more. 126s currently for generating all hubs
 
 ## Repo
 [] Organise repo, getting too messy

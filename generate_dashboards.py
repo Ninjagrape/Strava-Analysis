@@ -346,7 +346,9 @@ GOAL_CSS = """
 .stat-value.amber{color:#e0a020;}
 
 .gap-labels{display:flex;justify-content:space-between;font-size:10px;color:#555;margin-bottom:3px;}
-.gap-labels .current{color:#eee;}
+.bar-label-row{position:relative;height:30px;font-size:10px;}
+.bar-label-row .current{position:absolute;top:0;transform:translateX(-50%);white-space:nowrap;color:#eee;}
+.bar-label-row .target{position:absolute;top:10px;transform:translateX(-50%);white-space:nowrap;color:#aaa;font-weight:600;}
 .bar-track{height:6px;background:#2a2a2a;border-radius:3px;overflow:visible;position:relative;}
 .bar-fill{height:100%;border-radius:3px;}
 .bar-fill.on-track{background:#5cb85c;}
@@ -606,8 +608,11 @@ def render_race_card(race: Race, pred_s: float) -> str:
     <div>
       <div class="gap-labels">
         <span>slower</span>
-        <span class="current">you: {fmt_pace(pred_s, dist_m)}</span>
         <span>faster</span>
+      </div>
+      <div class="bar-label-row">
+        <span class="current" style="left:50%;">You: {fmt_pace(pred_s, dist_m)}</span>
+        <span class="target" style="left:{bar_pct}%;">target: {fmt_pace(center_s, dist_m)}</span>
       </div>
       <div class="bar-track">
         <div class="bar-fill {fill_class}" style="width:{bar_pct}%;"></div>
