@@ -1,6 +1,7 @@
 ## General
 [] Anticipate runs may or may not have HR data
-[] Check existing methodology for hard coding
+[x] Check existing methodology for hard coding
+[] Optimise runtime
 
 ## Repo
 [] Organise repo, getting too messy
@@ -8,13 +9,7 @@
 ## Segment
 [] Fix Morton st loop snap to OSM corner cut
 
-[] Overlay # of Runs over weekly/monthly mileage
-
-
-## Overview tab
-[] Move distance, elev and time graph here from analysis
-[] Move training log from analysis
-[] Move time in pace zones from analysis
+[x] Overlay # of Runs over weekly/monthly mileage
 
 
 ## Simple plots

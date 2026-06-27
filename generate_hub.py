@@ -27,7 +27,7 @@ from generate_dashboards import (
 )
 from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
-    ANALYTICS_PANEL_CSS, body_analytics,
+    ANALYTICS_PANEL_CSS, body_analytics, overview_sections,
 )
 from generate_segments import build_segments, body_segments, SEGMENTS_CSS
 
@@ -2319,6 +2319,17 @@ def generate(
         threshold_s_km = "null"
 
     rec_html = _recommendation_html(stats.get("rec"))
+    heatmap_html = (
+        '<div class="ov-section">\n'
+        '  <p class="ov-section-title">All-time heatmap</p>\n'
+        '  <div id="overview-heatmap" style="height:420px;border-radius:8px;'
+        'border:1px solid #3a3a3a;background:#111;overflow:hidden"></div>\n'
+        '</div>'
+    )
+    # Distance/elevation/time, pace zones and training-log sections, relocated
+    # here from the Analytics tab. The all-time heatmap is placed just above the
+    # pace-zone section, between it and the distance/elevation/time chart.
+    extra_html = overview_sections(rows, updated, heatmap_html)
 
     overview_html = f"""
 <div class="ov-section">
@@ -2348,11 +2359,7 @@ def generate(
   </div>
 </div>
 {rec_html}
-
-<div class="ov-section">
-  <p class="ov-section-title">All-time heatmap</p>
-  <div id="overview-heatmap" style="height:420px;border-radius:8px;border:1px solid #3a3a3a;background:#111;overflow:hidden"></div>
-</div>
+{extra_html}
 
 <div class="ov-section">
   <p class="ov-section-title">Weekly mileage &mdash; Apr 2026 onwards</p>

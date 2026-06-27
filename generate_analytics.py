@@ -359,13 +359,13 @@ def cadence_trend(rows: list[dict]) -> list[tuple]:
 
 
 def period_totals(rows: list[dict], by: str) -> list[dict]:
-    """Per-period totals: [{date, dist (km), elev (m), time (h)}], gap-filled.
+    """Per-period totals: [{date, dist (km), elev (m), time (h), runs}], gap-filled.
 
     by='week' buckets by ISO-week Monday, by='month' by first-of-month. Empty
     periods between the first and last activity are filled with zeros so the
     line drops to the axis on rest weeks, like Strava's weekly graph.
     """
-    bucket = defaultdict(lambda: {"dist": 0.0, "elev": 0.0, "time": 0.0})
+    bucket = defaultdict(lambda: {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0})
     for r in rows:
         dt = parse_date(r)
         dist_m = num(r, "Distance")
@@ -377,15 +377,16 @@ def period_totals(rows: list[dict], by: str) -> list[dict]:
         b["dist"] += dist_m / 1000
         b["elev"] += num(r, "Elevation Gain") or 0
         b["time"] += (num(r, "Moving Time") or 0) / 3600
+        b["runs"] += 1
     if not bucket:
         return []
     keys = sorted(bucket)
     out, cur, end = [], keys[0], keys[-1]
     while cur <= end:
-        b = bucket.get(cur, {"dist": 0.0, "elev": 0.0, "time": 0.0})
+        b = bucket.get(cur, {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0})
         out.append({"date": cur.isoformat(),
                     "dist": round(b["dist"], 1), "elev": round(b["elev"]),
-                    "time": round(b["time"], 2)})
+                    "time": round(b["time"], 2), "runs": b["runs"]})
         cur = (cur + timedelta(days=7) if by == "week"
                else (cur.replace(day=28) + timedelta(days=4)).replace(day=1))
     return out
@@ -656,9 +657,6 @@ def generate(rows: list[dict], updated: str) -> str:
     # critical speed
     pts = best_effort_points(rows)
     cs, dprime, r2 = fit_critical_speed(pts)
-    zones = pace_zones_from_cs(cs) if cs else []
-    zsecs = time_in_pace_zones(rows, zones) if zones else []
-    ztotal = sum(zsecs) or 1
 
     # vdot
     vdot = vdot_trend(rows)
@@ -666,9 +664,6 @@ def generate(rows: list[dict], updated: str) -> str:
 
     # cadence
     cad = cadence_trend(rows)
-
-    # calendar
-    cal = calendar_data(loads)
 
     # ---- build HTML ----
     fitness_chart = _ranged(DAILY_RANGES, "3M", lambda win: _line_chart(
@@ -703,18 +698,6 @@ def generate(rows: list[dict], updated: str) -> str:
                         f"<td>{fmt_pace_from_s_per_km(t/(d/1000))}/km</td>"
                         f"<td>{fmt_time(model_t) if model_t>0 else '-'}</td></tr>")
 
-    # pace zones bar
-    zone_colors = ["#3a7a3a", "#5cb85c", "#e0a020", "#e07020", "#d9534f"]
-    zone_segs = ""
-    zone_legend = ""
-    if zones:
-        for i, z in enumerate(zones):
-            pct = zsecs[i] / ztotal * 100
-            zone_segs += (f'<div class="zone-seg" style="width:{pct:.1f}%;background:{zone_colors[i]}">'
-                          f'{pct:.0f}%</div>')
-            zone_legend += (f'<span><span class="swatch" style="background:{zone_colors[i]}"></span>'
-                            f'{z["name"]} ({fmt_pace_from_s_per_km(z["hi_s"])}-{fmt_pace_from_s_per_km(z["lo_s"])}/km)</span>')
-
     def _monthly_render(data, color):
         def render(n):
             sub = data if n is None else data[-n:]
@@ -725,20 +708,6 @@ def generate(rows: list[dict], updated: str) -> str:
         return render
     vdot_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(vdot, "#5cb85c")) if vdot else ""
     cad_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(cad, "#5b8fd9")) if cad else ""
-
-    def _cal_render(win):
-        if win is None or not cal:
-            c = cal
-        else:
-            start = max(cal) - timedelta(days=win)
-            c = {d: v for d, v in cal.items() if d >= start}
-        return _calendar_heatmap(c)
-    cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
-
-    # per-period totals (distance / elevation / time), weekly + monthly, for the
-    # interactive Strava-style toggle chart rendered in JS at the page bottom
-    totals_json = json.dumps({"week": period_totals(rows, "week"),
-                              "month": period_totals(rows, "month")})
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
@@ -809,15 +778,6 @@ def generate(rows: list[dict], updated: str) -> str:
 </div>
 
 <div class="section">
-  <p class="section-title">Time in pace zones</p>
-  <div class="card">
-    <div class="zone-bar">{zone_segs}</div>
-    <div class="legend">{zone_legend}</div>
-    <p class="note">Approximate distribution of moving time by zone, using each run's average grade-adjusted pace. Zones are anchored to your critical speed (Z4 = threshold). A polarised distribution (lots of Z1-Z2, some Z4-Z5, little Z3) is the typical endurance-training target.</p>
-  </div>
-</div>
-
-<div class="section">
   <p class="section-title">VO₂max estimate (VDOT) by month</p>
   <div class="card">
     {vdot_chart}
@@ -833,16 +793,71 @@ def generate(rows: list[dict], updated: str) -> str:
   </div>
 </div>
 
-<div class="section">
-  <p class="section-title">Training log</p>
-  <div class="card">
-    {cal_chart}
-    <p class="note">Daily training load. Darker green = higher load. Gaps are rest days.</p>
-  </div>
-</div>
+<script>
+function setRange(btn){{
+  var g = btn.closest('.rng-group');
+  if(!g) return;
+  var range = btn.getAttribute('data-range');
+  var btns = g.querySelectorAll('.rng-btn');
+  for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i]===btn); }}
+  var charts = g.querySelectorAll('.rng-chart');
+  for(var j=0;j<charts.length;j++){{
+    charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
+  }}
+}}
+</script>
+</body>
+</html>
+"""
 
-<div class="section">
-  <p class="section-title">Distance, elevation &amp; time</p>
+
+def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") -> str:
+    """HTML + JS for the three sections relocated to the hub's Overview tab:
+    distance/elevation/time totals, time in pace zones, and the training-log heatmap.
+
+    heatmap_html, if given, is the hub's all-time heatmap section; it is placed
+    between the distance/elevation/time chart and the pace-zone section.
+
+    The training-log range buttons call setRange(), which is defined in the
+    analytics panel script; the hub always emits both panels, so it is in scope.
+    The distance/elevation/time chart is fully self-contained (own ptot* JS).
+    """
+    loads = session_loads(rows)
+    cal = calendar_data(loads)
+
+    def _cal_render(win):
+        if win is None or not cal:
+            c = cal
+        else:
+            start = max(cal) - timedelta(days=win)
+            c = {d: v for d, v in cal.items() if d >= start}
+        return _calendar_heatmap(c)
+    cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
+
+    # pace-zone distribution, anchored to critical speed
+    pts = best_effort_points(rows)
+    cs, _dprime, _r2 = fit_critical_speed(pts)
+    zones = pace_zones_from_cs(cs) if cs else []
+    zsecs = time_in_pace_zones(rows, zones) if zones else []
+    ztotal = sum(zsecs) or 1
+    zone_colors = ["#3a7a3a", "#5cb85c", "#e0a020", "#e07020", "#d9534f"]
+    zone_segs = zone_legend = ""
+    if zones:
+        for i, z in enumerate(zones):
+            pct = zsecs[i] / ztotal * 100
+            zone_segs += (f'<div class="zone-seg" style="width:{pct:.1f}%;background:{zone_colors[i]}">'
+                          f'{pct:.0f}%</div>')
+            zone_legend += (f'<span><span class="swatch" style="background:{zone_colors[i]}"></span>'
+                            f'{z["name"]} ({fmt_pace_from_s_per_km(z["hi_s"])}-{fmt_pace_from_s_per_km(z["lo_s"])}/km)</span>')
+
+    # per-period totals (distance / elevation / time), weekly + monthly, for the
+    # interactive Strava-style toggle chart rendered in JS
+    totals_json = json.dumps({"week": period_totals(rows, "week"),
+                              "month": period_totals(rows, "month")})
+
+    return f"""\
+<div class="ov-section">
+  <p class="ov-section-title">Distance, elevation &amp; time</p>
   <div class="card">
     <div class="ptot-head">
       <div class="rng-tabs" id="ptot-metric">
@@ -864,8 +879,28 @@ def generate(rows: list[dict], updated: str) -> str:
         <button class="rng-btn active" data-gran="week" onclick="ptotSet('gran','week',this)">Weekly</button>
         <button class="rng-btn" data-gran="month" onclick="ptotSet('gran','month',this)">Monthly</button>
       </div>
+      <div class="rng-tabs" id="ptot-overlay">
+        <button class="rng-btn" onclick="ptotToggleOverlay(this)">+ Runs</button>
+      </div>
     </div>
-    <p class="note">Distance, elevation gain or moving time per week (or month). Hover a point to read its exact value. Window and granularity are independent toggles.</p>
+    <p class="note">Distance, elevation gain or moving time per week (or month). Hover a point to read its exact value. Window and granularity are independent toggles. Toggle <strong>+ Runs</strong> to overlay number of runs per period as bars.</p>
+  </div>
+</div>
+{heatmap_html}
+<div class="ov-section">
+  <p class="ov-section-title">Time in pace zones</p>
+  <div class="card">
+    <div class="zone-bar">{zone_segs}</div>
+    <div class="legend">{zone_legend}</div>
+    <p class="note">Approximate distribution of moving time by zone, using each run's average grade-adjusted pace. Zones are anchored to your critical speed (Z4 = threshold). A polarised distribution (lots of Z1-Z2, some Z4-Z5, little Z3) is the typical endurance-training target.</p>
+  </div>
+</div>
+
+<div class="ov-section">
+  <p class="ov-section-title">Training log</p>
+  <div class="card">
+    {cal_chart}
+    <p class="note">Daily training load. Darker green = higher load. Gaps are rest days.</p>
   </div>
 </div>
 
@@ -873,20 +908,9 @@ def generate(rows: list[dict], updated: str) -> str:
 var PTOT_DATA = {totals_json};
 </script>
 <script>
-function setRange(btn){{
-  var g = btn.closest('.rng-group');
-  if(!g) return;
-  var range = btn.getAttribute('data-range');
-  var btns = g.querySelectorAll('.rng-btn');
-  for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i]===btn); }}
-  var charts = g.querySelectorAll('.rng-chart');
-  for(var j=0;j<charts.length;j++){{
-    charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
-  }}
-}}
-
 // ── Per-period totals chart (Strava-style, interactive) ──────────────────────
-var PTOT_STATE = {{metric:'dist', win:180, gran:'week'}};
+var PTOT_STATE = {{metric:'dist', win:180, gran:'week', overlay:false}};
+var PTOT_RUNS_COLOR = '#6b6b6b';
 var PTOT_META = {{
   dist: {{unit:'km', color:'#5cb85c'}},
   elev: {{unit:'m',  color:'#8a6db5'}},
@@ -936,17 +960,34 @@ function drawPtot(){{
   var metric=PTOT_STATE.metric, meta=PTOT_META[metric];
   var data=ptotWindow();
   if(data.length<2){{ holder.innerHTML='<p class="note">Not enough data for this window.</p>'; ptotSetTotal(''); return; }}
-  var W=720,H=180,padL=44,padR=12,padT=14,padB=24;
+  var overlay=PTOT_STATE.overlay;
+  var W=720,H=180,padL=44,padR=overlay?30:12,padT=14,padB=24;
   var vals=data.map(function(p){{ return p[metric]; }});
   var vmin=0, vmax=Math.max.apply(null, vals); if(vmax<=0) vmax=1;
+  var runs=data.map(function(p){{ return p.runs||0; }});
+  var rmax=Math.max.apply(null, runs); if(rmax<=0) rmax=1;
   var n=data.length;
   function px(i){{ return padL+(n<=1?0:i/(n-1))*(W-padL-padR); }}
   function py(v){{ return H-padB-(v-vmin)/(vmax-vmin)*(H-padT-padB); }}
+  function ry(c){{ return H-padB-(c/rmax)*(H-padT-padB); }}
   var grid='';
   for(var g=0; g<=2; g++){{
     var gv=vmin+g/2*(vmax-vmin), gy=py(gv);
     grid+='<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+gy.toFixed(1)+'" stroke="#2a2a2a" stroke-width="1"/>'
         +'<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="#666" text-anchor="end">'+Math.round(gv)+'</text>';
+    if(overlay){{
+      grid+='<text x="'+(W-padR+5)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="'+PTOT_RUNS_COLOR+'" text-anchor="start">'+Math.round(rmax*g/2)+'</text>';
+    }}
+  }}
+  // run-count bars (drawn first so the metric line sits on top)
+  var bars='';
+  if(overlay){{
+    var slot=(W-padL-padR)/Math.max(1,n), bw=Math.min(slot*0.6, 14);
+    for(var bi=0;bi<n;bi++){{
+      if(!runs[bi]) continue;
+      var bx=px(bi)-bw/2, byTop=ry(runs[bi]);
+      bars+='<rect x="'+bx.toFixed(1)+'" y="'+byTop.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+(H-padB-byTop).toFixed(1)+'" rx="1" fill="'+PTOT_RUNS_COLOR+'" opacity="0.45"/>';
+    }}
   }}
   var line=data.map(function(p,i){{ return (i?'L':'M')+px(i).toFixed(1)+','+py(p[metric]).toFixed(1); }}).join(' ');
   var area='M'+px(0).toFixed(1)+','+(H-padB)+data.map(function(p,i){{ return 'L'+px(i).toFixed(1)+','+py(p[metric]).toFixed(1); }}).join('')+'L'+px(n-1).toFixed(1)+','+(H-padB)+'Z';
@@ -954,15 +995,16 @@ function drawPtot(){{
   for(var i=0;i<n;i+=step){{
     xlab+='<text x="'+px(i).toFixed(1)+'" y="'+(H-8)+'" font-size="8" fill="#555" text-anchor="middle">'+ptotShortDate(data[i].date, PTOT_STATE.gran)+'</text>';
   }}
+  var rlab=overlay?'<text x="'+(W-padR+5)+'" y="'+(padT-4)+'" font-size="8" fill="'+PTOT_RUNS_COLOR+'" text-anchor="start">runs</text>':'';
   var svg='<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">'
     +'<defs><linearGradient id="ptot-grad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="'+meta.color+'" stop-opacity="0.30"/><stop offset="1" stop-color="'+meta.color+'" stop-opacity="0.02"/></linearGradient></defs>'
-    +grid+'<path d="'+area+'" fill="url(#ptot-grad)"/><path d="'+line+'" fill="none" stroke="'+meta.color+'" stroke-width="2"/>'+xlab
+    +grid+bars+'<path d="'+area+'" fill="url(#ptot-grad)"/><path d="'+line+'" fill="none" stroke="'+meta.color+'" stroke-width="2"/>'+xlab+rlab
     +'<g id="ptot-cursor" style="opacity:0;pointer-events:none"><line y1="'+padT+'" y2="'+(H-padB)+'" stroke="#888" stroke-width="1" stroke-dasharray="3,3"/><circle r="4" fill="'+meta.color+'" stroke="#fff" stroke-width="1.5"/></g>'
     +'</svg>';
   holder.innerHTML=svg+'<div class="ptot-tip" id="ptot-tip"></div>';
   var sum=vals.reduce(function(a,b){{ return a+b; }}, 0);
   ptotSetTotal('Total '+ptotFmt(metric, sum));
-  holder._ptot={{data:data, metric:metric, n:n, W:W, H:H, padL:padL, padR:padR, padT:padT, padB:padB, vmin:vmin, vmax:vmax, sum:sum}};
+  holder._ptot={{data:data, metric:metric, n:n, W:W, H:H, padL:padL, padR:padR, padT:padT, padB:padB, vmin:vmin, vmax:vmax, sum:sum, overlay:overlay}};
   holder.onmousemove=function(e){{ ptotHover(e, holder); }};
   holder.onmouseleave=function(){{
     var c=document.getElementById('ptot-cursor'); if(c) c.style.opacity=0;
@@ -985,7 +1027,8 @@ function ptotHover(e, holder){{
   if(cur){{ cur.style.opacity=1; var ln=cur.querySelector('line'), dot=cur.querySelector('circle'); ln.setAttribute('x1',cx); ln.setAttribute('x2',cx); dot.setAttribute('cx',cx); dot.setAttribute('cy',cy); }}
   var tip=document.getElementById('ptot-tip');
   if(tip){{
-    tip.innerHTML='<div class="ptot-tip-d">'+ptotRangeLabel(p.date, PTOT_STATE.gran)+'</div><div><b>'+ptotFmt(st.metric, p[st.metric])+'</b></div>';
+    var runLine=st.overlay?'<div style="color:'+PTOT_RUNS_COLOR+'">'+(p.runs||0)+' run'+((p.runs===1)?'':'s')+'</div>':'';
+    tip.innerHTML='<div class="ptot-tip-d">'+ptotRangeLabel(p.date, PTOT_STATE.gran)+'</div><div><b>'+ptotFmt(st.metric, p[st.metric])+'</b></div>'+runLine;
     var hr=holder.getBoundingClientRect(), scaleX=sr.width/st.W, scaleY=sr.height/st.H;
     tip.style.left=((sr.left-hr.left)+cx*scaleX)+'px';
     tip.style.top=((sr.top-hr.top)+cy*scaleY)+'px';
@@ -1001,10 +1044,14 @@ function ptotSet(kind, val, btn){{
   drawPtot();
 }}
 
+function ptotToggleOverlay(btn){{
+  PTOT_STATE.overlay=!PTOT_STATE.overlay;
+  btn.classList.toggle('active', PTOT_STATE.overlay);
+  drawPtot();
+}}
+
 drawPtot();
 </script>
-</body>
-</html>
 """
 
 
