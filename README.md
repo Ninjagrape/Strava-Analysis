@@ -428,6 +428,12 @@ pace (via the same Minetti model as the rest of the hub) are shown per attempt, 
 fastest attempt is flagged as the PR. Repeats of a loop within a single session are numbered
 `(lap 2)`, `(lap 3)`, … so they read correctly in the attempt list.
 
+In the trend chart each attempt dot is coloured by the run's training type (see
+[Run classification](#run-classification)), so you can see at a glance whether a fast effort
+came from a race, a tempo, or an easy day. Attempts are connected by one line per type rather
+than a single chronological line, the PR keeps a gold ring, and the expanded segment view adds
+a legend of the types present and shows the type on hover.
+
 ### Drawing the route line
 
 A segment's drawn line is a single real run — the **medoid** effort, the one whose shape is
@@ -507,6 +513,8 @@ Strava-Analysis/
 ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 ├── generate_analytics.py       # analytics logic; also runs standalone
 ├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
+├── config.py                   # loads optional config.json (races + segment anchors)
+├── config.example.json         # sample personalization file; copy to config.json
 ├── csv_data/                   # output CSVs and caches (gitignored)
 │   ├── YYYY-MM-DD_strava.csv
 │   ├── segments_cache.json         # detected segments, keyed on a run-set signature

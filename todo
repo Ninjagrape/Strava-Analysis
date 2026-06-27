@@ -1,7 +1,6 @@
 ## General
 [] Anticipate runs may or may not have HR data
-[x] Check existing methodology for hard coding
-[] Optimise runtime
+[x] Optimise runtime
 
 ## Repo
 [] Organise repo, getting too messy
@@ -9,7 +8,7 @@
 ## Segment
 [] Fix Morton st loop snap to OSM corner cut
 
-[x] Overlay # of Runs over weekly/monthly mileage
+[] Graph different types of runs on segments with different colours
 
 
 ## Simple plots

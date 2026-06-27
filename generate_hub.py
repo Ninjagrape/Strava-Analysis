@@ -1160,19 +1160,35 @@ function renderSegTrend(seg, holder, opts) {
       '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
       '" font-size="9" fill="#555" text-anchor="end">' + fmtSegTime(val) + '</text>';
   }
-  var line = efforts.map(function(e, i) {
-    return (i ? 'L' : 'M') + px(ts[i]).toFixed(1) + ',' + py(ys[i]).toFixed(1);
-  }).join(' ');
+  // One connecting line per run type, so attempts only join others of the same kind.
+  var byType = {};
+  efforts.forEach(function(e, i) {
+    var k = e.run_type || 'misc';
+    (byType[k] || (byType[k] = [])).push(i);
+  });
+  var lines = RUN_TYPES.filter(function(t) { return (byType[t.key] || []).length > 1; })
+    .map(function(t) {
+      var d = byType[t.key].map(function(i, j) {
+        return (j ? 'L' : 'M') + px(ts[i]).toFixed(1) + ',' + py(ys[i]).toFixed(1);
+      }).join(' ');
+      return '<path d="' + d + '" fill="none" stroke="' + (RUN_TYPE_COLOR[t.key] || '#888') +
+        '" stroke-width="1.6" opacity="0.85"/>';
+    }).join('');
   var dots = efforts.map(function(e, i) {
     var isPr = e.time_s === prT;
+    var col = RUN_TYPE_COLOR[e.run_type] || '#888';
     var cx = px(ts[i]).toFixed(1), cy = py(ys[i]).toFixed(1);
-    // Visible dot plus a larger transparent circle so hovering is forgiving.
+    // Visible dot coloured by run type, plus a larger transparent circle so hovering is
+    // forgiving. The PR keeps a bigger radius and a gold ring so it stays obvious.
     return '<circle cx="' + cx + '" cy="' + cy +
-      '" r="' + (isPr ? 4.5 : 3) + '" fill="' + (isPr ? '#5cb85c' : '#888') +
-      '" stroke="#1c1c1c" stroke-width="1.5" pointer-events="none"/>' +
+      '" r="' + (isPr ? 4.5 : 3) + '" fill="' + col +
+      '" stroke="' + (isPr ? '#ffd700' : '#1c1c1c') +
+      '" stroke-width="' + (isPr ? 2 : 1.5) + '" pointer-events="none"/>' +
       '<circle cx="' + cx + '" cy="' + cy + '" r="11" fill="transparent"' +
       ' data-d="' + esc(e.date_long) + '" data-t="' + esc(e.time_str) + '"' +
-      ' data-p="' + esc(e.pace_str || '') + '"' + (isPr ? ' data-pr="1"' : '') +
+      ' data-p="' + esc(e.pace_str || '') + '"' +
+      ' data-rt="' + esc(RUN_TYPE_LABEL[e.run_type] || '') + '"' +
+      (isPr ? ' data-pr="1"' : '') +
       ' class="seg-dot" style="cursor:pointer"/>';
   }).join('');
   // date labels at first and last attempt
@@ -1181,11 +1197,22 @@ function renderSegTrend(seg, holder, opts) {
     '<text x="' + (W - padR) + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="end">' +
       shortDate(efforts[efforts.length - 1].date_iso) + '</text>';
 
+  // Legend (overlay only): only the run types actually present, in RUN_TYPES order.
+  var legend = '';
+  if (opts.legend) {
+    var present = {};
+    efforts.forEach(function(e) { present[e.run_type || 'misc'] = 1; });
+    var items = RUN_TYPES.filter(function(t) { return present[t.key]; }).map(function(t) {
+      return '<span class="seg-leg-item"><i style="background:' +
+        (RUN_TYPE_COLOR[t.key] || '#888') + '"></i>' + t.label + '</span>';
+    }).join('');
+    legend = '<div class="seg-trend-legend">' + items + '</div>';
+  }
+
   holder.innerHTML =
     '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
-    grid + xlab +
-    '<path d="' + line + '" fill="none" stroke="#5cb85c" stroke-width="1.6" opacity="0.85"/>' +
-    dots + '</svg>' +
+    grid + xlab + lines +
+    dots + '</svg>' + legend +
     '<div class="seg-trend-tip" id="' + tipId + '"></div>';
 
   var tip = document.getElementById(tipId);
@@ -1194,10 +1221,12 @@ function renderSegTrend(seg, holder, opts) {
       var r = holder.getBoundingClientRect();
       var cr = c.getBoundingClientRect();
       var pace = c.getAttribute('data-p');
+      var rt = c.getAttribute('data-rt');
       tip.innerHTML = '<b>' + c.getAttribute('data-t') +
         (c.getAttribute('data-pr') ? ' 🏆' : '') + '</b>' +
         (pace ? ' · ' + pace + '/km' : '') +
-        '<br>' + c.getAttribute('data-d');
+        '<br>' + c.getAttribute('data-d') +
+        (rt ? '<br><span style="color:#888">' + rt + '</span>' : '');
       tip.style.left = (cr.left - r.left + cr.width / 2) + 'px';
       tip.style.top = (cr.top - r.top + cr.height / 2) + 'px';
       tip.style.opacity = '1';
@@ -1364,7 +1393,7 @@ function openSegOverlay(id) {
     map.invalidateSize();
     map.fitBounds(poly.getBounds(), {padding: [30, 30]});
     segOverlayMap = map;
-    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 190, tipId: 'so-tip'});
+    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 190, tipId: 'so-tip', legend: true});
     renderElevProfile(seg, document.getElementById('so-elev'), {W: 440, H: 150, tipId: 'so-elev-tip'});
   }, 60);
 }
@@ -1474,6 +1503,11 @@ var RUN_TYPES = [
   {key: 'misc',      label: 'Misc'}
 ];
 var RUN_TYPE_LABEL = RUN_TYPES.reduce(function(m, t) { m[t.key] = t.label; return m; }, {});
+// Per-type dot colours for the segment trend chart; mirror the .rt-* CSS palette.
+var RUN_TYPE_COLOR = {
+  recovery:'#7aa7d6', easy:'#5cb85c', long:'#3fb6a8', tempo:'#e0a020',
+  threshold:'#e8772e', intervals:'#9b7ede', race:'#d9534f', misc:'#888'
+};
 
 function runTypeBadge(t) {
   if (!t || !RUN_TYPE_LABEL[t]) return '';

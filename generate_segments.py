@@ -12,6 +12,7 @@ Public surface used by generate_hub.py:
   - SEGMENTS_CSS                    : str
 """
 
+import os
 import json
 import math
 import time
@@ -24,6 +25,9 @@ from pathlib import Path
 
 from generate_dashboards import fmt_time, fmt_pace, ga_time
 from config import load_config
+
+# Per-phase timing inside build_segments, printed only under --profile (STRAVA_PROFILE).
+PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
 # ---------------------------------------------------------------------------
 # Tunable detection parameters (conservative: few, high-confidence benchmarks)
@@ -117,6 +121,39 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     a = (math.sin(dlat / 2) ** 2
          + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
     return R * 2 * math.asin(math.sqrt(min(a, 1.0)))
+
+
+def _build_point_grid(tracks, ref_lat, cell_m=ANCHOR_TOL_M):
+    """Shared spatial index over every run's track points: cell -> set of run ids present.
+
+    Built once per rebuild at the on-line tolerance resolution, so the auto/config anchor
+    paths can cheaply find which runs come near a candidate line instead of scanning every
+    run's full track per candidate. Returns (grid, dlat, dlon)."""
+    dlat = cell_m / 111320.0
+    dlon = cell_m / (111320.0 * max(0.1, math.cos(math.radians(ref_lat))))
+    grid: dict = defaultdict(set)
+    for rid, track in tracks.items():
+        for p in track:
+            grid[(int(p["lat"] / dlat), int(p["lon"] / dlon))].add(rid)
+    return grid, dlat, dlon
+
+
+def _anchor_eligible_runs(line, anchor_idx, n_line):
+    """Run ids whose track *could* cover >= ANCHOR_COVER of the line.
+
+    For each line point, the 3x3 grid neighbourhood (cell = ANCHOR_TOL_M) holds every run
+    with a point within tolerance, so the per-run count of distinct covered line indices is
+    an upper bound on any window's coverage. Runs below ANCHOR_COVER here can never match,
+    so dropping them is exact (no false negatives), while skipping their full O(n) scan."""
+    grid, dlat, dlon = anchor_idx
+    covered = defaultdict(set)
+    for i, (la, lo) in enumerate(line):
+        kr, kc = int(la / dlat), int(lo / dlon)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                for rid in grid.get((kr + dr, kc + dc), ()):
+                    covered[rid].add(i)
+    return {rid for rid, idxs in covered.items() if len(idxs) / n_line >= ANCHOR_COVER}
 
 
 def _cell_factory(ref_lat):
@@ -376,7 +413,7 @@ def _runs_signature(runs):
              f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,"
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
              f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
-             f"locdedupe1,close1,anchorline2,elevprofile1".encode())
+             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1".encode())
     return h.hexdigest()
 
 
@@ -388,6 +425,12 @@ def build_segments(runs):
         print(f"Segments: loaded {len(cached['segments'])} from cache")
         return cached["segments"]
 
+    _t = time.perf_counter()
+    def _lap(_label):
+        nonlocal _t
+        if PROFILE:
+            print(f"[profile]   build_segments/{_label}: {time.perf_counter() - _t:.2f}s")
+        _t = time.perf_counter()
     # Build per-run geo-tracks and cell sequences (sharing one grid reference lat).
     tracks = {}
     for r in runs:
@@ -396,16 +439,20 @@ def build_segments(runs):
             tracks[r["id"]] = tr
     if not tracks:
         return []
+    _lap("geo_tracks")
 
     all_lats = [p["lat"] for tr in tracks.values() for p in tr[:1]]
     ref_lat = sorted(all_lats)[len(all_lats) // 2]   # tracks is non-empty here (guarded above)
     cell = _cell_factory(ref_lat)
+    anchor_idx = _build_point_grid(tracks, ref_lat)
 
     seqs = {rid: _cell_sequence(tr, cell) for rid, tr in tracks.items()}
     cell_seqs = [(rid, [c for c, _ in s]) for rid, s in seqs.items()]
+    _lap("cell_sequences")
 
     chains = _mine_chains(cell_seqs)
     run_by_id = {r["id"]: r for r in runs}
+    _lap("mine_chains")
 
     segments = []
 
@@ -432,27 +479,41 @@ def build_segments(runs):
             if seg_up and seg_up["type"] == "climb":
                 segments.append(seg_up)
 
+    _lap("corridors")
+
     # Closed loops (the Coal Loader, Belmont/Shirley loops) — found by detecting
     # where each run returns near an earlier point, then clustering across runs.
     loop_segs, loop_clusters = _detect_loops(seqs, run_by_id)
     segments.extend(loop_segs)
+    _lap("detect_loops")
+
+    # Every run's self-crossing loop instances, computed once. _derive_anchor_line filters
+    # this set per candidate; recomputing it per candidate (the old behaviour) dominated the
+    # whole rebuild because _loop_instances/_loop_roundness are expensive and candidate-blind.
+    loop_insts = [c for seq in seqs.values() for c in _loop_instances(seq)]
+    _lap("loop_instances")
 
     # Auto-anchored loops: clusters that fall short of the closed-loop run gate, recovered by
     # matching their derived line against every run (incl. runs where they never self-cross).
     # Skips locations already covered by a mined loop so it fills gaps, never fragments them.
-    segments.extend(_auto_anchor_segments(loop_clusters, loop_segs, seqs, tracks, ref_lat, run_by_id))
+    segments.extend(_auto_anchor_segments(loop_clusters, loop_segs, loop_insts, tracks, anchor_idx, ref_lat, run_by_id))
+    _lap("auto_anchor")
 
     # Config anchors: explicit fallback for loops auto-detection can't recover, or curated names.
-    segments.extend(_build_anchored_segments(seqs, tracks, ref_lat, run_by_id))
+    segments.extend(_build_anchored_segments(loop_insts, tracks, anchor_idx, ref_lat, run_by_id))
+    _lap("config_anchors")
 
     segments = _dedupe(segments)
     # Best benchmarks first: most-run, then longest.
     segments.sort(key=lambda s: (-s["n_efforts"], -s["length_m"]))
     segments = segments[:MAX_SEGMENTS]
+    _lap("dedupe_sort")
 
     _name_segments(segments)
+    _lap("name_segments")
     _disambiguate_names(segments)
     _match_segments(segments)
+    _lap("match_segments")
     for i, s in enumerate(segments):
         s["id"] = i
 
@@ -534,6 +595,7 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
             "date_iso": r["date_iso"],
             "date_long": r["date_long"],
             "name":     name,
+            "run_type": r.get("run_type", "misc"),
             "time_s":   round(t, 1),
             "time_str": fmt_time(t),
             "pace_str": fmt_pace(t, seg_len),
@@ -855,7 +917,7 @@ def _loop_instances(seq):
     return out
 
 
-def _derive_anchor_line(anchor, seqs):
+def _derive_anchor_line(anchor, loop_insts):
     """The most typical run instance near the anchor's centre and length becomes its line.
 
     Picking the *roundest* instance backfires: cutting a corner straight across a block
@@ -866,11 +928,10 @@ def _derive_anchor_line(anchor, seqs):
     mirrors how mined loops choose their drawn line in _segment_from_efforts."""
     cen, ln = anchor["cen"], anchor["len_m"]
     cands = []
-    for seq in seqs.values():
-        for c in _loop_instances(seq):
-            if (_haversine_m(c["cen"][0], c["cen"][1], cen[0], cen[1]) <= ANCHOR_NEAR_M
-                    and 0.7 * ln <= c["dist_m"] <= 1.4 * ln):
-                cands.append(c)
+    for c in loop_insts:
+        if (_haversine_m(c["cen"][0], c["cen"][1], cen[0], cen[1]) <= ANCHOR_NEAR_M
+                and 0.7 * ln <= c["dist_m"] <= 1.4 * ln):
+            cands.append(c)
     if not cands:
         return None
     best_iso = max(c["round"] for c in cands)
@@ -966,20 +1027,25 @@ def _span_effort(track, a, b, rid):
             "dist_m": sub[-1]["d"] - sub[0]["d"], "sub": sub, "net_elev": net, "gain_m": gain}
 
 
-def _anchored_segment(cen, len_m, seqs, tracks, ref_lat, run_by_id,
+def _anchored_segment(cen, len_m, loop_insts, tracks, anchor_idx, ref_lat, run_by_id,
                       min_runs, min_span, min_efforts, name=None, curated=False):
     """Build one fixed-line loop segment from a centre + length: derive the line from the
     cleanest self-crossing instance, then time every run's matching span (the entry point
     may be anywhere on the loop). Shared by the auto-anchor and config-anchor paths; the
     gates differ (auto applies near-normal run/span gates, config relaxes them). `curated`
     marks user-declared anchors, which are kept verbatim and never deduped away."""
-    inst = _derive_anchor_line({"cen": cen, "len_m": len_m}, seqs)
+    inst = _derive_anchor_line({"cen": cen, "len_m": len_m}, loop_insts)
     if not inst:
         return None
     line = _resample_ll(inst["sub"], ANCHOR_LINE_STEP)
     loop_len = inst["dist_m"]
+    # Only runs that could cover >= ANCHOR_COVER of the line need the full sliding-window
+    # scan; the shared point grid rejects the rest exactly (their coverage upper bound is
+    # below the gate), which is most runs since a candidate loop sits in one small area.
+    eligible = _anchor_eligible_runs(line, anchor_idx, len(line))
     efforts = []
-    for rid, track in tracks.items():
+    for rid in eligible:
+        track = tracks[rid]
         for a, b in _match_anchor_spans(line, loop_len, track, ref_lat):
             efforts.append(_span_effort(track, a, b, rid))
     if len(efforts) < min_efforts:
@@ -997,7 +1063,7 @@ def _anchored_segment(cen, len_m, seqs, tracks, ref_lat, run_by_id,
     return seg
 
 
-def _auto_anchor_segments(clusters, mined_loops, seqs, tracks, ref_lat, run_by_id):
+def _auto_anchor_segments(clusters, mined_loops, loop_insts, tracks, anchor_idx, ref_lat, run_by_id):
     """Recover loops that self-cross in too few runs to be mined as closed loops (e.g. a loop
     usually run inside a longer route). Each sub-gate cluster's centroid + median length seeds
     an anchor; line-matching then counts embedded traversals across all runs. Candidates near
@@ -1017,7 +1083,7 @@ def _auto_anchor_segments(clusters, mined_loops, seqs, tracks, ref_lat, run_by_i
     for cl in shortfall[:AUTO_ANCHOR_MAX_CANDIDATES]:
         if near_mined(cl["cen"]):
             continue
-        seg = _anchored_segment(cl["cen"], cl["med_d"], seqs, tracks, ref_lat, run_by_id,
+        seg = _anchored_segment(cl["cen"], cl["med_d"], loop_insts, tracks, anchor_idx, ref_lat, run_by_id,
                                 min_runs=AUTO_ANCHOR_MIN_RUNS, min_span=MIN_SPAN_DAYS,
                                 min_efforts=AUTO_ANCHOR_MIN_RUNS)
         if seg:
@@ -1026,13 +1092,13 @@ def _auto_anchor_segments(clusters, mined_loops, seqs, tracks, ref_lat, run_by_i
     return segs
 
 
-def _build_anchored_segments(seqs, tracks, ref_lat, run_by_id):
+def _build_anchored_segments(loop_insts, tracks, anchor_idx, ref_lat, run_by_id):
     """Config-declared fallback anchors: for loops auto-detection can't recover (they never
     self-cross in any run) or to pin a curated name. Gates are relaxed since a pinned loop is
     legitimate even when its only valid laps are one session's."""
     segs = []
     for anchor in load_config().segment_anchors:
-        seg = _anchored_segment(anchor.center, anchor.len_m, seqs, tracks, ref_lat, run_by_id,
+        seg = _anchored_segment(anchor.center, anchor.len_m, loop_insts, tracks, anchor_idx, ref_lat, run_by_id,
                                 min_runs=1, min_span=0, min_efforts=2,
                                 name=anchor.name, curated=True)
         if seg:
@@ -1657,8 +1723,11 @@ SEGMENTS_CSS = """
 .so-body{flex:1 1 auto;display:flex;gap:12px;min-height:0}
 .so-map{flex:1 1 auto;min-height:200px;border-radius:8px;border:1px solid #3a3a3a;background:#111}
 .so-side{flex:0 0 440px;max-width:46%;display:flex;flex-direction:column;gap:10px;min-height:0}
-.so-trend{flex:0 0 auto;height:190px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
-.so-trend svg{display:block;width:100%;height:100%}
+.so-trend{flex:0 0 auto;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
+.so-trend svg{display:block;width:100%;height:190px}
+.seg-trend-legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 10px 8px;border-top:1px solid #2a2a2a}
+.seg-trend-legend .seg-leg-item{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:#999}
+.seg-trend-legend .seg-leg-item i{width:9px;height:9px;border-radius:50%;display:inline-block}
 .so-elev{flex:0 0 auto;height:150px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
 .so-elev svg{display:block;width:100%;height:100%}
 .so-elev-empty{display:flex;align-items:center;justify-content:center;height:100%;font-size:11px;color:#555}
