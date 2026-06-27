@@ -359,13 +359,20 @@ def cadence_trend(rows: list[dict]) -> list[tuple]:
 
 
 def period_totals(rows: list[dict], by: str) -> list[dict]:
-    """Per-period totals: [{date, dist (km), elev (m), time (h), runs}], gap-filled.
+    """Per-period totals: [{date, dist (km), elev (m), time (h), runs, breakdown}],
+    gap-filled.
 
     by='week' buckets by ISO-week Monday, by='month' by first-of-month. Empty
     periods between the first and last activity are filled with zeros so the
     line drops to the axis on rest weeks, like Strava's weekly graph.
+
+    `breakdown` is the per-run metric list (oldest run first) so the +Runs
+    overlay bar can be split into one notch per run, each sized by the run's
+    share of the period's distance / elevation / time.
     """
-    bucket = defaultdict(lambda: {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0})
+    def _new():
+        return {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0, "runs_bd": []}
+    bucket = defaultdict(_new)
     for r in rows:
         dt = parse_date(r)
         dist_m = num(r, "Distance")
@@ -374,19 +381,34 @@ def period_totals(rows: list[dict], by: str) -> list[dict]:
         d = dt.date()
         key = d - timedelta(days=d.weekday()) if by == "week" else d.replace(day=1)
         b = bucket[key]
-        b["dist"] += dist_m / 1000
-        b["elev"] += num(r, "Elevation Gain") or 0
-        b["time"] += (num(r, "Moving Time") or 0) / 3600
+        km   = dist_m / 1000
+        elev = num(r, "Elevation Gain") or 0
+        hrs  = (num(r, "Moving Time") or 0) / 3600
+        b["dist"] += km
+        b["elev"] += elev
+        b["time"] += hrs
         b["runs"] += 1
+        b["runs_bd"].append((dt, km, elev, hrs))
     if not bucket:
         return []
     keys = sorted(bucket)
     out, cur, end = [], keys[0], keys[-1]
     while cur <= end:
-        b = bucket.get(cur, {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0})
+        b = bucket.get(cur)
+        if b is None:
+            breakdown, runs = [], 0
+            dist = elev = time = 0.0
+        else:
+            runs = b["runs"]
+            dist, elev, time = b["dist"], b["elev"], b["time"]
+            breakdown = [
+                {"dist": round(km, 3), "elev": round(ev), "time": round(hr, 3)}
+                for _dt, km, ev, hr in sorted(b["runs_bd"], key=lambda x: x[0])
+            ]
         out.append({"date": cur.isoformat(),
-                    "dist": round(b["dist"], 1), "elev": round(b["elev"]),
-                    "time": round(b["time"], 2), "runs": b["runs"]})
+                    "dist": round(dist, 1), "elev": round(elev),
+                    "time": round(time, 2), "runs": runs,
+                    "breakdown": breakdown})
         cur = (cur + timedelta(days=7) if by == "week"
                else (cur.replace(day=28) + timedelta(days=4)).replace(day=1))
     return out
@@ -979,14 +1001,30 @@ function drawPtot(){{
       grid+='<text x="'+(W-padR+5)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="'+PTOT_RUNS_COLOR+'" text-anchor="start">'+Math.round(rmax*g/2)+'</text>';
     }}
   }}
-  // run-count bars (drawn first so the metric line sits on top)
+  // run-count bars (drawn first so the metric line sits on top). Bar height
+  // still encodes run count; the bar is split into one notch per run, each
+  // sized by that run's share of the period total for the active metric
+  // (oldest run at the bottom). Flat periods for the metric fall back to equal
+  // notches so every run still shows.
   var bars='';
   if(overlay){{
     var slot=(W-padL-padR)/Math.max(1,n), bw=Math.min(slot*0.6, 14);
     for(var bi=0;bi<n;bi++){{
-      if(!runs[bi]) continue;
-      var bx=px(bi)-bw/2, byTop=ry(runs[bi]);
-      bars+='<rect x="'+bx.toFixed(1)+'" y="'+byTop.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+(H-padB-byTop).toFixed(1)+'" rx="1" fill="'+PTOT_RUNS_COLOR+'" opacity="0.45"/>';
+      var c=runs[bi];
+      if(!c) continue;
+      var bx=px(bi)-bw/2, byTop=ry(c), bh=(H-padB)-byTop;
+      var bd=(data[bi].breakdown)||[];
+      bars+='<rect x="'+bx.toFixed(1)+'" y="'+byTop.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+bh.toFixed(1)+'" rx="1" fill="'+PTOT_RUNS_COLOR+'" opacity="0.18"/>';
+      if(bd.length){{
+        var mtot=0; for(var k=0;k<bd.length;k++) mtot+=(bd[k][metric]||0);
+        var yb=H-padB;  // build upward from the axis
+        for(var k=0;k<bd.length;k++){{
+          var share=(mtot>0)?((bd[k][metric]||0)/mtot):(1/bd.length);
+          var sh=bh*share, sy=yb-sh;
+          bars+='<rect x="'+bx.toFixed(1)+'" y="'+sy.toFixed(1)+'" width="'+bw.toFixed(1)+'" height="'+Math.max(0,sh).toFixed(1)+'" fill="'+PTOT_RUNS_COLOR+'" opacity="'+((k%2)?0.6:0.42)+'" stroke="#1a1a1a" stroke-width="0.6"/>';
+          yb=sy;
+        }}
+      }}
     }}
   }}
   var line=data.map(function(p,i){{ return (i?'L':'M')+px(i).toFixed(1)+','+py(p[metric]).toFixed(1); }}).join(' ');

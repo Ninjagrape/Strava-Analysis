@@ -21,7 +21,7 @@ PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
 from generate_dashboards import (
     load_rows, fmt_pace, fmt_time, ga_time, is_interval,
-    fmt_pace_from_s_per_km, weekly_mileage, render_mileage,
+    fmt_pace_from_s_per_km, weekly_mileage, weekly_runs, render_mileage,
     BEST_EFFORTS_CSS, GOAL_CSS,
     body_best_efforts, body_goal_dashboard,
 )
@@ -146,6 +146,40 @@ def _compute_threshold(rows: list[dict]) -> float | None:
     if best and best > 0:
         return round(5000.0 / best, 4)  # m/s
     return None
+
+
+THRESHOLD_WINDOW_DAYS = 60   # centered window for contemporaneous fitness
+
+
+def _build_threshold_curve(rows: list[dict]) -> list[tuple[datetime, float]]:
+    """(date, best_5k_s) for every row carrying a 5K effort, sorted by date."""
+    efforts = []
+    for row in rows:
+        dt = parse_date(row)
+        s = num(row, "best_5k_s")
+        if dt and s and s > 0:
+            efforts.append((dt, s))
+    efforts.sort(key=lambda e: e[0])
+    return efforts
+
+
+def _threshold_at(dt: datetime, efforts: list[tuple[datetime, float]],
+                  fallback: float | None) -> float | None:
+    """Threshold m/s from the fastest 5K within a centered window of `dt`.
+
+    Widens the window progressively (60 -> 120 -> 240 -> 480 days) when no 5K
+    falls in range, so sparse eras stay anchored to a nearby effort rather than
+    the all-time best. Uses `fallback` (all-time best) only when no effort
+    exists at all, so a run's pace zones reflect fitness *at the time it was run*.
+    """
+    if not efforts:
+        return fallback
+    for mult in (1, 2, 4, 8):
+        span = THRESHOLD_WINDOW_DAYS * mult
+        best = min((s for d, s in efforts if abs((d - dt).days) <= span), default=None)
+        if best:
+            return round(5000.0 / best, 4)
+    return fallback
 
 
 def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[float]:
@@ -336,6 +370,7 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
 
 def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
     """Convert enriched CSV rows to per-run dicts for the JS frontend."""
+    efforts = _build_threshold_curve(rows)
     runs = []
     for row in rows:
         dt = parse_date(row)
@@ -385,8 +420,11 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
                 s["pace_str"] = "—"
                 s["pace_s"] = None
 
-        # Pace zones: prefer km-split-based computation (correct units, personal threshold)
-        pace_zones = _compute_pace_zones(km_splits, threshold_mps)
+        # Pace zones: prefer km-split-based computation (correct units, personal threshold).
+        # The threshold tracks contemporaneous fitness, so an early effort is judged
+        # against the runner's 5K form at the time rather than today's all-time best.
+        run_threshold = _threshold_at(dt, efforts, threshold_mps)
+        pace_zones = _compute_pace_zones(km_splits, run_threshold)
 
         # GPS polyline for map
         try:
@@ -2333,7 +2371,7 @@ def generate(
     html_segments: str,
 ) -> str:
     stats          = _overview_stats(rows, runs, threshold_mps)
-    mileage_html   = render_mileage(weekly_mileage(rows))
+    mileage_html   = render_mileage(weekly_runs(rows))
     t0             = time.perf_counter()
     runs_json      = json.dumps(runs, ensure_ascii=False)
     if PROFILE:
