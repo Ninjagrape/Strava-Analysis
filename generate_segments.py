@@ -23,6 +23,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from generate_dashboards import fmt_time, fmt_pace, ga_time
+from config import load_config
 
 # ---------------------------------------------------------------------------
 # Tunable detection parameters (conservative: few, high-confidence benchmarks)
@@ -58,21 +59,29 @@ CORRIDOR_END_TOL_M = 80.0 # two point-to-point segments whose starts and ends bo
                           # within this are the same stretch (GPS-split into two)
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
 
-# Anchored segments: named routes that recur too rarely as *closed* loops to be mined.
-# Strava counts these off a fixed segment line, mining needs >= MIN_RUNS closed laps,
-# so a loop you usually run inside a longer route (no GPS self-crossing) stays invisible.
-# Each anchor pins the loop by approximate centre + length; the drawn line is derived
-# from the cleanest matching run, and every run is matched against it with a distance-
-# bounded sliding window so the entry point can be anywhere on the loop (Strava-style).
-ANCHORS = [
-    {"name": "Shirley Belmont Loop", "cen": (-33.8323, 151.1947), "len_m": 1080},
-]
+# Anchored segments: a loop you usually run *inside* a longer route never self-crosses, so
+# closed-loop mining (which needs >= MIN_RUNS laps) can't see it. The fix is to derive a line
+# from the cleanest self-crossing instance and match every run against it with a distance-
+# bounded sliding window, so the entry point can be anywhere on the loop (Strava-style).
+# _auto_anchor_segments does this automatically for loops that fall short of the closed-loop
+# run gate; config.json `segment_anchors` are an explicit fallback for loops that never close
+# in any run, or to pin a curated name. See AUTO_ANCHOR_MAX_CANDIDATES below.
 ANCHOR_TOL_M    = 25.0    # a run point this close to the line counts as "on" it
 ANCHOR_COVER    = 0.80    # fraction of the line a window must cover to complete
 ANCHOR_NEAR_M   = 130.0   # cleanest instance must be within this of the anchor centre
 ANCHOR_LINE_STEP = 10.0   # resample spacing of the derived line
 ANCHOR_CLOSE_M  = 55.0    # a lap's start and end must be this close (a real loop closes;
                           # a pass that starts at home and ends mid-road is not a lap)
+AUTO_ANCHOR_MAX_CANDIDATES = 25   # cap on auto-anchor loops tried (most self-crossings first),
+                                  # bounds the cost of span-matching every candidate vs all runs
+AUTO_ANCHOR_MIN_RUNS = 3          # an auto-anchor must be *traversed* (line-matched) by this many
+                                  # distinct runs. Lower than MIN_RUNS (mined loops need closed
+                                  # laps); an embedded traversal is a weaker per-instance signal,
+                                  # but 3 distinct runs over MIN_SPAN_DAYS still means a real route,
+                                  # and it rejects the 2-run incidental loops that flood a lower bar.
+AUTO_ANCHOR_MINED_GAP_M = 120.0   # skip an auto-anchor candidate this close to a mined loop: the
+                                  # loop is already detected, so an anchor there only re-times the
+                                  # same circuit at a different scale (a duplicate/fragment)
 
 CACHE_DIR       = Path(__file__).parent / "csv_data"
 SEG_CACHE       = CACHE_DIR / "segments_cache.json"
@@ -365,7 +374,9 @@ def _runs_signature(runs):
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
              f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,"
-             f"anchors:{ANCHORS},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},close1,anchorline2,elevprofile1".encode())
+             f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
+             f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
+             f"locdedupe1,close1,anchorline2,elevprofile1".encode())
     return h.hexdigest()
 
 
@@ -387,7 +398,7 @@ def build_segments(runs):
         return []
 
     all_lats = [p["lat"] for tr in tracks.values() for p in tr[:1]]
-    ref_lat = sorted(all_lats)[len(all_lats) // 2] if all_lats else -33.83
+    ref_lat = sorted(all_lats)[len(all_lats) // 2]   # tracks is non-empty here (guarded above)
     cell = _cell_factory(ref_lat)
 
     seqs = {rid: _cell_sequence(tr, cell) for rid, tr in tracks.items()}
@@ -423,9 +434,15 @@ def build_segments(runs):
 
     # Closed loops (the Coal Loader, Belmont/Shirley loops) — found by detecting
     # where each run returns near an earlier point, then clustering across runs.
-    segments.extend(_detect_loops(seqs, run_by_id))
+    loop_segs, loop_clusters = _detect_loops(seqs, run_by_id)
+    segments.extend(loop_segs)
 
-    # Anchored loops: named routes mining can't recover, matched off a fixed line.
+    # Auto-anchored loops: clusters that fall short of the closed-loop run gate, recovered by
+    # matching their derived line against every run (incl. runs where they never self-cross).
+    # Skips locations already covered by a mined loop so it fills gaps, never fragments them.
+    segments.extend(_auto_anchor_segments(loop_clusters, loop_segs, seqs, tracks, ref_lat, run_by_id))
+
+    # Config anchors: explicit fallback for loops auto-detection can't recover, or curated names.
     segments.extend(_build_anchored_segments(seqs, tracks, ref_lat, run_by_id))
 
     segments = _dedupe(segments)
@@ -774,25 +791,30 @@ def _cluster_loops(per_run):
     return clusters
 
 
+def _scan_loops(seqs, min_len):
+    """All self-crossing loop candidates across every run, each tagged with run_id + centroid."""
+    out = []
+    for rid, seq in seqs.items():
+        for lp in _run_loops(seq, min_len):
+            lp["run_id"] = rid
+            lp["cen"] = _loop_centroid(lp["sub"])
+            out.append(lp)
+    return out
+
+
 def _detect_loops(seqs, run_by_id):
     """Two passes. Phase 1 identifies distinct loops at a stable scale (a higher floor so
     a small sub-loop of a bigger circuit can't fragment it). Phase 2 re-scans each run
     with a low floor to find every individual lap and assigns each lap to the identifying
     loop it falls in (same place, comparable length) — so repeating a short loop within a
-    session counts as several attempts without the short floor breaking identification."""
-    def scan(min_len):
-        out = []
-        for rid, seq in seqs.items():
-            for lp in _run_loops(seq, min_len):
-                lp["run_id"] = rid
-                lp["cen"] = _loop_centroid(lp["sub"])
-                out.append(lp)
-        return out
+    session counts as several attempts without the short floor breaking identification.
 
-    ident = _cluster_loops(scan(LOOP_MIN_LEN_M))
-    ident = [cl for cl in ident if len({m["run_id"] for m in cl["members"]}) >= MIN_RUNS]
+    Returns (segments, clusters): `clusters` are all phase-1 location clusters (before the
+    run-count gate), reused by _auto_anchor_segments to recover the sub-gate ones."""
+    clusters = _cluster_loops(_scan_loops(seqs, LOOP_MIN_LEN_M))
+    ident = [cl for cl in clusters if len({m["run_id"] for m in cl["members"]}) >= MIN_RUNS]
 
-    laps = scan(LOOP_LAP_MIN)
+    laps = _scan_loops(seqs, LOOP_LAP_MIN)
     segments = []
     for cl in ident:
         members = [lp for lp in laps
@@ -805,7 +827,7 @@ def _detect_loops(seqs, run_by_id):
         seg = _segment_from_efforts(members, run_by_id, force_type="loop")
         if seg:
             segments.append(seg)
-    return segments
+    return segments, clusters
 
 
 # ---------------------------------------------------------------------------
@@ -944,32 +966,77 @@ def _span_effort(track, a, b, rid):
             "dist_m": sub[-1]["d"] - sub[0]["d"], "sub": sub, "net_elev": net, "gain_m": gain}
 
 
-def _build_anchored_segments(seqs, tracks, ref_lat, run_by_id):
-    """Fixed-line segments for the ANCHORS that mining can't recover (too few closed laps)."""
+def _anchored_segment(cen, len_m, seqs, tracks, ref_lat, run_by_id,
+                      min_runs, min_span, min_efforts, name=None, curated=False):
+    """Build one fixed-line loop segment from a centre + length: derive the line from the
+    cleanest self-crossing instance, then time every run's matching span (the entry point
+    may be anywhere on the loop). Shared by the auto-anchor and config-anchor paths; the
+    gates differ (auto applies near-normal run/span gates, config relaxes them). `curated`
+    marks user-declared anchors, which are kept verbatim and never deduped away."""
+    inst = _derive_anchor_line({"cen": cen, "len_m": len_m}, seqs)
+    if not inst:
+        return None
+    line = _resample_ll(inst["sub"], ANCHOR_LINE_STEP)
+    loop_len = inst["dist_m"]
+    efforts = []
+    for rid, track in tracks.items():
+        for a, b in _match_anchor_spans(line, loop_len, track, ref_lat):
+            efforts.append(_span_effort(track, a, b, rid))
+    if len(efforts) < min_efforts:
+        return None
+    seg = _segment_from_efforts(efforts, run_by_id, force_type="loop",
+                                min_runs=min_runs, min_span=min_span)
+    if not seg:
+        return None
+    # Draw the clean derived line (not a re-derived medoid).
+    seg["polyline"] = [[round(la, 5), round(lo, 5)] for la, lo in _simplify(line)]
+    seg["anchored"] = True
+    seg["curated"] = curated          # curated (config) anchors bypass dedupe; auto ones don't
+    if name:                          # config anchors pin a curated name; auto ones geocode
+        seg["name"] = name
+    return seg
+
+
+def _auto_anchor_segments(clusters, mined_loops, seqs, tracks, ref_lat, run_by_id):
+    """Recover loops that self-cross in too few runs to be mined as closed loops (e.g. a loop
+    usually run inside a longer route). Each sub-gate cluster's centroid + median length seeds
+    an anchor; line-matching then counts embedded traversals across all runs. Candidates near
+    an already-mined loop are skipped (it would just re-time the same circuit), and the result
+    must still clear AUTO_ANCHOR_MIN_RUNS distinct runs over MIN_SPAN_DAYS, so embedding can't
+    manufacture spurious or duplicate benchmarks."""
+    mined_cens = [_poly_centroid(s["polyline"]) for s in mined_loops]
+
+    def near_mined(cen):
+        return any(_haversine_m(cen[0], cen[1], mc[0], mc[1]) < AUTO_ANCHOR_MINED_GAP_M
+                   for mc in mined_cens)
+
+    shortfall = [cl for cl in clusters
+                 if 1 <= len({m["run_id"] for m in cl["members"]}) < MIN_RUNS]
+    shortfall.sort(key=lambda cl: -len({m["run_id"] for m in cl["members"]}))
     segs = []
-    for anchor in ANCHORS:
-        inst = _derive_anchor_line(anchor, seqs)
-        if not inst:
+    for cl in shortfall[:AUTO_ANCHOR_MAX_CANDIDATES]:
+        if near_mined(cl["cen"]):
             continue
-        line = _resample_ll(inst["sub"], ANCHOR_LINE_STEP)
-        loop_len = inst["dist_m"]
-        efforts = []
-        for rid, track in tracks.items():
-            for a, b in _match_anchor_spans(line, loop_len, track, ref_lat):
-                efforts.append(_span_effort(track, a, b, rid))
-        if len(efforts) < 2:        # need a couple of real laps to be worth showing
-            continue
-        # A pinned loop is legitimate even when its only valid laps are one session's,
-        # so the distinct-run and span gates are relaxed (closure already filters non-laps).
-        seg = _segment_from_efforts(efforts, run_by_id, force_type="loop",
-                                    min_runs=1, min_span=0)
-        if not seg:
-            continue
-        # Draw the clean derived line (not a re-derived medoid) and pin the curated name.
-        seg["name"] = anchor["name"]
-        seg["polyline"] = [[round(la, 5), round(lo, 5)] for la, lo in _simplify(line)]
-        seg["anchored"] = True
-        segs.append(seg)
+        seg = _anchored_segment(cl["cen"], cl["med_d"], seqs, tracks, ref_lat, run_by_id,
+                                min_runs=AUTO_ANCHOR_MIN_RUNS, min_span=MIN_SPAN_DAYS,
+                                min_efforts=AUTO_ANCHOR_MIN_RUNS)
+        if seg:
+            mined_cens.append(_poly_centroid(seg["polyline"]))   # don't stack two at one spot
+            segs.append(seg)
+    return segs
+
+
+def _build_anchored_segments(seqs, tracks, ref_lat, run_by_id):
+    """Config-declared fallback anchors: for loops auto-detection can't recover (they never
+    self-cross in any run) or to pin a curated name. Gates are relaxed since a pinned loop is
+    legitimate even when its only valid laps are one session's."""
+    segs = []
+    for anchor in load_config().segment_anchors:
+        seg = _anchored_segment(anchor.center, anchor.len_m, seqs, tracks, ref_lat, run_by_id,
+                                min_runs=1, min_span=0, min_efforts=2,
+                                name=anchor.name, curated=True)
+        if seg:
+            segs.append(seg)
     return segs
 
 
@@ -1017,9 +1084,13 @@ def _dedupe(segments):
     Overlap = sharing >70% of effort run-ids and similar length, or tracing the same
     directed corridor (same start and end) regardless of run-id overlap."""
     kept = []
-    order = sorted(segments, key=lambda s: (-s["n_efforts"], -s["length_m"]))
+    # Mined segments rank before auto-anchors (tier 0 vs 1) so a real mined loop always wins a
+    # tie; auto-anchors only fill gaps. Curated config anchors are handled separately below.
+    order = sorted(segments,
+                   key=lambda s: (1 if (s.get("anchored") and not s.get("curated")) else 0,
+                                  -s["n_efforts"], -s["length_m"]))
     for s in order:
-        if s.get("anchored"):        # curated fixed-line segments are always kept
+        if s.get("curated"):         # user-declared fixed-line anchors are always kept
             kept.append(s)
             continue
         s_runs = {e["run_id"] for e in s["efforts"]}
@@ -1051,7 +1122,10 @@ def _dedupe(segments):
                 # is longer) — merge regardless of length, keeping the higher-effort one.
                 # The location check stops distinct routes run on the same days merging.
                 near_total = inter / smaller >= 0.9 and same_place and s["type"] != "loop"
-                if near_total or (hi and lo / hi > 0.6):
+                # Length-ratio overlap only merges when the two are at the same place. Two loops
+                # far apart that merely share runs (people who run loop A often also run loop B)
+                # are distinct benchmarks — without this a broad anchor would swallow a real loop.
+                if near_total or (same_place and hi and lo / hi > 0.6):
                     dup = True
                     break
         if not dup:

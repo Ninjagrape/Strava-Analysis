@@ -38,6 +38,17 @@ python generate_hub.py     # step 2: CSV → dashboards/TrainingHub.html
 
 The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically). The date is taken from the export zip's file modification time — i.e. when you downloaded it from Strava — so the filename reflects the export generation date rather than the day you ran the script.
 
+### Personalization (optional)
+
+Everything is derived from your export, so no setup is required. To add race-goal cards to the
+Goals tab, copy `config.example.json` to `config.json` and list your races (name, distance,
+date, target time, optional pace wave). Without a config the Goals tab shows generic Riegel/VDOT
+predictions only — no personal targets.
+
+`config.json` is gitignored, so your goals stay local. It also accepts an optional
+`segment_anchors` list, but you rarely need it: recurring loops are now auto-detected even when
+you only ever run them inside a longer route (see [Benchmark segments](#benchmark-segments-generate_segmentspy)). Use an anchor only to pin or rename a loop the detector misses.
+
 ### Options
 
 | Flag | Default | Description |
@@ -401,10 +412,14 @@ Three kinds are detected:
 | **Climb** | A corridor with sustained ascent | A corridor whose net gain and average grade clear `CLIMB_MIN_GAIN` / `CLIMB_MIN_GRADE`; the benchmark is oriented uphill so it times the climb |
 | **Loop** | A closed circuit you lap | Self-crossing detection per run (where the track returns near an earlier point), clustered across runs by centroid and length. A two-pass scan identifies the loop at a stable scale, then re-scans each run at a lower floor so repeats within one session each count as a lap |
 
-Routes that recur too rarely as *closed* laps to be mined (a loop you usually run inside a
-longer route, with no GPS self-crossing) can be pinned as **anchored** segments via the
-`ANCHORS` list — an approximate centre and length — and are then matched off a fixed line the
-way Strava counts efforts.
+A loop you usually run *inside* a longer route never self-crosses, so closed-loop mining can't
+see it. These are recovered automatically: any loop cluster that falls short of the `MIN_RUNS`
+closed-lap gate is promoted to an **auto-anchor** — a line is derived from the cleanest
+self-crossing instance and matched off that fixed line across every run (the way Strava counts
+efforts), so traversals embedded in longer routes still count. The normal run/span/length gates
+still apply. As a last resort, a loop that never self-crosses in *any* run (so no line can be
+derived) can be pinned in `config.json` under `segment_anchors` — an approximate centre and
+length, plus a curated name.
 
 ### Timing and ranking
 

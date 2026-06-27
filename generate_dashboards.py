@@ -21,6 +21,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from config import Race, load_config
+
 
 # ---------------------------------------------------------------------------
 # Pace / time helpers
@@ -227,14 +229,13 @@ def top3_for_band(
 
 
 def weekly_mileage(rows: list[dict]) -> list[tuple[str, float]]:
-    """Returns list of (week_label, km) for Apr 2026 onwards, sorted."""
+    """Returns list of (week_label, km) for every ISO week present, oldest first.
+    The dashboard's range toggle slices this to 3M/6M/1Y/All."""
     weekly: dict[tuple, float] = defaultdict(float)
     for r in rows:
         try:
             dt = datetime.strptime(r.get("Activity Date", ""), "%b %d, %Y, %I:%M:%S %p")
         except ValueError:
-            continue
-        if dt.year < 2026 or dt.month < 4:
             continue
         dist_km = float(r.get("Distance") or 0) / 1000
         weekly[dt.isocalendar()[:2]] += dist_km
@@ -389,6 +390,10 @@ GOAL_CSS = """
 
 .spark-wrap{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 14px;}
 .spark-label{font-size:10px;color:#555;margin:0 0 6px;}
+.mi-tabs{display:flex;gap:6px;margin-bottom:8px;}
+.mi-btn{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
+.mi-btn:hover{color:#ccc;}
+.mi-btn.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
 .bars{display:flex;align-items:flex-end;gap:4px;height:48px;}
 .bar-col{display:flex;flex-direction:column;align-items:center;flex:1;}
 .bar-rect{width:100%;border-radius:2px 2px 0 0;background:#3a5a3a;min-height:2px;}
@@ -469,48 +474,165 @@ def render_spark(weeks: list[tuple[str, float]]) -> str:
     return "\n".join(cols)
 
 
+# Weeks shown per range button (ISO weeks). None = all available data.
+WEEKLY_RANGES = [("3M", 13), ("6M", 26), ("1Y", 52), ("All", None)]
+WEEKLY_DEFAULT = "6M"
+
+_MILEAGE_TOGGLE_JS = """<script>
+function setMileageRange(btn){
+  var g = btn.closest('.mi-group');
+  var r = btn.getAttribute('data-range');
+  g.querySelectorAll('.mi-btn').forEach(function(b){ b.classList.toggle('active', b === btn); });
+  g.querySelectorAll('.mi-chart').forEach(function(c){
+    c.style.display = (c.getAttribute('data-range') === r) ? '' : 'none';
+  });
+}
+</script>"""
+
+
+def render_mileage(weeks: list[tuple[str, float]]) -> str:
+    """Weekly-mileage sparkline wrapped in a 3M/6M/1Y/All range toggle (self-contained:
+    carries its own CSS classes and toggle script, so it works standalone and in the hub)."""
+    if not weeks:
+        return '<div class="spark-wrap"><p class="spark-label">No weekly data yet.</p></div>'
+    btns, charts = [], []
+    for label, n in WEEKLY_RANGES:
+        active = label == WEEKLY_DEFAULT
+        window = weeks if n is None else weeks[-n:]
+        btns.append(
+            f'<button class="mi-btn{" active" if active else ""}" '
+            f'data-range="{label}" onclick="setMileageRange(this)">{label}</button>')
+        style = "" if active else ' style="display:none"'
+        charts.append(
+            f'<div class="mi-chart" data-range="{label}"{style}>'
+            f'<div class="bars">{render_spark(window)}</div></div>')
+    return (
+        '<div class="spark-wrap mi-group">'
+        f'<div class="mi-tabs">{"".join(btns)}</div>'
+        '<p class="spark-label">km per week (ISO weeks) · green = most recent</p>'
+        f'{"".join(charts)}{_MILEAGE_TOGGLE_JS}</div>')
+
+
+def _predict_race_time(race: Race, t10k_ga: float, riegel_a: float, riegel_b: float) -> float:
+    """Predicted GA time for a configured race. Prefer the 10k-anchored Riegel (so cards
+    agree with the predictions table); fall back to the user's fitted curve when no 10k
+    effort exists yet."""
+    if t10k_ga:
+        return riegel(t10k_ga, 10_000, race.distance_m)
+    if riegel_a:
+        return riegel_a * race.distance_m ** riegel_b
+    return 0.0
+
+
+def _race_for_distance(races, dist_m: float, tol: float = 0.02) -> Race | None:
+    """A configured race whose distance matches dist_m within tol (fractional)."""
+    for r in races:
+        if dist_m and abs(r.distance_m - dist_m) / dist_m <= tol:
+            return r
+    return None
+
+
+_RACE_BAR_HALF_WINDOW_S_PER_KM = 60.0   # bar spans target pace ± this many s/km
+
+
+def render_race_card(race: Race, pred_s: float) -> str:
+    """One race-goal card, generic over single-time targets and pace-wave targets.
+    The bar centres on the target pace (50%); the prediction marker sits left (slower)
+    or right (faster) of it."""
+    dist_m = race.distance_m
+    meta = " · ".join(x for x in (race.date, race.notes) if x)
+    pred_pace_s = pred_s / (dist_m / 1000) if dist_m else 0.0
+
+    if race.target_wave_s:
+        fast_s, slow_s = sorted(race.target_wave_s)   # fast = smaller time
+        center_s = slow_s                             # gauge against the wave ceiling
+        status = "green" if pred_s <= slow_s else "amber"
+        target_label = f"{fmt_time(fast_s)}–{fmt_time(slow_s)}"
+        target_sub = f"{fmt_pace_bare(slow_s, dist_m)}–{fmt_pace_bare(fast_s, dist_m)}/km"
+        third_label = "vs ceiling"
+        if pred_s > slow_s:
+            gap_val, gap_sub = "+" + fmt_time(pred_s - slow_s), "over wave"
+        elif pred_s < fast_s:
+            gap_val, gap_sub = "-" + fmt_time(fast_s - pred_s), "ahead of wave"
+        else:
+            gap_val, gap_sub = "inside ✓", "inside wave"
+    elif race.target_time_s:
+        center_s = race.target_time_s
+        status = "green" if pred_s <= center_s else "amber"
+        target_label = fmt_time(center_s)
+        target_sub = fmt_pace(center_s, dist_m)
+        third_label = "Gap"
+        gap = pred_s - center_s
+        per_km = abs(gap) / (dist_m / 1000) if dist_m else 0
+        gap_val = ("+" if gap >= 0 else "-") + fmt_time(abs(gap))
+        gap_sub = f"{int(per_km)}s/km {'over' if gap > 0 else 'under'}"
+    else:
+        center_s = pred_s
+        status = "amber"
+        target_label, target_sub, third_label, gap_val, gap_sub = "—", "", "Gap", "—", ""
+
+    center_pace_s = center_s / (dist_m / 1000) if dist_m else 0.0
+    hw = _RACE_BAR_HALF_WINDOW_S_PER_KM
+
+    def _pct(pace_s: float) -> int:
+        return max(0, min(100, round((center_pace_s - pace_s) / (2 * hw) * 100 + 50)))
+
+    bar_pct = _pct(pred_pace_s)
+    fill_class = "on-track" if pred_pace_s <= center_pace_s else "close"
+
+    return f"""\
+  <div class="race-card">
+    <div class="race-header">
+      <span class="race-name">{race.name}</span>
+      <span class="race-date">{meta}</span>
+    </div>
+    <div class="race-body">
+      <div>
+        <p class="stat-label">Target</p>
+        <p class="stat-value">{target_label}</p>
+        <p class="stat-sub">{target_sub}</p>
+      </div>
+      <div>
+        <p class="stat-label">Predicted (Riegel)</p>
+        <p class="stat-value {status}">{fmt_time(pred_s)}</p>
+        <p class="stat-sub">{fmt_pace(pred_s, dist_m)}</p>
+      </div>
+      <div>
+        <p class="stat-label">{third_label}</p>
+        <p class="stat-value {status}">{gap_val}</p>
+        <p class="stat-sub">{gap_sub}</p>
+      </div>
+    </div>
+    <div>
+      <div class="gap-labels">
+        <span>slower</span>
+        <span class="current">you: {fmt_pace(pred_s, dist_m)}</span>
+        <span>faster</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill {fill_class}" style="width:{bar_pct}%;"></div>
+        <div class="bar-target" style="left:50%;"></div>
+      </div>
+    </div>
+  </div>"""
+
+
 def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
+    cfg = load_config()
+
     # --- Riegel predictions from GA best 10k ---
     best10k_efforts = top3_for_band(rows, "best_10k_s", 10_000, False)
     if not best10k_efforts:
         anchor_note = "no 10k effort found"
-        preds = {}
+        t10k_ga = 0.0
     else:
         b = best10k_efforts[0]
         t10k_ga = ga_time(b["s"], b["gain"], b["dist_km"])
-        preds = {
-            "5k":   riegel(t10k_ga, 10_000, 5_000),
-            "10k":  riegel(t10k_ga, 10_000, 10_000),
-            "14k":  riegel(t10k_ga, 10_000, 14_000),
-            "half": riegel(t10k_ga, 10_000, 21_097.5),
-            "full": riegel(t10k_ga, 10_000, 42_195),
-        }
         anchor_note = (
             f"Riegel predictions anchored on GA 10k {fmt_time(t10k_ga)} "
             f"({fmt_pace(t10k_ga, 10_000)}) · {b['activity']} {b['date']} · "
             f"Minetti-adjusted · updated {updated}"
         )
-
-    # --- 14k race card ---
-    pred_14k_s   = preds.get("14k", 0)
-    pred_14k_gap = pred_14k_s - 4200  # target 1:10:00 = 4200s
-    gap_14k_str  = ("+" if pred_14k_gap >= 0 else "") + fmt_time(abs(pred_14k_gap))
-    gap_14k_pace_s = pred_14k_gap / 14  # seconds per km gap
-    gap_14k_pace_str = f"{int(abs(gap_14k_pace_s))}s/km {'over' if pred_14k_gap > 0 else 'under'}"
-    # bar: pace range 6:30 (390s) to 4:30 (270s) = 120s window
-    # current pred pace in s/km
-    pred_14k_pace_s = pred_14k_s / 14
-    bar_14k_pct = max(0, min(100, round((390 - pred_14k_pace_s) / 120 * 100)))
-    target_14k_pct = round((390 - 300) / 120 * 100)  # 5:00/km = 300s
-
-    # --- Half marathon card ---
-    pred_half_s     = preds.get("half", 0)
-    pred_half_gap   = 7200 - pred_half_s   # vs 2:00:00, positive = under
-    gap_half_str    = ("-" if pred_half_gap >= 0 else "+") + fmt_time(abs(pred_half_gap))
-    pred_half_pace_s = pred_half_s / 21.0975
-    # bar: 2:20 (140min) to 1:30 (90min) = 50min = 3000s window; wave entry at 1:40 (100min)
-    bar_half_pct  = max(0, min(100, round((8400 - pred_half_s) / 3000 * 100)))
-    target_half_pct = round((8400 - 6000) / 3000 * 100)  # 1:40:00
 
     # --- Fit personal Riegel curve from GA best efforts ---
     # Uses 1 mile through half marathon to find the actual exponent b in T = a * D^b.
@@ -555,48 +677,47 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
             label, fmt_target_range(lo, hi), current_str, current_s_per_km, lo, hi,
         ))
 
-    # --- Riegel predictions table ---
-    pred_rows_html = []
-    if preds:
-        pred_rows_html.append(render_pred_row(
-            "5K",
-            fmt_time(preds["5k"]),
-            fmt_pace(preds["5k"], 5_000),
-            "well under target", "ok",
-        ))
-        pred_rows_html.append(render_pred_row(
-            "10K",
-            fmt_time(preds["10k"]),
-            fmt_pace(preds["10k"], 10_000),
-            "anchor effort", "",
-        ))
-        pred_rows_html.append(render_pred_row(
-            "14K race",
-            fmt_time(preds["14k"]),
-            fmt_pace(preds["14k"], 14_000),
-            f"target 1:10:00 · gap {gap_14k_str}", "warn",
-        ))
-        pred_rows_html.append(render_pred_row(
-            "Half marathon",
-            fmt_time(preds["half"]),
-            fmt_pace(preds["half"], 21_097.5),
-            f"inside 100–120 min wave ✓", "ok",
-        ))
-        pred_rows_html.append(render_pred_row(
-            "Full marathon",
-            fmt_time(preds["full"]),
-            fmt_pace(preds["full"], 42_195),
-            "—", "",
-        ))
+    # --- Race goal cards (from optional config; generic predictions otherwise) ---
+    race_cards_html = [
+        render_race_card(r, _predict_race_time(r, t10k_ga, _riegel_a, _riegel_b))
+        for r in cfg.races
+    ]
+    race_section = ""
+    if race_cards_html:
+        race_section = (
+            '<div class="section">\n'
+            '  <p class="section-title">Race goals</p>\n'
+            f"{''.join(race_cards_html)}\n"
+            '</div>\n'
+        )
 
-    # --- Weekly mileage sparkline ---
-    weeks = weekly_mileage(rows)
-    spark_cols = render_spark(weeks)
+    # --- Riegel predictions table ---
+    # Standard distances plus any configured race distance not already covered. Each row's
+    # note is derived from a matching configured race (target + gap), else left blank.
+    pred_rows_html = []
+    if t10k_ga:
+        _STD = [("5K", 5_000.0), ("10K", 10_000.0),
+                ("Half marathon", 21_097.5), ("Full marathon", 42_195.0)]
+        extras = [(r.name, r.distance_m) for r in cfg.races
+                  if not any(abs(r.distance_m - d) / d <= 0.02 for _, d in _STD)]
+        for label, dist_m in sorted(_STD + extras, key=lambda x: x[1]):
+            ps = riegel(t10k_ga, 10_000, dist_m)
+            race = _race_for_distance(cfg.races, dist_m)
+            if race and race.target_time_s:
+                gap = ps - race.target_time_s
+                note = f"target {fmt_time(race.target_time_s)} · gap {'+' if gap >= 0 else '-'}{fmt_time(abs(gap))}"
+                note_class = "warn" if gap > 0 else "ok"
+            elif abs(dist_m - 10_000.0) < 200:
+                note, note_class = "anchor effort", ""
+            else:
+                note, note_class = "—", ""
+            pred_rows_html.append(render_pred_row(
+                label, fmt_time(ps), fmt_pace(ps, dist_m), note, note_class))
+
+    # --- Weekly mileage sparkline (with range toggle) ---
+    mileage_html = render_mileage(weekly_mileage(rows))
 
     # --- Assemble HTML ---
-    half_status_class = "green" if pred_half_gap >= 0 else "amber"
-    half_gap_display  = gap_half_str
-
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -612,82 +733,7 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 <h1>Goal gap dashboard</h1>
 <p class="subtitle">{anchor_note}</p>
 
-<div class="section">
-  <p class="section-title">Race goals</p>
-
-  <div class="race-card">
-    <div class="race-header">
-      <span class="race-name">14km race</span>
-      <span class="race-date">Coming up soon</span>
-    </div>
-    <div class="race-body">
-      <div>
-        <p class="stat-label">Target</p>
-        <p class="stat-value">1:10:00</p>
-        <p class="stat-sub">5:00/km</p>
-      </div>
-      <div>
-        <p class="stat-label">Predicted (Riegel)</p>
-        <p class="stat-value amber">{fmt_time(pred_14k_s)}</p>
-        <p class="stat-sub">{fmt_pace(pred_14k_s, 14_000)}</p>
-      </div>
-      <div>
-        <p class="stat-label">Gap</p>
-        <p class="stat-value amber">{gap_14k_str}</p>
-        <p class="stat-sub">{gap_14k_pace_str}</p>
-      </div>
-    </div>
-    <div>
-      <div class="gap-labels">
-        <span>slow</span>
-        <span class="current">you: {fmt_pace(pred_14k_s, 14_000)}</span>
-        <span>target: 5:00/km</span>
-      </div>
-      <div class="bar-track">
-        <div class="bar-fill close" style="width:{bar_14k_pct}%;"></div>
-        <div class="bar-target" style="left:{target_14k_pct}%;"></div>
-      </div>
-      <p class="gap-note">Grade adjustment accounts for much of this gap on a flat race course.</p>
-    </div>
-  </div>
-
-  <div class="race-card">
-    <div class="race-header">
-      <span class="race-name">Half marathon — Sydney Olympic Park</span>
-      <span class="race-date">Sep 2026 · flat course · target wave 100–120 min</span>
-    </div>
-    <div class="race-body">
-      <div>
-        <p class="stat-label">Target wave</p>
-        <p class="stat-value">1:40–2:00</p>
-        <p class="stat-sub">4:44–5:41/km</p>
-      </div>
-      <div>
-        <p class="stat-label">Predicted (Riegel)</p>
-        <p class="stat-value {half_status_class}">{fmt_time(pred_half_s)}</p>
-        <p class="stat-sub">{fmt_pace(pred_half_s, 21_097.5)}</p>
-      </div>
-      <div>
-        <p class="stat-label">vs 2:00 ceiling</p>
-        <p class="stat-value {half_status_class}">{half_gap_display}</p>
-        <p class="stat-sub">{'inside wave ✓' if pred_half_gap >= 0 else 'over ceiling'}</p>
-      </div>
-    </div>
-    <div>
-      <div class="gap-labels">
-        <span>2:20</span>
-        <span class="current">you: {fmt_time(pred_half_s)}</span>
-        <span>wave open: 1:40</span>
-      </div>
-      <div class="bar-track">
-        <div class="bar-fill on-track" style="width:{bar_half_pct}%;"></div>
-        <div class="bar-target" style="left:{target_half_pct}%;"></div>
-      </div>
-      <p class="gap-note">16 weeks to build toward sub-1:50 stretch goal.</p>
-    </div>
-  </div>
-</div>
-
+{race_section}
 <div class="section">
   <p class="section-title">Training targets vs current bests</p>
   <p class="subtitle">{training_anchor_note}</p>
@@ -716,13 +762,8 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 </div>
 
 <div class="section">
-  <p class="section-title">Weekly mileage — Apr 2026 onwards</p>
-  <div class="spark-wrap">
-    <p class="spark-label">km per week (ISO weeks) · green = most recent</p>
-    <div class="bars">
-{spark_cols}
-    </div>
-  </div>
+  <p class="section-title">Weekly mileage</p>
+  {mileage_html}
 </div>
 
 </body>

@@ -1,0 +1,20 @@
+{
+  "races": [
+    {
+      "name": "14km race",
+      "distance_m": 14000,
+      "date": "2026-08",
+      "target_time_s": 4200,
+      "notes": "5:00/km target"
+    },
+    {
+      "name": "Half marathon",
+      "distance_m": 21097.5,
+      "date": "2026-09",
+      "target_time_s": 7200,
+      "target_wave_s": [6000, 7200],
+      "notes": "flat course, target wave 100-120 min"
+    }
+  ],
+  "segment_anchors": []
+}

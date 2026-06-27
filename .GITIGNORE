@@ -10,6 +10,9 @@ segment_geocode_cache.json
 # Strava export zips/folders (don't commit raw data)
 export_*/
 
+# Personal config (races, segment anchors) — keep config.example.json committed
+config.json
+
 # Python
 __pycache__/
 *.py[cod]

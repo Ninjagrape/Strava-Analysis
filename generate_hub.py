@@ -21,7 +21,7 @@ PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
 from generate_dashboards import (
     load_rows, fmt_pace, fmt_time, ga_time, is_interval,
-    fmt_pace_from_s_per_km, weekly_mileage, render_spark,
+    fmt_pace_from_s_per_km, weekly_mileage, render_mileage,
     BEST_EFFORTS_CSS, GOAL_CSS,
     body_best_efforts, body_goal_dashboard,
 )
@@ -2299,8 +2299,7 @@ def generate(
     html_segments: str,
 ) -> str:
     stats          = _overview_stats(rows, runs, threshold_mps)
-    weeks          = weekly_mileage(rows)
-    spark_cols     = render_spark(weeks)
+    mileage_html   = render_mileage(weekly_mileage(rows))
     t0             = time.perf_counter()
     runs_json      = json.dumps(runs, ensure_ascii=False)
     if PROFILE:
@@ -2362,13 +2361,8 @@ def generate(
 {extra_html}
 
 <div class="ov-section">
-  <p class="ov-section-title">Weekly mileage &mdash; Apr 2026 onwards</p>
-  <div class="spark-wrap">
-    <p class="spark-label">km per week (ISO weeks) &middot; updated {updated}</p>
-    <div class="bars">
-{spark_cols}
-    </div>
-  </div>
+  <p class="ov-section-title">Weekly mileage</p>
+  {mileage_html}
 </div>
 """
 
