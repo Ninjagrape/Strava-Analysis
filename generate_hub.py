@@ -837,6 +837,11 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .pace-cell{color:#eee;font-weight:500}
 .best-km{color:#5cb85c !important}
 .leaflet-container,.leaflet-container *,.leaflet-container *::before,.leaflet-container *::after{box-sizing:content-box}
+/* Leaflet's control corners default to z-index 1000, above the expand overlays
+   (700/600), so a background map's zoom buttons poke through the dark backdrop.
+   Drop them below the overlays. Controls on an overlay's own map still show: the
+   overlay is its own stacking context, so they paint above its backdrop. */
+.leaflet-top,.leaflet-bottom{z-index:400}
 
 .dist-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}
 .dist-tab{background:#222;border:1px solid #3a3a3a;color:#888;font-size:11px;
@@ -936,7 +941,8 @@ function openRunOverlay(runId) {
       '" data-metric="' + m.key + '" onclick="selectOverlayMetric(\'' + m.key + '\')">' +
       m.label + '</button>';
   }).join('');
-  document.getElementById('ro-splits').innerHTML = renderKmSplits(r);
+  document.getElementById('ro-splits').innerHTML =
+    renderKmSplits(r) + renderBestEfforts(r.best_efforts) + renderRunSegments(r);
 
   // Start each overlay at the full-run view rather than inheriting the last
   // run's zoom window (the holder is reused across runs).
@@ -1089,23 +1095,36 @@ function addPauseMarkers(map, r) {
   });
 }
 
+// Switch tabs and mirror the choice in the URL hash so a refresh restores it.
+// `updateHash` is false when we're restoring from the hash on load.
+function selectTab(id, updateHash) {
+  var panel = document.getElementById('panel-' + id);
+  var btn = document.querySelector('.tab[data-panel="' + id + '"]');
+  if (!panel || !btn) return;
+  document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  panel.classList.add('active');
+  btn.classList.add('active');
+  if (updateHash !== false) location.hash = id;
+  if (id === 'overview' && overviewMap) {
+    setTimeout(function() { overviewMap.invalidateSize(); }, 50);
+  }
+  if (id === 'runs' && selectedRunId !== null) {
+    var r = RUNS.find(function(x) { return x.id === selectedRunId; });
+    if (r) initRunMap(r);
+  }
+  if (id === 'segments') initSegments();
+}
+
 document.querySelectorAll('.tab').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var id = btn.dataset.panel;
-    document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
-    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-    document.getElementById('panel-' + id).classList.add('active');
-    btn.classList.add('active');
-    if (id === 'overview' && overviewMap) {
-      setTimeout(function() { overviewMap.invalidateSize(); }, 50);
-    }
-    if (id === 'runs' && selectedRunId !== null) {
-      var r = RUNS.find(function(x) { return x.id === selectedRunId; });
-      if (r) initRunMap(r);
-    }
-    if (id === 'segments') initSegments();
-  });
+  btn.addEventListener('click', function() { selectTab(btn.dataset.panel); });
 });
+
+// Restore the tab named in the URL hash (e.g. #segments) on load.
+(function() {
+  var id = (location.hash || '').replace(/^#/, '');
+  if (id && document.getElementById('panel-' + id)) selectTab(id, false);
+})();
 
 // ── Benchmark segments ────────────────────────────────────────────────────
 
@@ -2169,6 +2188,45 @@ function renderBestEfforts(efforts) {
     '<table class="rd-table">' +
     '<thead><tr><th>Distance</th><th>Time</th><th>Pace</th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table>');
+}
+
+// ── Segment efforts in this run ─────────────────────────────────────────────
+
+// Benchmark segments this run ran, with this run's time/pace on each. A run can
+// run a segment more than once (laps), so efforts are listed individually. Each
+// row opens that segment's overlay (closing the run overlay first, since the
+// segment overlay sits below it in the stack).
+function renderRunSegments(r) {
+  if (typeof SEGMENTS === 'undefined' || !SEGMENTS || !SEGMENTS.length) return '';
+  var rows = '';
+  SEGMENTS.forEach(function(seg) {
+    seg.efforts.forEach(function(e) {
+      if (e.run_id !== r.id) return;
+      var isPr = e.time_s === seg.pr_time_s;
+      var dotColor = seg.type === 'climb' ? '#e0a020'
+                   : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
+      var dot = '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;' +
+                'background:' + dotColor + ';margin-right:5px;vertical-align:middle"></span>';
+      var lap = /\(lap \d+\)/.exec(e.name);
+      var label = esc(seg.name || 'Segment') + (lap ? ' ' + lap[0] : '');
+      rows += '<tr style="cursor:pointer" onclick="openSegFromRun(' + seg.id + ')" ' +
+        'title="Open segment">' +
+        '<td>' + dot + label + '</td>' +
+        '<td>' + e.time_str + (isPr ? ' 🏆' : '') + '</td>' +
+        '<td class="pace-cell">' + e.pace_str + '</td>' +
+      '</tr>';
+    });
+  });
+  if (!rows) return '';
+  return section('Segment efforts',
+    '<table class="rd-table">' +
+    '<thead><tr><th>Segment</th><th>Time</th><th>Pace</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>');
+}
+
+function openSegFromRun(segId) {
+  closeRunOverlay();
+  openSegOverlay(segId);
 }
 
 function section(title, body) {
