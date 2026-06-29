@@ -28,6 +28,10 @@ import math
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+# Enriched-CSV stream fields (fit_distance_stream) can exceed the default
+# 128 KB per-field limit at higher sampling density.
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo

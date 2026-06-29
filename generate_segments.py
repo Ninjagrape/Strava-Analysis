@@ -28,6 +28,7 @@ from config import load_config
 
 # Per-phase timing inside build_segments, printed only under --profile (STRAVA_PROFILE).
 PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
+SEG_DEBUG = bool(os.environ.get("STRAVA_SEG_DEBUG"))   # print per-segment match/reject diagnostics
 
 # ---------------------------------------------------------------------------
 # Tunable detection parameters (conservative: few, high-confidence benchmarks)
@@ -35,7 +36,7 @@ PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
 CELL_M          = 25.0    # spatial grid cell size for matching
 DENSIFY_M       = 15.0    # max gap between track points (interpolate finer)
-MIN_RUNS        = 4       # a segment must be completed by >= this many runs
+MIN_RUNS        = 2       # a segment must be completed by >= this many runs
 MIN_SPAN_DAYS   = 14      # ... spanning >= this many days
 MIN_LEN_M       = 400.0   # ... and be at least this long
 MATCH_COVER     = 0.80    # fraction of segment cells a run must visit to "complete"
@@ -50,6 +51,8 @@ LOOP_MIN_SEG_M  = 350.0   # a loop's *drawn* single lap may be shorter than the 
                           # of the true perimeter, so the median lap can dip just under 400.
 CLIMB_MIN_GAIN  = 15.0    # metres of net ascent for a "climb"
 CLIMB_MIN_GRADE = 0.025   # ... and average grade
+CLIMB_MIN_LEN_M = 150.0   # a steep climb is a valid benchmark below the general MIN_LEN_M
+                          # floor (the John St climb is ~210 m); flat stretches stay at MIN_LEN_M
 CLIMB_REV_COVER = 0.75    # re-matching a descent corridor's reverse to time the climb uses
                           # a looser cell coverage than MATCH_COVER: the chain's cells come
                           # from the downhill runs, and ascents take a slightly different
@@ -59,6 +62,22 @@ LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident point
 LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
 LOOP_LEN_RATIO  = 1.35    # ... and their lengths agree within this ratio
+LOOP_DEDUPE_M   = 120.0   # two loops whose drawn centroids are within this are the same circuit
+                          # recorded at different lap scales (e.g. a 400 m loop also caught as a
+                          # 1.5-lap ~600 m pass); dedupe merges them, keeping the higher-effort
+                          # version and pooling the other's unseen runs.
+LOOP_MIN_ROUNDNESS = 0.20 # isoperimetric-quotient floor for a drawn loop; below this it is a
+                          # thin sliver (a there-and-back on a parallel path the 25 m cell grid
+                          # can't tell apart), not a real circuit. Tunable; printed under SEG_DEBUG.
+LOOP_OVERLAP_FRAC = 0.60  # a non-loop segment whose footprint covers >= this fraction of a
+                          # detected loop's cells is a loop fragment (e.g. a 3/4-loop), so drop it
+LOOP_THRU_COV   = 0.50    # a "loop" a straight point-to-point segment covers this much of, while
+LOOP_THRU_LENRATIO = 0.90 # being >= this fraction of the loop's own length, is really an up-and-back
+                          # through two near-parallel ways (the segment is ~as long as the whole
+                          # "loop", which a real circuit's through-corridors never are) — so drop it
+CHAIN_SELFCROSS_M = 60.0  # within a mined chain, a later cell-centre this close to a much-earlier
+                          # one (index gap >= LOOP_MIN_CELLS) is where the chain starts wrapping a
+                          # loop; the chain is split there so a line+loop can't form one segment
 CORRIDOR_END_TOL_M = 80.0 # two point-to-point segments whose starts and ends both align
                           # within this are the same stretch (GPS-split into two)
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
@@ -334,12 +353,48 @@ def _chain_length_m(chain, ref_lat):
                for i in range(1, len(pts)))
 
 
-def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER):
+def _split_chain_at_loop(chain):
+    """A mined corridor that wraps a loop (a later cell returns near a much-earlier one) is a
+    'line + loop' — e.g. a downhill then most of a circuit, or a loop then a climb. Split it at
+    the loop so the straight pieces are timed on their own and the loop span is dropped (loops
+    are detected separately by _detect_loops). Returns the non-loop sub-chains; a chain with no
+    self-approach returns [chain]. Operates on the cell grid: cells within CHAIN_SELFCROSS_M are
+    a few grid steps apart, so a small neighbourhood lookup finds the closure in O(n)."""
+    n = len(chain)
+    if n < LOOP_MIN_CELLS + 2:
+        return [chain]
+    rad = max(1, round(CHAIN_SELFCROSS_M / CELL_M))
+    last_pos = {}
+    span = None
+    for j, (r0, c0) in enumerate(chain):
+        for dr in range(-rad, rad + 1):
+            for dc in range(-rad, rad + 1):
+                i = last_pos.get((r0 + dr, c0 + dc))
+                if i is not None and j - i >= LOOP_MIN_CELLS:
+                    span = (i, j)
+                    break
+            if span:
+                break
+        if span:
+            break
+        last_pos[(r0, c0)] = j
+    if span is None:
+        return [chain]
+    i, j = span
+    out = []
+    for piece in (chain[:i + 1], chain[j:]):
+        if len(piece) >= 2:
+            out.extend(_split_chain_at_loop(piece))
+    return out
+
+
+def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER, stats=None):
     """Return the fastest completion of a chain within one run's cell sequence, or None.
 
     seq: list of (cell, point). A completion enters near the chain's first cell,
     exits near its last cell (in order), covers >= cover_min of the chain's
-    cells in between, and travels a plausible distance."""
+    cells in between, and travels a plausible distance. When `stats` is given, the gate
+    that rejected an otherwise-eligible run is tallied (for SEG_DEBUG diagnostics)."""
     cells = [c for c, _ in seq]
     pts = [p for _, p in seq]
     chain_set = set(chain_cells)
@@ -350,9 +405,12 @@ def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER):
     start_idx = [i for i, c in enumerate(cells) if c in start_zone]
     end_idx = [i for i, c in enumerate(cells) if c in end_zone]
     if not start_idx or not end_idx:
+        if stats is not None:
+            stats["no_zone"] += 1
         return None
 
     best = None
+    passed_dist = passed_cover = False
     for sp in start_idx:
         for ep in end_idx:
             if ep <= sp:
@@ -360,9 +418,11 @@ def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER):
             dist = pts[ep]["d"] - pts[sp]["d"]
             if dist < seg_len * DIST_LO or dist > seg_len * DIST_HI:
                 continue
+            passed_dist = True
             covered = len(chain_set & set(cells[sp:ep + 1])) / n_chain
             if covered < cover_min:
                 continue
+            passed_cover = True
             t = pts[ep]["t"] - pts[sp]["t"]
             if t <= 0:
                 continue
@@ -376,6 +436,8 @@ def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER):
                                     if sub[0]["elev"] is not None and sub[-1]["elev"] is not None
                                     else 0.0,
                         "gain_m": gain}
+    if stats is not None and best is None:
+        stats["dist" if not passed_dist else "cover" if not passed_cover else "slow"] += 1
     return best
 
 
@@ -410,10 +472,12 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},{LOOP_DEDUPE_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,loopscale1,loopdedupe1,"
+             f"shape1:{CLIMB_MIN_LEN_M},{LOOP_MIN_ROUNDNESS},{LOOP_OVERLAP_FRAC},{CHAIN_SELFCROSS_M},"
+             f"thruloop1:{LOOP_THRU_COV},{LOOP_THRU_LENRATIO},"
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
              f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
-             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1".encode())
+             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1".encode())
     return h.hexdigest()
 
 
@@ -456,28 +520,32 @@ def build_segments(runs):
 
     segments = []
 
-    # Point-to-point corridors (climbs, repeated stretches).
-    for chain in chains:
-        seg_len0 = _chain_length_m(chain, ref_lat)
-        if seg_len0 < MIN_LEN_M:
-            continue
-        efforts = _collect_efforts(chain, seg_len0, seqs)
-        if len(efforts) < MIN_RUNS:
-            continue
-        ref = min(efforts, key=lambda e: abs(e["dist_m"] - _median(efforts)))
-        seg = _segment_from_efforts(efforts, run_by_id)
-        if seg:
-            segments.append(seg)
-        # A hill is descended more often than climbed, so the ascent stays hidden behind
-        # its busier downhill direction. When this corridor is a real descent, time the
-        # reverse as a climb in its own right and add it as a separate benchmark. The
-        # reverse uses a looser coverage (CLIMB_REV_COVER) because the chain's cells follow
-        # the downhill line and ascents take a slightly different one.
-        if seg and ref["net_elev"] <= -CLIMB_MIN_GAIN:
-            rev = _collect_efforts(chain[::-1], seg_len0, seqs, cover_min=CLIMB_REV_COVER)
-            seg_up = _segment_from_efforts(rev, run_by_id)
-            if seg_up and seg_up["type"] == "climb":
-                segments.append(seg_up)
+    # Point-to-point corridors (climbs, repeated stretches). A chain that wraps a loop is
+    # split into its straight pieces first, so a line+loop can't form one segment. The floor
+    # is the climb floor (a steep climb is a valid short benchmark); _segment_from_efforts
+    # re-applies the full MIN_LEN_M floor to anything that doesn't classify as a climb.
+    for raw_chain in chains:
+        for chain in _split_chain_at_loop(raw_chain):
+            seg_len0 = _chain_length_m(chain, ref_lat)
+            if seg_len0 < CLIMB_MIN_LEN_M:
+                continue
+            efforts = _collect_efforts(chain, seg_len0, seqs)
+            if len(efforts) < MIN_RUNS:
+                continue
+            ref = min(efforts, key=lambda e: abs(e["dist_m"] - _median(efforts)))
+            seg = _segment_from_efforts(efforts, run_by_id)
+            if seg:
+                segments.append(seg)
+            # A hill is descended more often than climbed, so the ascent stays hidden behind
+            # its busier downhill direction. When this corridor is a real descent, time the
+            # reverse as a climb in its own right and add it as a separate benchmark. The
+            # reverse uses a looser coverage (CLIMB_REV_COVER) because the chain's cells follow
+            # the downhill line and ascents take a slightly different one.
+            if seg and ref["net_elev"] <= -CLIMB_MIN_GAIN:
+                rev = _collect_efforts(chain[::-1], seg_len0, seqs, cover_min=CLIMB_REV_COVER)
+                seg_up = _segment_from_efforts(rev, run_by_id)
+                if seg_up and seg_up["type"] == "climb":
+                    segments.append(seg_up)
 
     _lap("corridors")
 
@@ -503,7 +571,10 @@ def build_segments(runs):
     segments.extend(_build_anchored_segments(loop_insts, tracks, anchor_idx, ref_lat, run_by_id))
     _lap("config_anchors")
 
+    segments = _canonicalize_loops(segments)
     segments = _dedupe(segments)
+    segments = _drop_loop_fragments(segments)
+    segments = _drop_through_loops(segments)
     # Best benchmarks first: most-run, then longest.
     segments.sort(key=lambda s: (-s["n_efforts"], -s["length_m"]))
     segments = segments[:MAX_SEGMENTS]
@@ -517,6 +588,14 @@ def build_segments(runs):
     for i, s in enumerate(segments):
         s["id"] = i
 
+    if SEG_DEBUG:
+        print("[seg-debug] final segments (name | type | length | efforts | distinct runs):")
+        for s in segments:
+            runs = len({e["run_id"] for e in s["efforts"]})
+            rnd = f" roundness={s['roundness']:.2f}" if s.get("roundness") is not None else ""
+            print(f"[seg-debug]   {s.get('name', '?')[:38]:38s} {s['type']:7s} "
+                  f"{s['length_m']:5d}m  efforts={s['n_efforts']:3d}  runs={runs:3d}{rnd}")
+
     _save_json(SEG_CACHE, {"signature": sig, "segments": segments})
     print(f"Segments: detected {len(segments)} benchmark segments")
     return segments
@@ -529,11 +608,16 @@ def _median(efforts):
 
 def _collect_efforts(chain_cells, seg_len_est, seqs, cover_min=MATCH_COVER):
     efforts = []
+    stats = {"no_zone": 0, "dist": 0, "cover": 0, "slow": 0} if SEG_DEBUG else None
     for rid, seq in seqs.items():
-        m = _match_run(chain_cells, seg_len_est, seq, cover_min)
+        m = _match_run(chain_cells, seg_len_est, seq, cover_min, stats=stats)
         if m:
             m["run_id"] = rid
             efforts.append(m)
+    if SEG_DEBUG and stats is not None and len(efforts) >= MIN_RUNS:
+        print(f"[seg-debug] corridor ~{seg_len_est:.0f}m: matched={len(efforts)} "
+              f"rejected zone={stats['no_zone']} dist={stats['dist']} "
+              f"cover={stats['cover']} slow={stats['slow']}")
     return efforts
 
 
@@ -549,8 +633,6 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
     if len(distinct_runs) < min_runs:
         return None
     seg_len = _median(efforts)
-    if seg_len < (LOOP_MIN_SEG_M if force_type == "loop" else MIN_LEN_M):
-        return None
     if force_type == "loop":
         # Draw a single real run, the most representative one, so the line follows the
         # actual streets. Restrict to efforts near the typical length, drop pinched
@@ -569,6 +651,21 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
     endpoints_close = _haversine_m(poly[0][0], poly[0][1], poly[-1][0], poly[-1][1]) < LOOP_CLOSE_M
     net_elev, gain_m = ref["net_elev"], ref["gain_m"]
     seg_type = force_type or _classify(seg_len, net_elev, gain_m, endpoints_close)
+    # Type-aware length floor: a steep climb is a valid short benchmark, a flat stretch is not.
+    min_len_for_type = (LOOP_MIN_SEG_M if seg_type == "loop"
+                        else CLIMB_MIN_LEN_M if seg_type == "climb" else MIN_LEN_M)
+    if seg_len < min_len_for_type:
+        return None
+    # A real loop encloses area. A there-and-back on a parallel path (the two legs land in
+    # different cells, so cell-uniqueness lets it through) draws as a thin sliver — reject it.
+    seg_roundness = None
+    if seg_type == "loop":
+        seg_roundness = _loop_roundness(ref["sub"])
+        if seg_roundness < LOOP_MIN_ROUNDNESS:
+            if SEG_DEBUG:
+                print(f"[seg-debug] reject sliver loop @({poly[0][0]:.4f},{poly[0][1]:.4f}) "
+                      f"len={seg_len:.0f}m roundness={seg_roundness:.2f} < {LOOP_MIN_ROUNDNESS}")
+            return None
     len_km = seg_len / 1000.0
 
     # Number repeated efforts within one run so laps in a single session read as
@@ -619,6 +716,7 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
         "pr_time_s": pr["time_s"],
         "pr_time_str": pr["time_str"],
         "pr_date":   pr["date_long"],
+        "roundness": round(seg_roundness, 3) if seg_roundness is not None else None,
     }
 
 
@@ -879,17 +977,46 @@ def _detect_loops(seqs, run_by_id):
     laps = _scan_loops(seqs, LOOP_LAP_MIN)
     segments = []
     for cl in ident:
-        members = [lp for lp in laps
-                   if _haversine_m(lp["cen"][0], lp["cen"][1], cl["cen"][0], cl["cen"][1]) <= LOOP_CLUSTER_M
-                   and (1.0 / LOOP_LEN_RATIO) <= (lp["dist_m"] / cl["med_d"] if cl["med_d"] else 0) <= LOOP_LEN_RATIO]
+        # Phase 1 identifies a loop only from traversals over LOOP_MIN_LEN_M, so for a circuit
+        # shorter than that floor cl["med_d"] reflects abnormal multi-lap passes (a 1.5-lap
+        # ~600 m run of a 400 m loop), not a single lap. Gating the lap re-scan on that inflated
+        # length drops clean single laps (ratio below 1/LOOP_LEN_RATIO) and undercounts the loop.
+        # Re-derive the lap length from the laps actually at this location (centroid only), then
+        # gate on that, so the identifying length tracks one real lap.
+        near = [lp for lp in laps
+                if _haversine_m(lp["cen"][0], lp["cen"][1], cl["cen"][0], cl["cen"][1]) <= LOOP_CLUSTER_M]
+        lap_med = sorted(lp["dist_m"] for lp in near)[len(near) // 2] if near else cl["med_d"]
+        members = [lp for lp in near
+                   if (1.0 / LOOP_LEN_RATIO) <= (lp["dist_m"] / lap_med if lap_med else 0) <= LOOP_LEN_RATIO]
         # Each run's laps are already distinct in time (from _run_loops); fall back to the
         # phase-1 members if the lap re-scan somehow found fewer runs.
         if len({m["run_id"] for m in members}) < MIN_RUNS:
             members = cl["members"]
+        if SEG_DEBUG:
+            _debug_loop_cluster(cl, near, members, lap_med)
         seg = _segment_from_efforts(members, run_by_id, force_type="loop")
         if seg:
             segments.append(seg)
     return segments, clusters
+
+
+def _debug_loop_cluster(cl, near, members, lap_med):
+    """SEG_DEBUG: report how an identified loop cluster's laps resolve into counted attempts."""
+    kept = {id(lp) for lp in members}
+    excl = [lp for lp in near if id(lp) not in kept]
+    runs = sorted({m["run_id"] for m in members})
+    per_run = defaultdict(int)
+    for m in members:
+        per_run[m["run_id"]] += 1
+    mlens = sorted(round(m["dist_m"]) for m in members)
+    nlens = sorted(round(lp["dist_m"]) for lp in near)
+    print(f"[seg-debug] loop @({cl['cen'][0]:.4f},{cl['cen'][1]:.4f}) phase1_med={cl['med_d']:.0f}m "
+          f"lap_med={lap_med:.0f}m -> {len(members)} laps over {len(runs)} runs "
+          f"(laps/run: {dict(per_run)}) member_lens={mlens} near_lens={nlens}")
+    for lp in excl:
+        ratio = lp["dist_m"] / lap_med if lap_med else 0
+        print(f"[seg-debug]   excluded lap run={lp['run_id']} dist={lp['dist_m']:.0f}m "
+              f"ratio={ratio:.2f} (gate {1.0 / LOOP_LEN_RATIO:.2f}-{LOOP_LEN_RATIO:.2f})")
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1272,104 @@ def _is_reverse_corridor(a, b):
             and _haversine_m(pa[-1][0], pa[-1][1], pb[0][0], pb[0][1]) <= CORRIDOR_END_TOL_M)
 
 
+def _absorb_efforts(keep, drop):
+    """Pool a dropped duplicate loop's efforts into the kept segment for any run it adds, so the
+    merged circuit's attempt count, span and PR reflect every lap recorded across the duplicates.
+    Runs already in `keep` are left untouched (one run is one attempt, never double-counted)."""
+    have = {e["run_id"] for e in keep["efforts"]}
+    added = [e for e in drop["efforts"] if e["run_id"] not in have]
+    if not added:
+        return
+    keep["efforts"].extend(added)
+    keep["efforts"].sort(key=lambda x: x["date_iso"])
+    keep["n_efforts"] = len(keep["efforts"])
+    keep["span_days"] = _span_days(keep["efforts"])
+    pr = min(keep["efforts"], key=lambda x: x["time_s"])
+    keep["pr_time_s"], keep["pr_time_str"], keep["pr_date"] = pr["time_s"], pr["time_str"], pr["date_long"]
+
+
+def _poly_coverage(target, by, tol=CELL_M):
+    """Fraction of `target` polyline points that lie within `tol` of any point on `by`."""
+    if not target:
+        return 0.0
+    return sum(1 for a in target
+               if any(_haversine_m(a[0], a[1], b[0], b[1]) <= tol for b in by)) / len(target)
+
+
+def _canonicalize_loops(segments):
+    """Collapse loops at the same place to a single canonical lap. Loops whose centroids are
+    within LOOP_DEDUPE_M are the same circuit recorded at different lap scales; keep the one
+    closest to a single lap (the shortest that passed the loop gates) and pool attempts from
+    co-located loops within ~1.25x of it (true laps). Longer passes (a ~1.5-lap traversal) are
+    discarded, so no loop renders longer than one lap."""
+    loops = [s for s in segments if s["type"] == "loop"]
+    others = [s for s in segments if s["type"] != "loop"]
+    clusters = []
+    for lp in sorted(loops, key=lambda s: s["length_m"]):
+        cen = _poly_centroid(lp["polyline"])
+        for cl in clusters:
+            if _haversine_m(cen[0], cen[1], cl["cen"][0], cl["cen"][1]) <= LOOP_DEDUPE_M:
+                cl["members"].append(lp)
+                break
+        else:
+            clusters.append({"cen": cen, "members": [lp]})
+    canon = []
+    for cl in clusters:
+        members = sorted(cl["members"], key=lambda s: s["length_m"])
+        keep = members[0]                       # shortest = closest to one lap
+        for other in members[1:]:
+            if other["length_m"] <= 1.25 * keep["length_m"]:
+                _absorb_efforts(keep, other)
+            elif SEG_DEBUG:
+                print(f"[seg-debug] drop oversized loop len={other['length_m']}m vs "
+                      f"lap {keep['length_m']}m at same place")
+        canon.append(keep)
+    return others + canon
+
+
+def _drop_loop_fragments(segments):
+    """Drop any non-loop segment that traces most of a loop (>= LOOP_OVERLAP_FRAC of the loop's
+    extent) — a 3/4-loop, or the leftover of a line+loop split. A real climb covers only a small
+    part of a loop, so it survives: an overlapping segment must be shorter than the loop."""
+    loops = [s for s in segments if s["type"] == "loop"]
+    out = []
+    for s in segments:
+        if s["type"] != "loop" and any(
+                _poly_coverage(lp["polyline"], s["polyline"]) >= LOOP_OVERLAP_FRAC for lp in loops):
+            if SEG_DEBUG:
+                print(f"[seg-debug] drop loop-fragment {s['type']} len={s['length_m']}m "
+                      f"(covers >= {LOOP_OVERLAP_FRAC:.0%} of a loop)")
+            continue
+        out.append(s)
+    return out
+
+
+def _drop_through_loops(segments):
+    """Drop a 'loop' that a straight point-to-point segment of comparable length traces over the
+    same ground. The runner went up-and-back through two near-parallel ways (close enough that the
+    out and return legs look like a circuit), not around a block. A genuine loop's through-corridors
+    are far shorter than its perimeter, so requiring the covering segment to be >= LOOP_THRU_LENRATIO
+    of the loop's length spares real loops while catching the parallel-path false loop."""
+    others = [s for s in segments if s["type"] != "loop"]
+    out = []
+    for s in segments:
+        if s["type"] == "loop":
+            hit = None
+            for p in others:
+                lo, hi = sorted((s["length_m"], p["length_m"]))
+                if (hi and lo / hi >= LOOP_THRU_LENRATIO
+                        and _poly_coverage(s["polyline"], p["polyline"]) >= LOOP_THRU_COV):
+                    hit = p
+                    break
+            if hit is not None:
+                if SEG_DEBUG:
+                    print(f"[seg-debug] drop through-loop len={s['length_m']}m "
+                          f"(straight segment len={hit['length_m']}m of similar length covers it)")
+                continue
+        out.append(s)
+    return out
+
+
 def _dedupe(segments):
     """Drop segments that substantially overlap another with more attempts.
     Overlap = sharing >70% of effort run-ids and similar length, or tracing the same
@@ -1166,6 +1391,8 @@ def _dedupe(segments):
             # comparisons (one times a circuit, the other a stretch) — keep both.
             if (s["type"] == "loop") != (k["type"] == "loop"):
                 continue
+            # Co-located loops (the same circuit at different lap scales) are already collapsed
+            # by _canonicalize_loops before dedupe, so two loops reaching here are distinct.
             # A climb and its reverse descent run the same ground opposite ways — distinct
             # benchmarks, so never merge them.
             if s["type"] != "loop" and _is_reverse_corridor(s, k):
@@ -1187,7 +1414,11 @@ def _dedupe(segments):
                 # reached two ways (e.g. a climb approached from different streets, so one
                 # is longer) — merge regardless of length, keeping the higher-effort one.
                 # The location check stops distinct routes run on the same days merging.
-                near_total = inter / smaller >= 0.9 and same_place and s["type"] != "loop"
+                # ... but only when their lengths are comparable. A short climb that sits inside
+                # a longer climb on the same road (the John St climb vs the longer one) shares
+                # most runs yet is a distinct, much shorter benchmark, so keep both.
+                near_total = (inter / smaller >= 0.9 and same_place and s["type"] != "loop"
+                              and hi and lo / hi > 0.7)
                 # Length-ratio overlap only merges when the two are at the same place. Two loops
                 # far apart that merely share runs (people who run loop A often also run loop B)
                 # are distinct benchmarks — without this a broad anchor would swallow a real loop.

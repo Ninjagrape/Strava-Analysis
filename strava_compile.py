@@ -73,7 +73,7 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 SEMICIRCLES_TO_DEG = 180.0 / (2 ** 31)
-GPS_MAX_POINTS = 250
+GPS_MAX_POINTS = 2000
 
 
 def _simplify_polyline(coords: list, max_points: int = GPS_MAX_POINTS) -> list:
@@ -317,8 +317,8 @@ def _per_km_splits(track: list[tuple], elev_stream: list = None,
 # Over-distance chart sampling: take a fixed number of samples *per km* so short
 # and long runs get the same spatial resolution (rather than the same total count,
 # which over-sampled short runs). STREAM_MAX_POINTS caps very long runs.
-STREAM_POINTS_PER_KM  = 50      # ~one sample every 20 m
-STREAM_MAX_POINTS     = 1200    # hard cap (kicks in past ~24 km)
+STREAM_POINTS_PER_KM  = 150     # ~one sample every 7 m
+STREAM_MAX_POINTS     = 3000    # hard cap (kicks in past ~20 km)
 STREAM_PACE_WINDOW_M  = 50.0    # min look-ahead distance for instantaneous pace (noise control)
 
 def _distance_stream(track: list, elev_stream: list, hr_stream: list,

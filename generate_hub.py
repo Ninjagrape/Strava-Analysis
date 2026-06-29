@@ -1761,6 +1761,13 @@ function drawDistMetric(runId, metricKey, opts) {
   var pts = stream.filter(function(p) { return p[metricKey] != null && p.d != null; });
   if (pts.length < 2) return;
 
+  // Distance-ordered list of points that carry GPS coords (taken from the full
+  // stream, not the metric-filtered pts). Used to position the map cursor for
+  // hovered points that lack their own lat/lon (GPS dropouts), so it stays
+  // monotonic along the route instead of snapping into the count-based polyline.
+  var geo = stream.filter(function(p) { return p.lat != null && p.lon != null && p.d != null; })
+                  .map(function(p) { return {d: p.d, lat: p.lat, lon: p.lon}; });
+
   // Pause distances (where recording stopped). The sample at this distance carries
   // a forward-window pace measured across the gap, so it spikes; we dash the line
   // segments touching it and exclude it from the y-scale so it doesn't dominate.
@@ -1899,6 +1906,7 @@ function drawDistMetric(runId, metricKey, opts) {
     pts: pts, xmin: xmin, xspan: xspan, ymin: ymin, yspan: yspan, invert: metric.invert,
     dataMin: dataMin, dataMax: dataMax,
     W: W, H: H, padL: padL, padR: padR, padT: padT, padB: padB,
+    geo: geo,
     poly: r.gps_polyline || []
   };
 
@@ -2006,18 +2014,32 @@ function onDistHover(e, holder) {
   }
 
   // move the dot on the map to the matching position. Prefer the GPS coords
-  // embedded in the stream point; fall back to interpolating along the polyline
-  // by distance fraction for runs compiled before lat/lon was stored.
+  // embedded in the stream point. If this point lacks them (a GPS dropout that
+  // still recorded distance), snap to the nearest point by distance that does
+  // carry coords. Those are real recorded samples on the route, so the marker
+  // can't cut across a corner (no interpolating a chord through buildings), and
+  // since the list is distance-ordered the cursor still never moves backward.
+  // Only runs with no per-point coords at all fall back to the count-based
+  // polyline (approximate but still monotonic).
   if (best.lat != null && best.lon != null) {
     moveRunCursor(best.lat, best.lon);
+  } else if (st.geo && st.geo.length >= 1) {
+    var g = st.geo, d = best.d;
+    var hi = 0;
+    while (hi < g.length && g[hi].d < d) hi++;
+    var near;
+    if (hi <= 0) near = g[0];
+    else if (hi >= g.length) near = g[g.length - 1];
+    else near = (d - g[hi - 1].d <= g[hi].d - d) ? g[hi - 1] : g[hi];
+    moveRunCursor(near.lat, near.lon);
   } else if (st.poly.length >= 2) {
     var dataSpan = (st.dataMax - st.dataMin) || 1;
     var frac = (best.d - st.dataMin) / dataSpan;
     frac = Math.max(0, Math.min(1, frac));
     var fi = frac * (st.poly.length - 1);
-    var lo = Math.floor(fi), hi = Math.min(lo + 1, st.poly.length - 1), t = fi - lo;
-    var lat = st.poly[lo][0] + (st.poly[hi][0] - st.poly[lo][0]) * t;
-    var lon = st.poly[lo][1] + (st.poly[hi][1] - st.poly[lo][1]) * t;
+    var lo = Math.floor(fi), phi = Math.min(lo + 1, st.poly.length - 1), pt = fi - lo;
+    var lat = st.poly[lo][0] + (st.poly[phi][0] - st.poly[lo][0]) * pt;
+    var lon = st.poly[lo][1] + (st.poly[phi][1] - st.poly[lo][1]) * pt;
     moveRunCursor(lat, lon);
   } else {
     hideRunCursor();

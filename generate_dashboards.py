@@ -23,6 +23,10 @@ from pathlib import Path
 
 from config import Race, load_config
 
+# Enriched-CSV stream fields (fit_distance_stream) can exceed the default
+# 128 KB per-field limit at higher sampling density.
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+
 
 # ---------------------------------------------------------------------------
 # Pace / time helpers
