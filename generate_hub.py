@@ -294,6 +294,13 @@ def _percentile(sorted_vals: list[float], q: float) -> float:
 # from being mistaken for a stop.
 PAUSE_MIN_GAP_S      = 20    # absolute floor (seconds); ignore steps shorter than this
 PAUSE_GAP_MULTIPLIER = 5     # ... and require dt >= this × the run's median step dt
+# Only dot the route across a pause when the run genuinely relocated during it. Every
+# stream point now carries an interpolated coordinate, so stop and resume are never
+# exactly equal; without a floor, a plain stationary stop (one ~7 m sampling step)
+# would dot the line. Below this, the pause is a lone marker; at/above it the
+# stop→resume stretch is dotted (slow movement during the pause, or a stop-and-
+# resume-elsewhere gap the polyline hops across).
+PAUSE_MOVE_MIN_M     = 30.0
 
 
 def _nearest_coord(dist_stream: list[dict], start_idx: int, step: int) -> dict | None:
@@ -352,12 +359,13 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
         if stop is not None:
             pause["lat"] = stop["lat"]
             pause["lon"] = stop["lon"]
-        # Tag the resume point whenever the route advanced between stopping and
-        # resuming so the map can dot that stretch. This covers both slow movement
-        # during a pause and stop-and-resume-elsewhere gaps (where the polyline simply
-        # hops near-straight across the missing stretch) — both render the same way.
+        # Tag the resume point only when the route advanced a meaningful distance
+        # between stopping and resuming, so the map dots that stretch. This covers
+        # slow movement during a pause and stop-and-resume-elsewhere gaps (the polyline
+        # hops near-straight across the latter). A stationary stop stays a lone marker.
         if stop is not None and resume is not None and \
-           (resume["lat"] != stop["lat"] or resume["lon"] != stop["lon"]):
+           _haversine_km(stop["lat"], stop["lon"],
+                         resume["lat"], resume["lon"]) * 1000 >= PAUSE_MOVE_MIN_M:
             pause["rlat"] = resume["lat"]
             pause["rlon"] = resume["lon"]
         pauses.append(pause)

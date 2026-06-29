@@ -1,4 +1,5 @@
 import argparse
+import bisect
 import concurrent.futures
 import gzip
 import os
@@ -73,7 +74,7 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 SEMICIRCLES_TO_DEG = 180.0 / (2 ** 31)
-GPS_MAX_POINTS = 2000
+GPS_MAX_POINTS = 600
 
 
 def _simplify_polyline(coords: list, max_points: int = GPS_MAX_POINTS) -> list:
@@ -320,6 +321,7 @@ def _per_km_splits(track: list[tuple], elev_stream: list = None,
 STREAM_POINTS_PER_KM  = 150     # ~one sample every 7 m
 STREAM_MAX_POINTS     = 3000    # hard cap (kicks in past ~20 km)
 STREAM_PACE_WINDOW_M  = 50.0    # min look-ahead distance for instantaneous pace (noise control)
+GEO_GAP_MAX_M         = 60.0    # beyond this gap between fixes, snap the cursor rather than interpolate a chord (avoids cutting across a GPS dropout/pause)
 
 def _distance_stream(track: list, elev_stream: list, hr_stream: list,
                      cad_stream: list, pos_stream: list) -> str:
@@ -354,6 +356,38 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
     have_cad  = bool(cad_by_t)
     have_pos  = bool(pos_by_t)
 
+    # Distance-indexed GPS fixes. Each emitted point gets an on-route coordinate by
+    # interpolating between the surrounding recorded fixes, so the map cursor tracks
+    # at full GPS resolution instead of only on the ~quarter of samples whose epoch
+    # happens to coincide with a position record.
+    dist_by_epoch = {t: d for t, d in track}
+    geo = sorted(
+        (dist_by_epoch[t], la, lo)
+        for t, la, lo in pos_stream
+        if la is not None and lo is not None and t in dist_by_epoch
+    )
+    geo_d = [g[0] for g in geo]
+
+    def pos_at(dist_m: float):
+        """Interpolate a lat/lon on the recorded track at a cumulative distance.
+
+        Snaps to the nearer fix (rather than cutting a chord) when the bracketing
+        fixes straddle a GPS dropout or pause wider than GEO_GAP_MAX_M.
+        """
+        if not geo:
+            return None
+        k = bisect.bisect_left(geo_d, dist_m)
+        if k <= 0:
+            return geo[0][1], geo[0][2]
+        if k >= len(geo):
+            return geo[-1][1], geo[-1][2]
+        d0, la0, lo0 = geo[k - 1]
+        d1, la1, lo1 = geo[k]
+        if d1 - d0 > GEO_GAP_MAX_M:
+            return (la0, lo0) if (dist_m - d0) <= (d1 - dist_m) else (la1, lo1)
+        f = (dist_m - d0) / (d1 - d0) if d1 > d0 else 0.0
+        return la0 + (la1 - la0) * f, lo0 + (lo1 - lo0) * f
+
     n = len(track)
     # Sample spacing in metres: target density, widened if it would blow the cap.
     spacing = max(1000.0 / STREAM_POINTS_PER_KM, total_dist / STREAM_MAX_POINTS)
@@ -379,10 +413,11 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
             p["hr"] = round(hr_by_t[epoch])
         if have_cad and epoch in cad_by_t:
             p["cad"] = round(cad_by_t[epoch])
-        if have_pos and epoch in pos_by_t:
-            la, lo = pos_by_t[epoch]
-            p["lat"] = round(la, 5)
-            p["lon"] = round(lo, 5)
+        if have_pos:
+            ll = pos_at(dist_m)
+            if ll is not None:
+                p["lat"] = round(ll[0], 5)
+                p["lon"] = round(ll[1], 5)
         return p
 
     pts = []
