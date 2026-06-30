@@ -1,16 +1,13 @@
 ## General
 [] Anticipate runs may or may not have HR data
-[x] Optimise runtime even more. 126s currently for generating all hubs
 
 ## Repo
 [] Organise repo, getting too messy
 
 ## Segment
-[] Graph different types of runs on segments with different colours
-[] Take a look at segment corners being cut. Resolution issues?
+[] Star, filter, hide etc Segments
 
 ## Runs
-[] Show segment attempts in detailed run map
 
 
 ## Simple plots

@@ -59,6 +59,12 @@ CLIMB_REV_COVER = 0.75    # re-matching a descent corridor's reverse to time the
                           # from the downhill runs, and ascents take a slightly different
                           # line, so 0.80 is too strict one way round. The climb still has to
                           # clear the full run-count, span and grade gates.
+SUBCLIMB_MIN_GRADE = 0.06   # a corridor's steepest sub-window is surfaced as its own climb
+                            # (e.g. the Russell St Burn, ~160 m @ 10.7%, inside the longer
+                            # Milner->Russell corridor) only when this steep
+SUBCLIMB_STEEPER   = 1.6    # ... and at least this many times the parent corridor's grade,
+SUBCLIMB_MAX_FRAC  = 0.75   # ... and no longer than this fraction of the parent (else it is
+                            # effectively the same benchmark and the parent already covers it).
 LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
 LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
@@ -406,6 +412,77 @@ def _split_chain_at_loop(chain):
     return out
 
 
+def _net_gain(sub):
+    """(net_elev, gain_m) for a sub-track, tolerant of points missing elevation.
+
+    net_elev is taken between the first and last points that actually carry an
+    altitude (not the slice endpoints), so a single missing endpoint sample no longer
+    forces the result to zero. gain_m sums positive deltas between consecutive
+    elevation-bearing points.
+    """
+    elevs = [p["elev"] for p in sub if p.get("elev") is not None]
+    if len(elevs) < 2:
+        return 0.0, 0.0
+    net = elevs[-1] - elevs[0]
+    gain = sum(max(0.0, elevs[k] - elevs[k - 1]) for k in range(1, len(elevs)))
+    return net, gain
+
+
+def _steepest_window(sub, min_len=CLIMB_MIN_LEN_M):
+    """Indices (i, j) of the contiguous window of `sub` (>= min_len metres) with the
+    steepest average grade, or None. Used to pull a short steep pitch out of a longer
+    corridor (e.g. the burn inside a gradual climb)."""
+    n = len(sub)
+    if n < 3:
+        return None
+    best = None
+    for i in range(n):
+        for j in range(i + 1, n):
+            length = sub[j]["d"] - sub[i]["d"]
+            if length < min_len:
+                continue
+            ei, ej = sub[i].get("elev"), sub[j].get("elev")
+            if ei is None or ej is None:
+                break  # extending j only makes it longer; grade already diluted past min_len
+            grade = (ej - ei) / length
+            if best is None or grade > best[0]:
+                best = (grade, i, j)
+            break  # shortest window from i that clears min_len is the steepest from i
+    return (best[1], best[2]) if best else None
+
+
+def _steep_subclimb(parent_sub, parent_grade, seqs, run_by_id, cell):
+    """A separate steep-pitch climb extracted from a corridor's reference lap, or None.
+
+    Surfaces only a window that is notably steeper than the parent and a real fraction
+    shorter, then re-matches it across runs like any corridor so its attempts/PR are the
+    runner's actual efforts on that pitch."""
+    win = _steepest_window(parent_sub)
+    if not win:
+        return None
+    sub = parent_sub[win[0]:win[1] + 1]
+    win_len = sub[-1]["d"] - sub[0]["d"]
+    net, _ = _net_gain(sub)
+    grade = net / win_len if win_len else 0.0
+    parent_len = parent_sub[-1]["d"] - parent_sub[0]["d"]
+    if (grade < SUBCLIMB_MIN_GRADE
+            or grade < SUBCLIMB_STEEPER * max(parent_grade, 0.0)
+            or win_len > SUBCLIMB_MAX_FRAC * parent_len):
+        return None
+    win_cells, last = [], None
+    for p in sub:
+        c = cell(p["lat"], p["lon"])
+        if c != last:
+            win_cells.append(c)
+            last = c
+    if len(win_cells) < 3:
+        return None
+    efforts = _collect_efforts(win_cells, win_len, seqs)
+    if len(efforts) < MIN_RUNS:
+        return None
+    return _segment_from_efforts(efforts, run_by_id, force_type="climb")
+
+
 def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER, stats=None):
     """Return the fastest completion of a chain within one run's cell sequence, or None.
 
@@ -446,14 +523,9 @@ def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER, stats=None):
                 continue
             if best is None or t < best["time_s"]:
                 sub = pts[sp:ep + 1]
-                gain = sum(max(0.0, (sub[k]["elev"] or 0) - (sub[k - 1]["elev"] or 0))
-                           for k in range(1, len(sub))
-                           if sub[k]["elev"] is not None and sub[k - 1]["elev"] is not None)
+                net, gain = _net_gain(sub)
                 best = {"time_s": t, "dist_m": dist, "sub": sub,
-                        "net_elev": ((sub[-1]["elev"] or 0) - (sub[0]["elev"] or 0))
-                                    if sub[0]["elev"] is not None and sub[-1]["elev"] is not None
-                                    else 0.0,
-                        "gain_m": gain}
+                        "net_elev": net, "gain_m": gain}
     if stats is not None and best is None:
         stats["dist" if not passed_dist else "cover" if not passed_cover else "slow"] += 1
     return best
@@ -495,7 +567,8 @@ def _runs_signature(runs):
              f"thruloop1:{LOOP_THRU_COV},{LOOP_THRU_LENRATIO},"
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
              f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
-             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1".encode())
+             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1,"
+             f"subclimb1:{SUBCLIMB_MIN_GRADE},{SUBCLIMB_STEEPER},{SUBCLIMB_MAX_FRAC}".encode())
     return h.hexdigest()
 
 
@@ -564,6 +637,13 @@ def build_segments(runs):
                 seg_up = _segment_from_efforts(rev, run_by_id)
                 if seg_up and seg_up["type"] == "climb":
                     segments.append(seg_up)
+            # Pull a short steep pitch (the "burn") out of a longer corridor as its own
+            # climb when it is markedly steeper than the whole stretch.
+            if seg:
+                parent_grade = ref["net_elev"] / ref["dist_m"] if ref["dist_m"] else 0.0
+                sub_seg = _steep_subclimb(ref["sub"], parent_grade, seqs, run_by_id, cell)
+                if sub_seg:
+                    segments.append(sub_seg)
 
     _lap("corridors")
 
@@ -763,16 +843,14 @@ def _elev_profile(sub, max_pts=64):
 
 def _loop_record(cells, pts, i, j):
     sub_pts = pts[i:j + 1]
+    net, gain = _net_gain(sub_pts)
     return {
         "cells": frozenset(cells[i:j + 1]),
         "time_s": sub_pts[-1]["t"] - sub_pts[0]["t"],
         "dist_m": pts[j]["d"] - pts[i]["d"],
         "sub": sub_pts,
-        "net_elev": ((sub_pts[-1]["elev"] or 0) - (sub_pts[0]["elev"] or 0))
-                    if sub_pts[0]["elev"] is not None and sub_pts[-1]["elev"] is not None else 0.0,
-        "gain_m": sum(max(0.0, (sub_pts[k]["elev"] or 0) - (sub_pts[k - 1]["elev"] or 0))
-                      for k in range(1, len(sub_pts))
-                      if sub_pts[k]["elev"] is not None and sub_pts[k - 1]["elev"] is not None),
+        "net_elev": net,
+        "gain_m": gain,
     }
 
 
@@ -1171,11 +1249,7 @@ def _match_anchor_spans(line_pts, loop_len, track, ref_lat):
 def _span_effort(track, a, b, rid):
     """Build an effort record (compatible with _segment_from_efforts) from a track span."""
     sub = track[a:b + 1]
-    gain = sum(max(0.0, (sub[k]["elev"] or 0) - (sub[k - 1]["elev"] or 0))
-               for k in range(1, len(sub))
-               if sub[k]["elev"] is not None and sub[k - 1]["elev"] is not None)
-    net = ((sub[-1]["elev"] or 0) - (sub[0]["elev"] or 0)) \
-        if sub[0]["elev"] is not None and sub[-1]["elev"] is not None else 0.0
+    net, gain = _net_gain(sub)
     return {"run_id": rid, "time_s": sub[-1]["t"] - sub[0]["t"],
             "dist_m": sub[-1]["d"] - sub[0]["d"], "sub": sub, "net_elev": net, "gain_m": gain}
 

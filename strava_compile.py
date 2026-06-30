@@ -400,6 +400,34 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
         f = (dist_m - d0) / (d1 - d0) if d1 > d0 else 0.0
         return la0 + (la1 - la0) * f, lo0 + (lo1 - lo0) * f
 
+    # Distance-indexed elevation, interpolated at full resolution like position above.
+    # Elevation is recorded on only a fraction of samples, so attaching it by exact
+    # epoch leaves most distance-resampled points without an altitude; interpolating
+    # by distance restores a continuous elevation profile.
+    elev_geo = sorted(
+        (dist_by_epoch[t], v)
+        for t, v in elev_stream
+        if v is not None and t in dist_by_epoch
+    )
+    elev_geo_d = [e[0] for e in elev_geo]
+
+    def elev_at(dist_m: float):
+        """Interpolate altitude at a cumulative distance, snapping to the nearer fix
+        across gaps wider than GEO_GAP_MAX_M (consistent with pos_at)."""
+        if not elev_geo:
+            return None
+        k = bisect.bisect_left(elev_geo_d, dist_m)
+        if k <= 0:
+            return elev_geo[0][1]
+        if k >= len(elev_geo):
+            return elev_geo[-1][1]
+        d0, v0 = elev_geo[k - 1]
+        d1, v1 = elev_geo[k]
+        if d1 - d0 > GEO_GAP_MAX_M:
+            return v0 if (dist_m - d0) <= (d1 - dist_m) else v1
+        f = (dist_m - d0) / (d1 - d0) if d1 > d0 else 0.0
+        return v0 + (v1 - v0) * f
+
     n = len(track)
     # Sample spacing in metres: target density, widened if it would blow the cap.
     spacing = max(1000.0 / STREAM_POINTS_PER_KM, total_dist / STREAM_MAX_POINTS)
@@ -419,8 +447,10 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
         p = {"d": round(dist_m / 1000.0, 3), "t": round(epoch - track[0][0], 1)}
         if pace is not None:
             p["pace"] = round(pace, 1)
-        if have_elev and epoch in elev_by_t:
-            p["elev"] = round(elev_by_t[epoch], 1)
+        if have_elev:
+            ev = elev_at(dist_m)
+            if ev is not None:
+                p["elev"] = round(ev, 1)
         if have_hr and epoch in hr_by_t:
             p["hr"] = round(hr_by_t[epoch])
         if have_cad and epoch in cad_by_t:
