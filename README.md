@@ -153,11 +153,15 @@ feet) are omitted when the underlying stream has no data — e.g. treadmill runs
 
 ### Per-run streams (`fit_gps_polyline`, `fit_distance_stream`)
 
-`fit_gps_polyline` is a `[[lat, lon], ...]` array (downsampled to ≤ 250 points) used to draw
-the route on the per-run map and to build the all-time heatmap.
+`fit_gps_polyline` is a `[[lat, lon], ...]` array used to draw the route on the per-run map
+and to build the all-time heatmap. It is downsampled **by distance** — ~150 points per km,
+floored at 75 points for very short runs and hard-capped at 2500 for very long ones — so a
+long run keeps the same per-km resolution as a short one instead of being squeezed into a
+flat point cap. The density and bounds are tunable via `GPS_POINTS_PER_KM`, `GPS_MIN_POINTS`,
+and `GPS_MAX_POINTS` near the top of `strava_compile.py`.
 
 `fit_distance_stream` powers the over-distance charts. It is sampled **by distance** —
-~50 samples per km (≈ every 20 m), capped at 1200 points — so short and long runs get the
+~150 samples per km (≈ every 7 m), capped at 3000 points — so short and long runs get the
 same spatial resolution rather than the same total count. Each point carries whichever
 metrics the run recorded:
 

@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from generate_dashboards import fmt_time, fmt_pace, ga_time
@@ -82,6 +83,15 @@ CORRIDOR_END_TOL_M = 80.0 # two point-to-point segments whose starts and ends bo
                           # within this are the same stretch (GPS-split into two)
 MAX_SEGMENTS    = 40      # safety cap on rendered segments
 
+# The drawn line for a segment is the medoid effort, so it shifts run-to-run as new runs
+# join. The name/match caches are keyed on the line's endpoints (_geo_key, ~11 m), so that
+# drift misses the cache and re-hits Nominatim/Overpass even for a segment already named and
+# snapped. These tolerances let a small drift reuse the nearby prior result instead, keeping
+# outputs stable while removing nearly all the repeat network cost.
+NAME_REUSE_M    = 40.0    # reuse a cached name when a prior entry's centroid is within this
+MATCH_REUSE_M   = 50.0    # reuse a cached snap when a prior entry's centroid is within this
+CACHE_PRUNE_M   = 150.0   # drop cache entries this far from every current segment (anti-bloat)
+
 # Anchored segments: a loop you usually run *inside* a longer route never self-crosses, so
 # closed-loop mining (which needs >= MIN_RUNS laps) can't see it. The fix is to derive a line
 # from the cleanest self-crossing instance and match every run against it with a distance-
@@ -127,6 +137,14 @@ MATCH_TURN_DEG  = 55.0    # a direction change sharper than this counts as a "re
 MATCH_MAX_TURN_GAIN = 0.06  # if snapping adds more reversals-per-point than this above the
                             # raw trace it has flickered between adjacent ways (a zig-zag no
                             # run made), so keep the smooth raw trace instead
+SNAP_INDEX_CELL_M = 60.0    # grid cell for the shared-graph edge index. > MATCH_SNAP_M so the
+                            # 3x3 cell window round a query point always contains every edge
+                            # within snap range, making the indexed snap identical to a full scan
+SNAP_UNION_MAX_DEG = 0.6    # if all segments span more than this (~65 km) in lat or lon, the
+                            # single union Overpass fetch would be too large, so fall back to the
+                            # per-segment fetch path
+GEO_MEMO_DP = 4             # decimals (~11 m) to dedupe reverse-geocode points within one build;
+                            # matches _geo_key resolution and the project's name-stability radius
 
 
 # ---------------------------------------------------------------------------
@@ -580,11 +598,19 @@ def build_segments(runs):
     segments = segments[:MAX_SEGMENTS]
     _lap("dedupe_sort")
 
-    _name_segments(segments)
-    _lap("name_segments")
-    _disambiguate_names(segments)
-    _match_segments(segments)
-    _lap("match_segments")
+    # Naming (Nominatim) and map-matching (Overpass) hit different hosts, so their per-host
+    # politeness sleeps overlap in wall time when run concurrently. Both derive their cache
+    # key from the pre-snap drawn line, so snapshot the polylines first: the match thread
+    # overwrites s["polyline"] while the name thread reads only the snapshot, so the two are
+    # independent (disjoint fields and disjoint cache files).
+    orig_polys = {id(s): list(s["polyline"]) for s in segments}
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_name = ex.submit(_name_segments, segments, orig_polys)
+        fut_match = ex.submit(_match_segments, segments, orig_polys)
+        fut_name.result()
+        fut_match.result()
+    _disambiguate_names(segments)   # needs final names, so after the name thread joins
+    _lap("name+match")
     for i, s in enumerate(segments):
         s["id"] = i
 
@@ -1439,7 +1465,13 @@ def _geo_key(poly):
     return "|".join(f"{p[0]:.4f},{p[1]:.4f}" for p in (a, mid, b))
 
 
-def _reverse_geocode(lat, lon, zoom=18):
+def _reverse_geocode(lat, lon, zoom=18, memo=None):
+    """Reverse-geocode one point. `memo` (a per-build dict) collapses points that round to the
+    same ~11 m spot so overlapping segments don't re-query the same location, and the politeness
+    sleep fires only on a real network call, not on a memo hit."""
+    mk = (round(lat, GEO_MEMO_DP), round(lon, GEO_MEMO_DP)) if memo is not None else None
+    if mk is not None and mk in memo:
+        return memo[mk]
     params = urllib.parse.urlencode({
         "format": "jsonv2", "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
         "zoom": zoom, "addressdetails": 1,
@@ -1447,22 +1479,52 @@ def _reverse_geocode(lat, lon, zoom=18):
     req = urllib.request.Request(f"{NOMINATIM_URL}?{params}",
                                  headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        data = json.loads(resp.read().decode("utf-8"))
+    time.sleep(1.1)   # honour Nominatim usage policy (<= 1 req/s); only after a real call
+    if mk is not None:
+        memo[mk] = data
+    return data
 
 
-def _located_names(cache):
-    """(centroid, name) for every cached entry, so a name survives small polyline jitter
-    between rebuilds. The cache is keyed on exact endpoints, which miss when the drawn
-    line shifts run-to-run; matching by location instead keeps names stable."""
+def _located_cache(cache):
+    """(centroid, value) for every cached entry, so a result survives small polyline jitter
+    between rebuilds. The cache is keyed on exact endpoints (_geo_key), which miss when the
+    drawn line shifts run-to-run; matching by the key's centroid instead keeps the lookup
+    stable. Shared by the name cache (value = name) and the match cache (value = snapped
+    polyline or [])."""
     out = []
-    for k, name in cache.items():
+    for k, val in cache.items():
         try:
             pts = [tuple(float(x) for x in p.split(",")) for p in k.split("|")]
             out.append(((sum(p[0] for p in pts) / len(pts),
-                         sum(p[1] for p in pts) / len(pts)), name))
+                         sum(p[1] for p in pts) / len(pts)), val))
         except (ValueError, IndexError):
             continue
     return out
+
+
+def _located_names(cache):
+    """(centroid, name) for every cached name entry (see _located_cache)."""
+    return _located_cache(cache)
+
+
+def _prune_cache(cache, centroids, radius):
+    """Drop cache entries whose location is far from every current segment, so keys orphaned
+    by polyline drift don't accumulate without bound. Entries near a current segment are kept
+    — they are exactly what the tolerant lookup reuses. Unparseable keys are kept untouched."""
+    if not centroids:
+        return cache
+    kept = {}
+    for k, v in cache.items():
+        try:
+            pts = [tuple(float(x) for x in p.split(",")) for p in k.split("|")]
+            cen = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+        except (ValueError, IndexError):
+            kept[k] = v
+            continue
+        if any(_haversine_m(cen[0], cen[1], c[0], c[1]) <= radius for c in centroids):
+            kept[k] = v
+    return kept
 
 
 def _nearest_name(cen, located, max_m):
@@ -1474,44 +1536,58 @@ def _nearest_name(cen, located, max_m):
     return best
 
 
-def _name_segments(segments):
+def _name_segments(segments, polys=None):
+    """Name each segment from cached OSM lookups, querying Nominatim only when nothing nearby
+    is cached. `polys` maps id(segment) -> the pre-snap drawn polyline; when given (the
+    concurrent path) the cache key and centroid come from it, so a parallel _match_segments
+    overwriting s["polyline"] can't change what this names."""
     cache = _load_json(GEO_CACHE) or {}
     located = _located_names(cache)
+    geo_memo = {}                    # in-build dedupe of reverse-geocode points (see _reverse_geocode)
     dirty = False
     for s in segments:
         if s.get("name"):            # anchored segments carry a curated name already
             continue
-        key = _geo_key(s["polyline"])
+        poly = polys[id(s)] if polys is not None else s["polyline"]
+        cen = _poly_centroid(poly)
+        key = _geo_key(poly)
         if key in cache:
             s["name"] = cache[key]
             continue
-        name = _derive_name(s)
+        # Drift reuse: the drawn line moved past the exact key, but a name we already
+        # resolved sits within NAME_REUSE_M — it is the same road, so reuse it (no network).
+        near = _nearest_name(cen, located, NAME_REUSE_M)
+        if near:
+            cache[key] = near
+            s["name"] = near
+            dirty = True
+            continue
+        name = _derive_name(poly, s["type"], geo_memo)
         if name:
             cache[key] = name
             s["name"] = name
-            located.append((_poly_centroid(s["polyline"]), name))
+            located.append((cen, name))
             dirty = True
         else:
             # Network lookup failed (offline / rate-limited): reuse the nearest name we
             # already resolved before showing raw coordinates.
-            s["name"] = _nearest_name(_poly_centroid(s["polyline"]), located, 120.0) \
-                or _fallback_name(s)
+            s["name"] = _nearest_name(cen, located, 120.0) or _fallback_name(poly, s["type"])
     if dirty:
-        _save_json(GEO_CACHE, cache)
+        centroids = [_poly_centroid(polys[id(s)] if polys is not None else s["polyline"])
+                     for s in segments]
+        _save_json(GEO_CACHE, _prune_cache(cache, centroids, CACHE_PRUNE_M))
 
 
-def _derive_name(s):
+def _derive_name(poly, seg_type, memo=None):
     """Query OSM for nearby road / feature names and compose a label. Returns
     None on any network failure (caller falls back to a generic name)."""
-    poly = s["polyline"]
     a, mid, b = poly[0], poly[len(poly) // 2], poly[-1]
     roads = []
     features = []
     suburb = None
     try:
         for i, (lat, lon) in enumerate((mid, a, b)):
-            data = _reverse_geocode(lat, lon)
-            time.sleep(1.1)   # honour Nominatim usage policy (<= 1 req/s)
+            data = _reverse_geocode(lat, lon, memo=memo)
             addr = data.get("address", {}) or {}
             road = addr.get("road") or addr.get("pedestrian") or addr.get("footway")
             if road:
@@ -1528,7 +1604,6 @@ def _derive_name(s):
 
     road = _most_common(roads)
     feature = features[0] if features else None
-    seg_type = s["type"]
     if seg_type == "loop":
         base = feature or road or (suburb and f"{suburb}")
         label = f"{base} loop" if base else None
@@ -1556,9 +1631,9 @@ def _disambiguate_names(segments):
             s["name"] = f"{s['name']} · {s['length_str']}"
 
 
-def _fallback_name(s):
-    mid = s["polyline"][len(s["polyline"]) // 2]
-    kind = {"loop": "Loop", "climb": "Climb", "segment": "Segment"}[s["type"]]
+def _fallback_name(poly, seg_type):
+    mid = poly[len(poly) // 2]
+    kind = {"loop": "Loop", "climb": "Climb", "segment": "Segment"}[seg_type]
     return f"{kind} near {mid[0]:.3f}, {mid[1]:.3f}"
 
 
@@ -1586,35 +1661,99 @@ def _ordered_unique(items):
 # a single run's GPS wobble. Cached on disk; falls back to the raw trace when offline.
 # ---------------------------------------------------------------------------
 
-def _match_segments(segments):
+def _nearest_match(poly, located):
+    """Reuse a cached snap for a polyline that drifted past its exact key. Returns the value
+    to reuse (a snapped polyline, or [] for a cached failure) when a prior entry sits within
+    MATCH_REUSE_M, else None (caller then queries Overpass). A non-empty snap is only reused
+    if it still fits the current drawn line (length band + deviation), so drift can't graft a
+    stale line onto a segment that has genuinely moved; a cached failure nearby is reused as-is
+    (the same spot will fail to snap again)."""
+    cen = _poly_centroid(poly)
+    best, best_d = None, MATCH_REUSE_M
+    for c, val in located:
+        d = _haversine_m(cen[0], cen[1], c[0], c[1])
+        if d <= best_d:
+            best, best_d = val, d
+    if best is None:
+        return None
+    if not best:                      # cached failure at this spot — reuse, skip Overpass
+        return []
+    plen = _polyline_len(poly)
+    ml = _polyline_len(best)
+    if plen and 0.7 * plen <= ml <= 1.4 * plen and _polyline_deviation(best, poly) <= MATCH_MAX_DEV_M:
+        return best
+    return None
+
+
+def _match_segments(segments, polys=None):
+    """Snap each segment's drawn line onto OSM roads, querying Overpass only when nothing
+    nearby is cached. `polys` maps id(segment) -> the pre-snap drawn polyline; when given (the
+    concurrent path) the cache key and snap source come from it rather than the live
+    s["polyline"] this function overwrites."""
     cache = _load_json(MATCH_CACHE) or {}
+    located = _located_cache(cache)
+    src = {id(s): (polys[id(s)] if polys is not None else s["polyline"]) for s in segments}
+    # Cold-cache win: one Overpass fetch over the union of all segments covers every per-segment
+    # bbox (the snap only looks within MATCH_SNAP_M, far inside each segment's own pad), so a
+    # single shared graph gives identical snaps while collapsing N area downloads into one. Built
+    # lazily on first real need, and skipped entirely when every segment is cached/reused.
+    ubbox = _union_bbox(src.values())
+    use_shared = _bbox_span_ok(ubbox)
+    shared_locate = None      # None = not built; False = fetch/graph failed; else locate(lat,lon)
     dirty = False
     for s in segments:
-        key = _geo_key(s["polyline"])
+        poly = src[id(s)]
+        key = _geo_key(poly)
         if key in cache:
             if cache[key]:
                 s["polyline"] = cache[key]
             continue
-        matched = _match_polyline(s["polyline"], closed=(s["type"] == "loop"))
+        # Drift reuse: the drawn line moved past the exact key, but a snap we already
+        # computed sits within MATCH_REUSE_M and still fits — reuse it (no network).
+        reused = _nearest_match(poly, located)
+        if reused is not None:
+            cache[key] = reused
+            dirty = True
+            if reused:
+                s["polyline"] = reused
+            continue
+        # Needs the road network. Snap against the shared graph, or fall back to a per-segment
+        # fetch when the segments span too wide an area for one query.
+        matched = None
+        if use_shared:
+            if shared_locate is None:
+                try:
+                    coords, adj = _build_walk_graph(_overpass_ways(ubbox))
+                    edges = _graph_edges_latlon(coords, adj)
+                    shared_locate = _index_edges(edges, ubbox) if len(edges) >= 3 else False
+                except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+                    shared_locate = False
+                time.sleep(1.0)   # one polite pause for the single shared fetch
+            if shared_locate:
+                matched = _snap_poly(poly, closed=(s["type"] == "loop"), candidates=shared_locate)
+        else:
+            matched = _match_polyline(poly, closed=(s["type"] == "loop"))
+            time.sleep(1.0)   # per-segment fallback keeps its own pause
         # Only trust a match that keeps roughly the benchmark length, stays close to the
         # actual trace, and is no jaggier than the real run. Otherwise the snap wandered
         # onto the wrong roads or flickered between adjacent parallel ways (a zig-zag the
         # runner never ran), and the smooth raw trace is more faithful.
         if matched:
             ml = _polyline_len(matched)
-            dev = _polyline_deviation(matched, s["polyline"])
-            turn_gain = _reversal_rate(matched) - _reversal_rate(s["polyline"])
+            dev = _polyline_deviation(matched, poly)
+            turn_gain = _reversal_rate(matched) - _reversal_rate(poly)
             if (not (0.7 * s["length_m"] <= ml <= 1.4 * s["length_m"])
                     or dev > MATCH_MAX_DEV_M
                     or turn_gain > MATCH_MAX_TURN_GAIN):
                 matched = None
         cache[key] = matched or []
+        located.append((_poly_centroid(poly), matched or []))
         dirty = True
         if matched:
             s["polyline"] = matched
-        time.sleep(1.0)   # be polite to the public Overpass endpoint
     if dirty:
-        _save_json(MATCH_CACHE, cache)
+        centroids = [_poly_centroid(src[id(s)]) for s in segments]
+        _save_json(MATCH_CACHE, _prune_cache(cache, centroids, CACHE_PRUNE_M))
 
 
 def _overpass_ways(bbox):
@@ -1735,28 +1874,70 @@ def _resample_track(poly, step):
     return out
 
 
-def _match_polyline(poly, closed):
-    """Snap a polyline onto the OSM walking network by projecting each point to the
-    nearest path edge (not routing between snaps — that detours wildly when the trace
-    runs between parallel streets). The result follows real roads while preserving the
-    run's shape and length. Returns None on failure (offline, no nearby paths, sparse)."""
+def _union_bbox(polys, pad=0.0015):
+    """Padded bounding box covering every point of every polyline. Pad matches the per-segment
+    bbox pad so the shared fetch is a superset of what each segment would fetch on its own."""
+    lats = [p[0] for poly in polys for p in poly]
+    lons = [p[1] for poly in polys for p in poly]
+    return (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
+
+
+def _bbox_span_ok(bbox):
+    s, w, n, e = bbox
+    return (n - s) <= SNAP_UNION_MAX_DEG and (e - w) <= SNAP_UNION_MAX_DEG
+
+
+def _graph_edges_latlon(coords, adj):
+    """Undirected walk-graph edges as ((lat,lon),(lat,lon)) pairs."""
+    return [(coords[a], coords[b]) for a, b in _walk_edges(adj)]
+
+
+def _index_edges(edges, bbox):
+    """Bucket edges into a metric grid so each query point only tests nearby edges instead of the
+    whole region. Cells are computed in a local frame about the bbox SW corner; an edge is filed in
+    every cell its endpoint bounding box touches (graph edges are short, so 1-4 cells). Returns
+    locate(lat,lon) -> the candidate edges in that point's 3x3 cell neighbourhood. With cell >
+    MATCH_SNAP_M, any edge passing within snap range of a point is guaranteed to be in that window,
+    so the indexed snap selects the same nearest edge a full scan would."""
+    s, w, n, _e = bbox
+    lat0, lon0 = s, w
+    mx = 111320.0 * math.cos(math.radians((s + n) / 2))
+    cell = SNAP_INDEX_CELL_M
+
+    def cij(lat, lon):
+        return (int(((lon - lon0) * mx) // cell), int(((lat - lat0) * 111320.0) // cell))
+
+    idx = defaultdict(list)
+    for ed in edges:
+        (alat, alon), (blat, blon) = ed
+        ci0, cj0 = cij(min(alat, blat), min(alon, blon))
+        ci1, cj1 = cij(max(alat, blat), max(alon, blon))
+        for ci in range(ci0, ci1 + 1):
+            for cj in range(cj0, cj1 + 1):
+                idx[(ci, cj)].append(ed)
+
+    def locate(lat, lon):
+        ci, cj = cij(lat, lon)
+        out = []
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                out.extend(idx.get((ci + di, cj + dj), ()))
+        return out
+
+    return locate
+
+
+def _snap_poly(poly, closed, candidates):
+    """Snap a polyline onto the OSM walking network by projecting each point to the nearest path
+    edge (not routing between snaps — that detours wildly when the trace runs between parallel
+    streets). `candidates(lat, lon)` supplies the edges to test for a point: the whole graph for a
+    single-segment fetch, or just the local cells from the shared index. Either way the nearest
+    edge within MATCH_SNAP_M is the same, so the drawn line is identical. Returns None on failure
+    (no nearby paths, too sparse)."""
     if len(poly) < 3:
         return None
     lats = [a for a, _ in poly]
     lons = [b for _, b in poly]
-    pad = 0.0015
-    bbox = (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
-    try:
-        osm = _overpass_ways(bbox)
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
-        return None
-
-    coords, adj = _build_walk_graph(osm)
-    edges = _walk_edges(adj)
-    if len(edges) < 3:
-        return None
-
-    # Work in local metres about the trace's centre.
     lat0 = sum(lats) / len(lats)
     lon0 = sum(lons) / len(lons)
     mx = 111320.0 * math.cos(math.radians(lat0))
@@ -1764,13 +1945,13 @@ def _match_polyline(poly, closed):
     def to_xy(lat, lon):
         return ((lon - lon0) * mx, (lat - lat0) * 111320.0)
 
-    exy = [(to_xy(*coords[a]), to_xy(*coords[b])) for a, b in edges]
-
     pts = []
     for la, lo in _resample_track(poly, MATCH_STEP_M):
         px, py = to_xy(la, lo)
         best_d2, best_q = None, None
-        for (ax, ay), (bx, by) in exy:
+        for (alat, alon), (blat, blon) in candidates(la, lo):
+            ax, ay = to_xy(alat, alon)
+            bx, by = to_xy(blat, blon)
             dx, dy = bx - ax, by - ay
             seg2 = dx * dx + dy * dy
             t = 0.0 if seg2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
@@ -1790,6 +1971,26 @@ def _match_polyline(poly, closed):
     if len(pts) < 4:
         return None
     return _simplify(pts, 200)
+
+
+def _match_polyline(poly, closed):
+    """Single-segment map-match: fetch this segment's own bbox, then snap. Fallback for when the
+    segments span too wide an area for the shared union fetch (see _match_segments)."""
+    if len(poly) < 3:
+        return None
+    lats = [a for a, _ in poly]
+    lons = [b for _, b in poly]
+    pad = 0.0015
+    bbox = (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
+    try:
+        osm = _overpass_ways(bbox)
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+        return None
+    coords, adj = _build_walk_graph(osm)
+    edges = _graph_edges_latlon(coords, adj)
+    if len(edges) < 3:
+        return None
+    return _snap_poly(poly, closed, lambda la, lo: edges)
 
 
 # ---------------------------------------------------------------------------

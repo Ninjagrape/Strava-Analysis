@@ -74,7 +74,19 @@ def decompress_fit_gz(gz_path: Path, dest_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 SEMICIRCLES_TO_DEG = 180.0 / (2 ** 31)
-GPS_MAX_POINTS = 600
+
+# GPS polyline density scales with run distance (like fit_distance_stream) so a
+# long run keeps the same per-km resolution as a short one, rather than being
+# squeezed into a flat point cap. Floored for tiny runs, hard-capped for huge ones.
+GPS_POINTS_PER_KM = 150     # match stream spatial resolution (~every 7 m)
+GPS_MIN_POINTS    = 75      # floor so very short runs still draw smoothly
+GPS_MAX_POINTS    = 2500    # hard cap for very long runs (kicks in past ~17 km)
+
+
+def _polyline_point_budget(distance_m: float) -> int:
+    """Target polyline point count for a run's distance, clamped to [floor, cap]."""
+    target = round(GPS_POINTS_PER_KM * distance_m / 1000.0)
+    return max(GPS_MIN_POINTS, min(GPS_MAX_POINTS, target))
 
 
 def _simplify_polyline(coords: list, max_points: int = GPS_MAX_POINTS) -> list:
@@ -633,7 +645,9 @@ def parse_fit(fit_path: Path) -> dict:
 
     stats["fit_record_count"]   = record_count
     stats["fit_splits"]         = json.dumps(laps)
-    stats["fit_gps_polyline"]   = json.dumps(_simplify_polyline(gps_coords))
+    total_dist_m = (track[-1][1] - track[0][1]) if len(track) >= 2 else 0.0
+    stats["fit_gps_polyline"]   = json.dumps(
+        _simplify_polyline(gps_coords, _polyline_point_budget(total_dist_m)))
     stats["fit_distance_stream"] = _distance_stream(track, elev_stream, hr_stream, cad_stream, pos_stream)
 
     # Best efforts (sliding window over record track)
