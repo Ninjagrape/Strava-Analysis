@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent / "cache" / "config.json"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "cache" / "config.json"
 
 
 @dataclass(frozen=True)

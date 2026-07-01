@@ -19,6 +19,10 @@ from pathlib import Path
 
 PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 
+# Support modules live in lib/; put it on the path so the plain imports below
+# resolve whether the hub is run directly or invoked via main.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+
 from generate_dashboards import (
     load_rows, fmt_pace, fmt_time, ga_time, is_interval,
     fmt_pace_from_s_per_km, weekly_mileage, weekly_runs, render_mileage,

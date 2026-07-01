@@ -1156,7 +1156,7 @@ def body_analytics(rows: list[dict], updated: str) -> str:
 
 
 def main():
-    here = Path(__file__).parent
+    here = Path(__file__).resolve().parent.parent
     csv_dir = here / "csv_data"
     candidates = sorted(csv_dir.glob("*_strava.csv"))
     if not candidates:

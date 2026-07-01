@@ -283,13 +283,13 @@ zone boundaries.
 
 ### Standalone dashboard scripts
 
-`generate_dashboards.py` and `generate_analytics.py` can also be run on their own to emit individual HTML files into `dashboards/` (created automatically):
+`lib/generate_dashboards.py` and `lib/generate_analytics.py` can also be run on their own to emit individual HTML files into `dashboards/` (created automatically):
 
 | Script | Output file | Contents |
 |---|---|---|
-| `generate_dashboards.py` | `dashboards/top_runs_by_distance.html` | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
-| `generate_dashboards.py` | `dashboards/goal_dashboard.html` | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and a weekly mileage sparkline |
-| `generate_analytics.py` | `dashboards/analytics_dashboard.html` | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
+| `lib/generate_dashboards.py` | `dashboards/top_runs_by_distance.html` | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace |
+| `lib/generate_dashboards.py` | `dashboards/goal_dashboard.html` | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and a weekly mileage sparkline |
+| `lib/generate_analytics.py` | `dashboards/analytics_dashboard.html` | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, and calendar heatmap |
 
 ### Goal dashboard sections
 
@@ -523,10 +523,11 @@ Strava-Analysis/
 ├── main.py                     # one-command entrypoint: compile + generate hub
 ├── strava_compile.py           # step 1 — processes Strava export → enriched CSV
 ├── generate_hub.py             # step 2 — builds the consolidated hub (TrainingHub.html)
-├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
-├── generate_analytics.py       # analytics logic; also runs standalone
-├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
-├── config.py                   # loads optional cache/config.json (races + segment anchors)
+├── lib/                        # support modules imported by generate_hub.py
+│   ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
+│   ├── generate_analytics.py       # analytics logic; also runs standalone
+│   ├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
+│   └── config.py                   # loads optional cache/config.json (races + segment anchors)
 ├── config.example.json         # sample personalization file; copy to cache/config.json
 ├── csv_data/                   # output CSVs (gitignored)
 │   └── YYYY-MM-DD_strava.csv
@@ -538,9 +539,9 @@ Strava-Analysis/
 │   └── segment_match_cache.json    # cached OSM (Overpass) map-matched route lines
 ├── dashboards/                 # output HTML dashboards (gitignored)
 │   ├── TrainingHub.html        # the consolidated training hub (main output)
-│   ├── top_runs_by_distance.html   # only if generate_dashboards.py is run alone
-│   ├── goal_dashboard.html         # only if generate_dashboards.py is run alone
-│   └── analytics_dashboard.html    # only if generate_analytics.py is run alone
+│   ├── top_runs_by_distance.html   # only if lib/generate_dashboards.py is run alone
+│   ├── goal_dashboard.html         # only if lib/generate_dashboards.py is run alone
+│   └── analytics_dashboard.html    # only if lib/generate_analytics.py is run alone
 └── README.md
 ```
 

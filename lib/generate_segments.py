@@ -138,7 +138,7 @@ AUTO_ANCHOR_MINED_GAP_M = 120.0   # skip an auto-anchor candidate this close to 
                                   # loop is already detected, so an anchor there only re-times the
                                   # same circuit at a different scale (a duplicate/fragment)
 
-CACHE_DIR       = Path(__file__).parent / "cache"
+CACHE_DIR       = Path(__file__).resolve().parent.parent / "cache"
 SEG_CACHE       = CACHE_DIR / "segments_cache.json"
 GEO_CACHE       = CACHE_DIR / "segment_geocode_cache.json"
 MATCH_CACHE     = CACHE_DIR / "segment_match_cache.json"

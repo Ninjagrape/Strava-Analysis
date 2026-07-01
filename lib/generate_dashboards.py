@@ -922,7 +922,7 @@ def body_goal_dashboard(rows: list[dict], updated: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
-    here = Path(__file__).parent
+    here = Path(__file__).resolve().parent.parent
 
     # Find the most recent *_strava.csv in csv_data/
     csv_dir = here / "csv_data"
