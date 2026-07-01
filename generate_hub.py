@@ -1166,7 +1166,18 @@ function initSegments() {
 // seeded from those pre-starred cards on the first load in a given browser.
 var SEG_STAR_KEY = 'strava.segStars';
 var SEG_STARONLY_KEY = 'strava.segStarredOnly';
+var SEG_RANGE_KEY = 'strava.segRange';
 var activeSegType = 'all';
+// Trend window: how far back the performance charts scale. Anchored at each
+// segment's most recent attempt, so the window is never empty. 'max' = full history.
+var activeSegRange = 'max';
+var SEG_RANGES = [
+  {key: '1m', label: '1M', days: 30},
+  {key: '3m', label: '3M', days: 91},
+  {key: '6m', label: '6M', days: 183},
+  {key: '1y', label: '1Y', days: 365},
+  {key: 'max', label: 'Max', days: null}
+];
 var segStarredOnly = false;
 var segStars = null;                // lazily-initialised Set of starred geo_keys
 
@@ -1273,7 +1284,46 @@ function initSegControls() {
   }
   var exp = document.getElementById('seg-export');
   if (exp) exp.addEventListener('click', exportSegStars);
+  initSegRange();
   applySegFilters();
+}
+
+// Days for the active window, or null for 'Max' (full history).
+function segRangeDays() {
+  for (var i = 0; i < SEG_RANGES.length; i++) {
+    if (SEG_RANGES[i].key === activeSegRange) return SEG_RANGES[i].days;
+  }
+  return null;
+}
+
+// Re-scale every trend chart to the current window. Cheap enough to run on each
+// toggle; thumbnails clip to the window, the open overlay re-renders scrollable.
+function refreshSegTrends() {
+  if (typeof SEGMENTS === 'undefined' || !SEGMENTS) return;
+  SEGMENTS.forEach(function(seg) {
+    try { drawSegTrend(seg); } catch (e) {}
+  });
+  if (segOverlayOpenId != null) {
+    var s = SEGMENTS.find(function(x) { return x.id === segOverlayOpenId; });
+    if (s) renderSegTrend(s, document.getElementById('so-trend'),
+                          {W: 440, H: 190, tipId: 'so-tip', legend: true, scroll: true});
+  }
+}
+
+function initSegRange() {
+  var bar = document.getElementById('seg-range');
+  if (!bar) return;
+  try { var saved = localStorage.getItem(SEG_RANGE_KEY); if (saved) activeSegRange = saved; } catch (e) {}
+  bar.querySelectorAll('.chip').forEach(function(chip) {
+    chip.classList.toggle('active', chip.getAttribute('data-range') === activeSegRange);
+    chip.addEventListener('click', function() {
+      activeSegRange = this.getAttribute('data-range');
+      try { localStorage.setItem(SEG_RANGE_KEY, activeSegRange); } catch (e) {}
+      var self = this;
+      bar.querySelectorAll('.chip').forEach(function(c) { c.classList.toggle('active', c === self); });
+      refreshSegTrends();
+    });
+  });
 }
 
 // Start = green disc, End = checkered finish flag. divIcons so the same markup
@@ -1319,32 +1369,64 @@ function drawSegTrend(seg) {
 function renderSegTrend(seg, holder, opts) {
   if (!holder) return;
   opts = opts || {};
-  var efforts = seg.efforts.slice().sort(function(a, b) {
+  var scroll = !!opts.scroll;
+  var all = seg.efforts.slice().sort(function(a, b) {
     return a.date_iso < b.date_iso ? -1 : (a.date_iso > b.date_iso ? 1 : 0);
   });
-  if (efforts.length < 2) { holder.innerHTML = ''; return; }
+  if (all.length < 2) { holder.innerHTML = ''; return; }
 
   var tipId = opts.tipId || ('seg-tip-' + seg.id);
   var W = opts.W || 360, H = opts.H || 150, padL = 40, padR = 10, padT = 14, padB = 22;
+  if (scroll && holder.clientWidth) W = holder.clientWidth;   // fit the window to the real box
+  var innerW = W - padL - padR;
+
+  var tminAll = Date.parse(all[0].date_iso), tmaxAll = Date.parse(all[all.length - 1].date_iso);
+  if (tmaxAll === tminAll) tmaxAll = tminAll + 1;
+  var days = (opts.rangeDays !== undefined) ? opts.rangeDays : segRangeDays();
+  var windowMs = days ? days * 86400000 : null;
+  var spanAll = tmaxAll - tminAll;
+
+  // Pick the plotted efforts, the x-domain, and the drawing width:
+  //  - overlay with more history than the window: draw everything wide, scroll to the latest;
+  //  - thumbnail with a window: clip to the most recent window (anchored at the last attempt);
+  //  - otherwise (Max, or history shorter than the window): the full range fills the chart.
+  var efforts, domMin, domMax, contentW, scrollMode = false;
+  if (scroll && windowMs && spanAll > windowMs) {
+    scrollMode = true;
+    efforts = all;
+    domMin = tminAll; domMax = tmaxAll;
+    contentW = innerW * (spanAll / windowMs);
+  } else if (!scroll && windowMs) {
+    domMin = Math.max(tmaxAll - windowMs, tminAll); domMax = tmaxAll;
+    efforts = all.filter(function(e) { return Date.parse(e.date_iso) >= domMin; });
+    contentW = innerW;
+  } else {
+    efforts = all;
+    domMin = tminAll; domMax = tmaxAll;
+    contentW = innerW;
+  }
+  if (domMax === domMin) domMax = domMin + 1;
+  var VBW = padL + contentW + padR;   // logical/pixel width of the drawn chart
+
   var ts = efforts.map(function(e) { return Date.parse(e.date_iso); });
   var ys = efforts.map(function(e) { return e.time_s; });
-  var tmin = Math.min.apply(null, ts), tmax = Math.max.apply(null, ts);
   var ymin = Math.min.apply(null, ys), ymax = Math.max.apply(null, ys);
-  if (tmax === tmin) tmax = tmin + 1;
   // Pad the time axis so faster (smaller) times sit higher with a little headroom.
   var ylo = ymin - (ymax - ymin) * 0.12 - 1, yhi = ymax + (ymax - ymin) * 0.12 + 1;
 
-  function px(t) { return padL + (t - tmin) / (tmax - tmin) * (W - padL - padR); }
+  function px(t) { return padL + (t - domMin) / (domMax - domMin) * contentW; }
   function py(v) { return padT + (v - ylo) / (yhi - ylo) * (H - padT - padB); } // smaller time = higher
 
   var prT = seg.pr_time_s;
-  var grid = '';
+  // Gridlines span the full drawn width; labels are kept separate so the scroll view can
+  // pin them to a fixed left axis instead of letting them scroll away.
+  var gridLines = '', gridLabels = '';
   for (var g = 0; g <= 2; g++) {
     var vy = padT + g / 2 * (H - padT - padB);
     var val = ylo + g / 2 * (yhi - ylo);  // match py(): fastest (small) sits at the top
-    grid += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (W - padR) +
-      '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>' +
-      '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
+    gridLines += '<line x1="' + padL + '" y1="' + vy.toFixed(1) + '" x2="' + (VBW - padR) +
+      '" y2="' + vy.toFixed(1) + '" stroke="#2a2a2a" stroke-width="1"/>';
+    gridLabels += '<text x="' + (padL - 5) + '" y="' + (vy + 3).toFixed(1) +
       '" font-size="9" fill="#555" text-anchor="end">' + fmtSegTime(val) + '</text>';
   }
   // One connecting line per run type, so attempts only join others of the same kind.
@@ -1378,10 +1460,10 @@ function renderSegTrend(seg, holder, opts) {
       (isPr ? ' data-pr="1"' : '') +
       ' class="seg-dot" style="cursor:pointer"/>';
   }).join('');
-  // date labels at first and last attempt
+  // date labels at first and last plotted attempt
   var xlab = '<text x="' + padL + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="start">' +
       shortDate(efforts[0].date_iso) + '</text>' +
-    '<text x="' + (W - padR) + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="end">' +
+    '<text x="' + (VBW - padR) + '" y="' + (H - 7) + '" font-size="9" fill="#555" text-anchor="end">' +
       shortDate(efforts[efforts.length - 1].date_iso) + '</text>';
 
   // Legend (overlay only): only the run types actually present, in RUN_TYPES order.
@@ -1396,11 +1478,30 @@ function renderSegTrend(seg, holder, opts) {
     legend = '<div class="seg-trend-legend">' + items + '</div>';
   }
 
-  holder.innerHTML =
-    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
-    grid + xlab + lines +
-    dots + '</svg>' + legend +
-    '<div class="seg-trend-tip" id="' + tipId + '"></div>';
+  if (scrollMode) {
+    // Chart drawn wider than its box; a horizontal scrollbar reaches earlier attempts.
+    // The y-axis labels sit in a separate pinned SVG so they don't scroll off.
+    holder.innerHTML =
+      '<div class="seg-trend-scroll">' +
+        '<svg width="' + VBW + '" height="' + H + '" viewBox="0 0 ' + VBW + ' ' + H +
+        '" style="width:' + VBW + 'px;height:' + H + 'px" xmlns="http://www.w3.org/2000/svg">' +
+        gridLines + xlab + lines + dots + '</svg>' +
+      '</div>' +
+      '<svg class="seg-trend-yaxis" width="' + padL + '" height="' + H +
+        '" viewBox="0 0 ' + padL + ' ' + H + '" style="width:' + padL + 'px;height:' + H + 'px">' +
+        '<rect x="0" y="0" width="' + padL + '" height="' + H + '" fill="#1c1c1c"/>' +
+        gridLabels + '</svg>' +
+      legend +
+      '<div class="seg-trend-tip" id="' + tipId + '"></div>';
+    var sc = holder.querySelector('.seg-trend-scroll');
+    if (sc) sc.scrollLeft = sc.scrollWidth;   // open on the most recent window
+  } else {
+    holder.innerHTML =
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">' +
+      gridLines + gridLabels + xlab + lines +
+      dots + '</svg>' + legend +
+      '<div class="seg-trend-tip" id="' + tipId + '"></div>';
+  }
 
   var tip = document.getElementById(tipId);
   holder.querySelectorAll('.seg-dot').forEach(function(c) {
@@ -1546,10 +1647,12 @@ function latlngAtCum(poly, cum, target) {
 
 var segOverlayMap = null;
 var segElevMarker = null;
+var segOverlayOpenId = null;
 
 function openSegOverlay(id) {
   var seg = SEGMENTS.find(function(s) { return s.id === id; });
   if (!seg) return;
+  segOverlayOpenId = id;
   document.getElementById('so-title').textContent = seg.name || 'Segment';
 
   var bits = [
@@ -1580,7 +1683,7 @@ function openSegOverlay(id) {
     map.invalidateSize();
     map.fitBounds(poly.getBounds(), {padding: [30, 30]});
     segOverlayMap = map;
-    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 190, tipId: 'so-tip', legend: true});
+    renderSegTrend(seg, document.getElementById('so-trend'), {W: 440, H: 190, tipId: 'so-tip', legend: true, scroll: true});
     renderElevProfile(seg, document.getElementById('so-elev'), {W: 440, H: 150, tipId: 'so-elev-tip'});
   }, 60);
 }
@@ -1589,6 +1692,7 @@ function closeSegOverlay() {
   document.getElementById('seg-overlay').classList.remove('open');
   if (segOverlayMap) { segOverlayMap.remove(); segOverlayMap = null; }
   segElevMarker = null;
+  segOverlayOpenId = null;
 }
 
 // Compact run stats bar reused as the summary header on the expanded run overlay.

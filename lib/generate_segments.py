@@ -2279,6 +2279,14 @@ def body_segments(segments, updated):
         f"segments &middot; updated {updated}</p>"
         "<div class=\"seg-filterbar\">"
         "  <div class=\"seg-chips\" id=\"seg-chips\"></div>"
+        "  <div class=\"seg-range\" id=\"seg-range\">"
+        "    <span class=\"seg-range-lbl\">Window</span>"
+        "    <span class=\"chip\" data-range=\"1m\">1M</span>"
+        "    <span class=\"chip\" data-range=\"3m\">3M</span>"
+        "    <span class=\"chip\" data-range=\"6m\">6M</span>"
+        "    <span class=\"chip\" data-range=\"1y\">1Y</span>"
+        "    <span class=\"chip active\" data-range=\"max\">Max</span>"
+        "  </div>"
         "  <div class=\"seg-filter-actions\">"
         "    <button id=\"seg-star-toggle\" class=\"seg-fbtn\" title=\"Show starred segments only\">"
         "&#9733; Starred only</button>"
@@ -2364,6 +2372,12 @@ SEGMENTS_CSS = """
 .seg-chips .chip.active[data-type="segment"]{background:#5a9fd4;border-color:#5a9fd4}
 .seg-chips .chip.active[data-type="climb"]{background:#e0a020;border-color:#e0a020}
 .seg-chips .chip.active[data-type="loop"]{background:#5cb85c;border-color:#5cb85c}
+.seg-range{display:flex;align-items:center;flex-wrap:wrap;gap:4px}
+.seg-range-lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.04em;margin-right:2px}
+.seg-range .chip{font-size:11px;color:#aaa;background:#222;border:1px solid #3a3a3a;
+  border-radius:999px;padding:3px 9px;cursor:pointer;user-select:none;transition:all .1s}
+.seg-range .chip:hover{border-color:#555;color:#ddd}
+.seg-range .chip.active{background:#5cb85c;border-color:#5cb85c;color:#111;font-weight:700}
 .seg-filter-actions{display:flex;gap:6px;margin-left:auto}
 .seg-fbtn{font-size:11px;color:#aaa;background:#222;border:1px solid #3a3a3a;border-radius:6px;
   padding:4px 10px;cursor:pointer;transition:all .1s}
@@ -2431,6 +2445,9 @@ SEGMENTS_CSS = """
 .so-side{flex:0 0 440px;max-width:46%;display:flex;flex-direction:column;gap:10px;min-height:0}
 .so-trend{flex:0 0 auto;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
 .so-trend svg{display:block;width:100%;height:190px}
+.seg-trend-scroll{overflow-x:auto;overflow-y:hidden;width:100%}
+.seg-trend-scroll svg{display:block}
+.seg-trend-yaxis{position:absolute;left:0;top:0;pointer-events:none}
 .seg-trend-legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 10px 8px;border-top:1px solid #2a2a2a}
 .seg-trend-legend .seg-leg-item{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:#999}
 .seg-trend-legend .seg-leg-item i{width:9px;height:9px;border-radius:50%;display:inline-block}
