@@ -41,11 +41,11 @@ The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory 
 ### Personalization (optional)
 
 Everything is derived from your export, so no setup is required. To add race-goal cards to the
-Goals tab, copy `config.example.json` to `config.json` and list your races (name, distance,
+Goals tab, copy `config.example.json` to `cache/config.json` and list your races (name, distance,
 date, target time, optional pace wave). Without a config the Goals tab shows generic Riegel/VDOT
 predictions only — no personal targets.
 
-`config.json` is gitignored, so your goals stay local. It also accepts an optional
+`cache/config.json` is gitignored, so your goals stay local. It also accepts an optional
 `segment_anchors` list, but you rarely need it: recurring loops are now auto-detected even when
 you only ever run them inside a longer route (see [Benchmark segments](#benchmark-segments-generate_segmentspy)). Use an anchor only to pin or rename a loop the detector misses.
 
@@ -422,7 +422,7 @@ closed-lap gate is promoted to an **auto-anchor** — a line is derived from the
 self-crossing instance and matched off that fixed line across every run (the way Strava counts
 efforts), so traversals embedded in longer routes still count. The normal run/span/length gates
 still apply. As a last resort, a loop that never self-crosses in *any* run (so no line can be
-derived) can be pinned in `config.json` under `segment_anchors` — an approximate centre and
+derived) can be pinned in `cache/config.json` under `segment_anchors` — an approximate centre and
 length, plus a curated name.
 
 ### Timing and ranking
@@ -456,9 +456,18 @@ faithful to the actual run; it is discarded in favour of the raw trace when it:
 Segment names come from OpenStreetMap reverse geocoding (Nominatim) — nearby road, feature, and
 suburb names compose labels like *"Shirley Road to Cable Street (Wollstonecraft)"* or
 *"Morton Street loop (Waverton)"*. Network lookups (Overpass and Nominatim) are rate-limited and
-**cached on disk** in `csv_data/`, and the whole detection result is cached on a signature of the
+**cached on disk** in `cache/`, and the whole detection result is cached on a signature of the
 run set, so a rebuild over unchanged runs reuses everything and makes no network calls. All
 detection thresholds are tunable constants at the top of `generate_segments.py`.
+
+### Starring and filtering segments
+
+Each segment card has a star toggle. Stars are saved instantly to the browser's `localStorage`
+(keyed by a stable geo-key, so they stay attached to the same route across rebuilds) and persist
+between dashboard loads. Above the grid, type chips (**All / Segment / Climb / Loop**) and a
+**Starred only** toggle filter the visible cards. Because the dashboard is a static file and
+can't write to disk itself, **Export stars** downloads `segment_stars.json`; drop it into `cache/`
+and the next build reads it so stars also survive a full regenerate on a fresh browser.
 
 ## Analytics dashboard (`generate_analytics.py`)
 
@@ -517,10 +526,13 @@ Strava-Analysis/
 ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 ├── generate_analytics.py       # analytics logic; also runs standalone
 ├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
-├── config.py                   # loads optional config.json (races + segment anchors)
-├── config.example.json         # sample personalization file; copy to config.json
-├── csv_data/                   # output CSVs and caches (gitignored)
-│   ├── YYYY-MM-DD_strava.csv
+├── config.py                   # loads optional cache/config.json (races + segment anchors)
+├── config.example.json         # sample personalization file; copy to cache/config.json
+├── csv_data/                   # output CSVs (gitignored)
+│   └── YYYY-MM-DD_strava.csv
+├── cache/                      # detection caches + personal config/stars (gitignored)
+│   ├── config.json                 # optional personalization (races + segment anchors)
+│   ├── segment_stars.json          # user-starred segments (geo-keys); read at build
 │   ├── segments_cache.json         # detected segments, keyed on a run-set signature
 │   ├── segment_geocode_cache.json  # cached OSM (Nominatim) segment names
 │   └── segment_match_cache.json    # cached OSM (Overpass) map-matched route lines

@@ -138,10 +138,11 @@ AUTO_ANCHOR_MINED_GAP_M = 120.0   # skip an auto-anchor candidate this close to 
                                   # loop is already detected, so an anchor there only re-times the
                                   # same circuit at a different scale (a duplicate/fragment)
 
-CACHE_DIR       = Path(__file__).parent / "csv_data"
+CACHE_DIR       = Path(__file__).parent / "cache"
 SEG_CACHE       = CACHE_DIR / "segments_cache.json"
 GEO_CACHE       = CACHE_DIR / "segment_geocode_cache.json"
 MATCH_CACHE     = CACHE_DIR / "segment_match_cache.json"
+STARS_CACHE     = CACHE_DIR / "segment_stars.json"   # user-starred segments (geo_keys); read at build
 
 NOMINATIM_URL   = "https://nominatim.openstreetmap.org/reverse"
 OVERPASS_URL    = "https://overpass-api.de/api/interpreter"
@@ -699,7 +700,7 @@ def build_segments(runs):
     cached = _load_json(SEG_CACHE)
     if cached and cached.get("signature") == sig:
         print(f"Segments: loaded {len(cached['segments'])} from cache")
-        return cached["segments"]
+        return _apply_stars(cached["segments"])
 
     _t = time.perf_counter()
     def _lap(_label):
@@ -852,6 +853,21 @@ def build_segments(runs):
 
     _save_json(SEG_CACHE, {"signature": sig, "segments": segments})
     print(f"Segments: detected {len(segments)} benchmark segments")
+    return _apply_stars(segments)
+
+
+def _apply_stars(segments):
+    """Stamp each segment with a stable geo_key and a `starred` flag read from
+    STARS_CACHE. The key is geometric (endpoints + midpoint, ~11 m) so stars stay
+    attached to the same route across rebuilds even though the positional id shifts.
+    Starred state is applied fresh on every build (never baked into segments_cache),
+    so re-importing an exported segment_stars.json takes effect immediately."""
+    raw = _load_json(STARS_CACHE)
+    starred = set(raw) if isinstance(raw, list) else set()
+    for s in segments:
+        poly = s.get("polyline") or []
+        s["geo_key"] = _geo_key(poly) if len(poly) >= 1 else ""
+        s["starred"] = s["geo_key"] in starred
     return segments
 
 
@@ -2261,6 +2277,15 @@ def body_segments(segments, updated):
         "<p class=\"seg-head-title\">Benchmark segments</p>"
         f"<p class=\"seg-head-sub\">Auto-detected routes you repeat &middot; {len(segments)} "
         f"segments &middot; updated {updated}</p>"
+        "<div class=\"seg-filterbar\">"
+        "  <div class=\"seg-chips\" id=\"seg-chips\"></div>"
+        "  <div class=\"seg-filter-actions\">"
+        "    <button id=\"seg-star-toggle\" class=\"seg-fbtn\" title=\"Show starred segments only\">"
+        "&#9733; Starred only</button>"
+        "    <button id=\"seg-export\" class=\"seg-fbtn\" title=\"Download segment_stars.json to drop in cache/ so stars survive a rebuild\">"
+        "Export stars</button>"
+        "  </div>"
+        "</div>"
         "</div>"
     )
 
@@ -2280,12 +2305,19 @@ def body_segments(segments, updated):
             "</tr>"
             for e in sorted(s["efforts"], key=lambda x: x["date_iso"], reverse=True)
         )
+        geo_key = s.get("geo_key", "")
+        starred = bool(s.get("starred"))
+        star_cls = "seg-star on" if starred else "seg-star"
         cards.append(
-            f"<div class=\"seg-card\" data-seg=\"{s['id']}\">"
+            f"<div class=\"seg-card\" data-seg=\"{s['id']}\" data-type=\"{_esc(s['type'])}\" "
+            f"data-geo=\"{_esc(geo_key)}\">"
             "  <div class=\"seg-card-head\">"
             f"    <span class=\"seg-badge\" style=\"color:{colour};border-color:{colour}\">{label}</span>"
             f"    <span class=\"seg-title\" onclick=\"openSegOverlay({s['id']})\" "
             f"title=\"Open interactive map\">{_esc(s['name'])}</span>"
+            f"    <button class=\"{star_cls}\" onclick=\"toggleSegStar(this)\" "
+            f"aria-pressed=\"{'true' if starred else 'false'}\" title=\"Star this segment\">"
+            "&#9733;</button>"
             "  </div>"
             "  <div class=\"seg-stats\">"
             f"    <span class=\"seg-meta\">{s['length_str']}</span>{climb_meta}"
@@ -2322,6 +2354,26 @@ SEGMENTS_CSS = """
 .seg-head{margin-bottom:1rem}
 .seg-head-title{font-size:18px;font-weight:700;color:#eee;margin:0 0 2px}
 .seg-head-sub{font-size:11px;color:#666;margin:0}
+.seg-filterbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px}
+.seg-chips{display:flex;flex-wrap:wrap;gap:4px}
+.seg-chips .chip{font-size:11px;color:#aaa;background:#222;border:1px solid #3a3a3a;
+  border-radius:999px;padding:3px 10px;cursor:pointer;user-select:none;transition:all .1s}
+.seg-chips .chip:hover{border-color:#555;color:#ddd}
+.seg-chips .chip.active{color:#111;font-weight:700}
+.seg-chips .chip.active[data-type="all"]{background:#bbb;border-color:#bbb}
+.seg-chips .chip.active[data-type="segment"]{background:#5a9fd4;border-color:#5a9fd4}
+.seg-chips .chip.active[data-type="climb"]{background:#e0a020;border-color:#e0a020}
+.seg-chips .chip.active[data-type="loop"]{background:#5cb85c;border-color:#5cb85c}
+.seg-filter-actions{display:flex;gap:6px;margin-left:auto}
+.seg-fbtn{font-size:11px;color:#aaa;background:#222;border:1px solid #3a3a3a;border-radius:6px;
+  padding:4px 10px;cursor:pointer;transition:all .1s}
+.seg-fbtn:hover{border-color:#555;color:#ddd}
+#seg-star-toggle.active{color:#f5c518;border-color:#f5c518;background:rgba(245,197,24,.08)}
+.seg-card.seg-hidden{display:none}
+.seg-star{margin-left:auto;flex:0 0 auto;background:none;border:none;cursor:pointer;
+  font-size:18px;line-height:1;color:#4a4a4a;padding:0 2px;transition:color .1s,transform .1s}
+.seg-star:hover{color:#f5c518;transform:scale(1.12)}
+.seg-star.on{color:#f5c518}
 .seg-empty{max-width:480px;margin:4rem auto;text-align:center}
 .seg-empty-title{font-size:16px;font-weight:600;color:#bbb;margin:0 0 8px}
 .seg-empty-sub{font-size:13px;color:#666;line-height:1.6;margin:0}
@@ -2331,7 +2383,7 @@ SEGMENTS_CSS = """
 .seg-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
   padding:2px 8px;border-radius:999px;border:1px solid currentColor;background:rgba(255,255,255,.04)}
 .seg-title{font-size:15px;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;
-  text-overflow:ellipsis;cursor:pointer}
+  text-overflow:ellipsis;cursor:pointer;flex:1;min-width:0}
 .seg-title:hover{color:#5cb85c;text-decoration:underline}
 .seg-stats{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-bottom:10px}
 .seg-meta{font-size:11px;color:#888}

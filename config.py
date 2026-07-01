@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 config.py
-Optional, user-supplied personalization loaded from config.json at the repo root.
+Optional, user-supplied personalization loaded from cache/config.json.
 
 Everything here is optional. With no config.json (or a malformed one) the pipeline
 falls back to fully data-driven behaviour: the goal panel shows generic race
 predictions only, and route segments are auto-detected from GPS tracks. Copy
-config.example.json to config.json to declare your own races or to pin/rename a
+config.example.json to cache/config.json to declare your own races or to pin/rename a
 loop the segment detector misses.
 """
 
@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent / "config.json"
+CONFIG_PATH = Path(__file__).parent / "cache" / "config.json"
 
 
 @dataclass(frozen=True)

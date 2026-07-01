@@ -1154,6 +1154,124 @@ function initSegments() {
   }, 50);
 }
 
+// ── Segment starring + type/starred filtering ─────────────────────────────
+// Stars live in localStorage (instant, survive reloads) keyed by each segment's
+// stable geo_key, so they stick to the same route across rebuilds even though the
+// positional id shifts. The Python build also reads cache/segment_stars.json and
+// pre-stars matching cards; localStorage is authoritative once it exists and is
+// seeded from those pre-starred cards on the first load in a given browser.
+var SEG_STAR_KEY = 'strava.segStars';
+var SEG_STARONLY_KEY = 'strava.segStarredOnly';
+var activeSegType = 'all';
+var segStarredOnly = false;
+var segStars = null;                // lazily-initialised Set of starred geo_keys
+
+function loadSegStars() {
+  try {
+    var raw = localStorage.getItem(SEG_STAR_KEY);
+    if (raw != null) return new Set(JSON.parse(raw));
+  } catch (e) {}
+  var seed = [];
+  document.querySelectorAll('#panel-segments .seg-card .seg-star.on').forEach(function(b) {
+    var card = b.closest('.seg-card');
+    if (card && card.dataset.geo) seed.push(card.dataset.geo);
+  });
+  var set = new Set(seed);
+  saveSegStars(set);
+  return set;
+}
+
+function saveSegStars(set) {
+  try { localStorage.setItem(SEG_STAR_KEY, JSON.stringify(Array.from(set))); } catch (e) {}
+}
+
+function toggleSegStar(btn) {
+  if (!segStars) segStars = loadSegStars();
+  var card = btn.closest('.seg-card');
+  if (!card) return;
+  var key = card.dataset.geo || '';
+  if (segStars.has(key)) {
+    segStars.delete(key); btn.classList.remove('on'); btn.setAttribute('aria-pressed', 'false');
+  } else {
+    segStars.add(key); btn.classList.add('on'); btn.setAttribute('aria-pressed', 'true');
+  }
+  saveSegStars(segStars);
+  applySegFilters();
+}
+
+function applySegFilters() {
+  if (!segStars) segStars = loadSegStars();
+  document.querySelectorAll('#panel-segments .seg-card').forEach(function(card) {
+    var okType = activeSegType === 'all' || card.dataset.type === activeSegType;
+    var okStar = !segStarredOnly || segStars.has(card.dataset.geo || '');
+    card.classList.toggle('seg-hidden', !(okType && okStar));
+  });
+}
+
+// Type chips (All / Segment / Climb / Loop), only for types that actually occur.
+function buildSegChips() {
+  var bar = document.getElementById('seg-chips');
+  if (!bar || typeof SEGMENTS === 'undefined' || !SEGMENTS) return;
+  var counts = {};
+  SEGMENTS.forEach(function(s) { counts[s.type] = (counts[s.type] || 0) + 1; });
+  var defs = [{key: 'all', label: 'All'}, {key: 'segment', label: 'Segment'},
+              {key: 'climb', label: 'Climb'}, {key: 'loop', label: 'Loop'}];
+  bar.innerHTML = defs.filter(function(d) { return d.key === 'all' || counts[d.key]; })
+    .map(function(d) {
+      var n = d.key === 'all' ? SEGMENTS.length : counts[d.key];
+      return '<span class="chip' + (d.key === activeSegType ? ' active' : '') +
+        '" data-type="' + d.key + '">' + d.label + ' ' + n + '</span>';
+    }).join('');
+  bar.querySelectorAll('.chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      activeSegType = this.getAttribute('data-type');
+      bar.querySelectorAll('.chip').forEach(function(c) { c.classList.remove('active'); });
+      this.classList.add('active');
+      applySegFilters();
+    });
+  });
+}
+
+// Download the current stars as segment_stars.json for the user to drop into cache/
+// so a full rebuild preserves them (the browser can't write there itself over file://).
+function exportSegStars() {
+  if (!segStars) segStars = loadSegStars();
+  var blob = new Blob([JSON.stringify(Array.from(segStars), null, 2)], {type: 'application/json'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = 'segment_stars.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
+function initSegControls() {
+  if (!document.getElementById('seg-chips')) return;   // empty-state panel: nothing to wire
+  segStars = loadSegStars();
+  // localStorage is authoritative once seeded, so reconcile every card's button to it.
+  document.querySelectorAll('#panel-segments .seg-card').forEach(function(card) {
+    var btn = card.querySelector('.seg-star');
+    if (!btn) return;
+    var on = segStars.has(card.dataset.geo || '');
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  buildSegChips();
+  var tog = document.getElementById('seg-star-toggle');
+  try { segStarredOnly = localStorage.getItem(SEG_STARONLY_KEY) === '1'; } catch (e) {}
+  if (tog) {
+    tog.classList.toggle('active', segStarredOnly);
+    tog.addEventListener('click', function() {
+      segStarredOnly = !segStarredOnly;
+      this.classList.toggle('active', segStarredOnly);
+      try { localStorage.setItem(SEG_STARONLY_KEY, segStarredOnly ? '1' : '0'); } catch (e) {}
+      applySegFilters();
+    });
+  }
+  var exp = document.getElementById('seg-export');
+  if (exp) exp.addEventListener('click', exportSegStars);
+  applySegFilters();
+}
+
 // Start = green disc, End = checkered finish flag. divIcons so the same markup
 // styles both the thumbnail and the expanded overlay map (sized via `px`).
 function addSegEndpoints(map, poly, px) {
@@ -2421,6 +2539,7 @@ function buildRunChips() {
 }
 buildRunChips();
 buildStatFilters();
+initSegControls();
 
 document.getElementById('run-search').addEventListener('input', applyRunFilters);
 

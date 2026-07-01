@@ -3,15 +3,12 @@
 enriched_activities.csv
 csv_data/
 
-# Segment detection caches (regenerated from runs)
-segments_cache.json
-segment_geocode_cache.json
+# Local cache dir: segment detection caches, personal config.json, starred segments
+# (all regenerated or user-local). config.example.json stays at the repo root, committed.
+cache/
 
 # Strava export zips/folders (don't commit raw data)
 export_*/
-
-# Personal config (races, segment anchors) — keep config.example.json committed
-config.json
 
 # Python
 __pycache__/
