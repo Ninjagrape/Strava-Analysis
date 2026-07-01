@@ -65,6 +65,22 @@ SUBCLIMB_MIN_GRADE = 0.06   # a corridor's steepest sub-window is surfaced as it
 SUBCLIMB_STEEPER   = 1.6    # ... and at least this many times the parent corridor's grade,
 SUBCLIMB_MAX_FRAC  = 0.75   # ... and no longer than this fraction of the parent (else it is
                             # effectively the same benchmark and the parent already covers it).
+CLIMB_EXT_MAX_M    = 400.0  # how far a clipped climb may be grown past each end to reach the
+                            # hill's foot/crest (mining stops at junctions, not the real hill).
+CLIMB_EXT_DROP_TOL = 1.5    # GPS-elevation noise tolerated while deciding the ground still
+                            # drops toward the foot / rises toward the crest before stopping.
+CLIMB_EXT_REVERSE_M = 35.0  # a reversal (descent past the crest / climb past the foot) must be
+                            # sustained over this distance before we stop, so a small dip mid-
+                            # hill doesn't cut the climb short of its real top or bottom.
+SALVAGE_CLIMB_MAX_M = 650.0  # a corridor grown across a divergence junction (runs split two ways
+                            # at the top, e.g. continue up Shirley vs turn onto Telopea) is longer
+                            # than any single run's traversal, so it fails the whole-corridor
+                            # effort gate and is dropped — with the shared climb up to the junction
+                            # inside it. Salvage scans such a corridor for the sub-window the most
+                            # runs actually complete that still classifies as a climb; this caps
+                            # that window (beyond it the window is a whole route, not a hill).
+SALVAGE_MIN_OVERLAP = 6     # a run must share this many of a failed corridor's cells to be worth
+                            # match-testing during salvage (cheap prefilter before the O(n^2) scan).
 LOOP_MIN_CELLS  = 8       # min cells between a loop's two near-coincident points
 LOOP_UNIQUE_FRAC = 0.80   # a loop visits >= this fraction of its cells only once
 LOOP_CLUSTER_M  = 120.0   # two runs' loops are the same loop if centroids within this
@@ -87,7 +103,7 @@ CHAIN_SELFCROSS_M = 60.0  # within a mined chain, a later cell-centre this close
                           # loop; the chain is split there so a line+loop can't form one segment
 CORRIDOR_END_TOL_M = 80.0 # two point-to-point segments whose starts and ends both align
                           # within this are the same stretch (GPS-split into two)
-MAX_SEGMENTS    = 40      # safety cap on rendered segments
+MAX_SEGMENTS    = 100      # safety cap on rendered segments
 
 # The drawn line for a segment is the medoid effort, so it shifts run-to-run as new runs
 # join. The name/match caches are keyed on the line's endpoints (_geo_key, ~11 m), so that
@@ -483,6 +499,109 @@ def _steep_subclimb(parent_sub, parent_grade, seqs, run_by_id, cell):
     return _segment_from_efforts(efforts, run_by_id, force_type="climb")
 
 
+def _salvage_climb_from_corridor(piece, seqs, seqcells, run_by_id, ref_lat):
+    """Recover a climb hidden inside a corridor that failed the whole-corridor effort gate.
+
+    Corridor mining grows across junctions, so a corridor can run past a divergence (where the
+    runner sometimes continues, sometimes turns off) and end up longer than any single run's
+    traversal. No run then covers MATCH_COVER of it, so it collects zero efforts and is dropped
+    — taking the shared climb up to the junction (which every run *does* complete) with it. This
+    scans the corridor for the sub-window the most runs complete that still classifies as a
+    climb, and returns that segment (or None). Ties break toward the longer window so the climb
+    is drawn to its full shared extent, not clipped to the steepest pitch. Only for corridors
+    already known to fail the full-length gate; the window still clears every climb gate via
+    _segment_from_efforts, so this can only add real benchmarks, never relax the bar."""
+    n = len(piece)
+    if n < LOOP_MIN_CELLS:
+        return None
+    piece_cells = set(piece)
+    elig = {rid: seqs[rid] for rid in seqs
+            if len(seqcells[rid] & piece_cells) >= SALVAGE_MIN_OVERLAP}
+    if len(elig) < MIN_RUNS:
+        return None
+    min_win_cells = max(3, round(CLIMB_MIN_LEN_M / CELL_M))
+    best = None
+    for i in range(n - 1):
+        for j in range(i + min_win_cells, n + 1):
+            length = _chain_length_m(piece[i:j], ref_lat)
+            if length < CLIMB_MIN_LEN_M:
+                continue
+            if length > SALVAGE_CLIMB_MAX_M:
+                break     # windows only get longer as j grows; past the cap none is a hill
+            efforts = _collect_efforts(piece[i:j], length, elig)
+            if len(efforts) < MIN_RUNS:
+                continue
+            seg = _segment_from_efforts(efforts, run_by_id)
+            if not seg or seg["type"] != "climb":
+                continue
+            score = (seg["n_efforts"], seg["length_m"])
+            if best is None or score > best[0]:
+                best = (score, seg)
+    return best[1] if best else None
+
+
+def _extend_climb_chain(ref, seqs, do_foot=True, do_crest=True):
+    """Grow a clipped climb corridor out to the hill's foot and crest, along the reference lap.
+
+    Corridor mining stops where runs diverge (a junction), which can cut a climb short of the
+    real hill. Walking the reference run's cell sequence back while the ground keeps dropping
+    (toward the foot) and forward while it keeps rising (toward the crest) recovers the whole
+    climb. `do_foot`/`do_crest` let the caller grow one end at a time, so an extension that
+    would cross a junction and shed attempts can be tried on its own and rejected. Returns an
+    extended cell chain, or None when nothing meaningful is added."""
+    seq = seqs.get(ref["run_id"])
+    if not seq:
+        return None
+    cells = [c for c, _ in seq]
+    pts = [p for _, p in seq]
+    sub = ref["sub"]
+    try:                       # locate the matched span by object identity (sub is a slice of pts)
+        sp = next(i for i, p in enumerate(pts) if p is sub[0])
+        ep = next(i for i in range(sp, len(pts)) if pts[i] is sub[-1])
+    except StopIteration:
+        return None
+
+    # Crest: walk forward to the highest point reachable before the ground turns down and stays
+    # down for CLIMB_EXT_REVERSE_M (so a dip at a junction doesn't stop us short of the top).
+    new_ep, peak, base = ep, pts[ep].get("elev"), pts[ep]["d"]
+    j = ep
+    while do_crest and j + 1 < len(pts) and pts[j + 1]["d"] - base <= CLIMB_EXT_MAX_M:
+        j += 1
+        e = pts[j].get("elev")
+        if e is None:
+            continue
+        if peak is None or e >= peak - CLIMB_EXT_DROP_TOL:
+            if peak is None or e > peak:
+                peak = e
+            new_ep = j
+        elif pts[j]["d"] - pts[new_ep]["d"] >= CLIMB_EXT_REVERSE_M:
+            break     # sustained descent past the crest
+
+    # Foot: mirror image walking backward to the lowest point before a sustained rise.
+    new_sp, low, base = sp, pts[sp].get("elev"), pts[sp]["d"]
+    k = sp
+    while do_foot and k - 1 >= 0 and base - pts[k - 1]["d"] <= CLIMB_EXT_MAX_M:
+        k -= 1
+        e = pts[k].get("elev")
+        if e is None:
+            continue
+        if low is None or e <= low + CLIMB_EXT_DROP_TOL:
+            if low is None or e < low:
+                low = e
+            new_sp = k
+        elif pts[new_sp]["d"] - pts[k]["d"] >= CLIMB_EXT_REVERSE_M:
+            break     # sustained climb past the foot
+
+    if new_sp == sp and new_ep == ep:
+        return None
+    ext, last = [], None
+    for c in cells[new_sp:new_ep + 1]:
+        if c != last:
+            ext.append(c)
+            last = c
+    return ext if len(ext) >= 3 else None
+
+
 def _match_run(chain_cells, seg_len, seq, cover_min=MATCH_COVER, stats=None):
     """Return the fastest completion of a chain within one run's cell sequence, or None.
 
@@ -568,7 +687,9 @@ def _runs_signature(runs):
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
              f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
              f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1,"
-             f"subclimb1:{SUBCLIMB_MIN_GRADE},{SUBCLIMB_STEEPER},{SUBCLIMB_MAX_FRAC}".encode())
+             f"subclimb1:{SUBCLIMB_MIN_GRADE},{SUBCLIMB_STEEPER},{SUBCLIMB_MAX_FRAC},"
+             f"climbext3noloss:{CLIMB_EXT_MAX_M},{CLIMB_EXT_DROP_TOL},{CLIMB_EXT_REVERSE_M},"
+             f"salvageclimb1:{SALVAGE_CLIMB_MAX_M},{SALVAGE_MIN_OVERLAP}".encode())
     return h.hexdigest()
 
 
@@ -603,6 +724,7 @@ def build_segments(runs):
 
     seqs = {rid: _cell_sequence(tr, cell) for rid, tr in tracks.items()}
     cell_seqs = [(rid, [c for c, _ in s]) for rid, s in seqs.items()]
+    seqcells = {rid: frozenset(c for c, _ in s) for rid, s in seqs.items()}
     _lap("cell_sequences")
 
     chains = _mine_chains(cell_seqs)
@@ -622,11 +744,37 @@ def build_segments(runs):
                 continue
             efforts = _collect_efforts(chain, seg_len0, seqs)
             if len(efforts) < MIN_RUNS:
+                # No run completes the whole corridor (it grew past a divergence junction). A
+                # real climb up to that junction may still be embedded in it — recover it.
+                salvaged = _salvage_climb_from_corridor(chain, seqs, seqcells, run_by_id, ref_lat)
+                if salvaged:
+                    segments.append(salvaged)
                 continue
             ref = min(efforts, key=lambda e: abs(e["dist_m"] - _median(efforts)))
             seg = _segment_from_efforts(efforts, run_by_id)
             if seg:
                 segments.append(seg)
+                # A climb clipped short of the hill (mining stops at a junction) is grown to the
+                # foot and crest, then re-timed across runs. Grow both ends, but never at the cost
+                # of attempts: an extension that crosses a divergence junction (where the runner
+                # sometimes turns off) sheds efforts, so try each end and keep the longest that
+                # holds the attempt count — the climb then settles at the junction the runs share.
+                if seg["type"] == "climb":
+                    best, best_ref = seg, ref
+                    for do_foot, do_crest in ((True, True), (True, False), (False, True)):
+                        ext_chain = _extend_climb_chain(ref, seqs, do_foot, do_crest)
+                        if not ext_chain:
+                            continue
+                        ext_efforts = _collect_efforts(ext_chain, _chain_length_m(ext_chain, ref_lat), seqs)
+                        if len(ext_efforts) < MIN_RUNS:
+                            continue
+                        ext_seg = _segment_from_efforts(ext_efforts, run_by_id, force_type="climb")
+                        if (ext_seg and ext_seg["length_m"] > best["length_m"]
+                                and ext_seg["n_efforts"] >= seg["n_efforts"]):
+                            best, best_ref = ext_seg, min(ext_efforts, key=lambda e: abs(e["dist_m"] - _median(ext_efforts)))
+                    if best is not seg:
+                        segments[-1] = seg = best
+                        ref = best_ref
             # A hill is descended more often than climbed, so the ascent stays hidden behind
             # its busier downhill direction. When this corridor is a real descent, time the
             # reverse as a climb in its own right and add it as a separate benchmark. The
