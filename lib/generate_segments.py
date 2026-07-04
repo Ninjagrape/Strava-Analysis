@@ -89,6 +89,11 @@ LOOP_DEDUPE_M   = 120.0   # two loops whose drawn centroids are within this are 
                           # recorded at different lap scales (e.g. a 400 m loop also caught as a
                           # 1.5-lap ~600 m pass); dedupe merges them, keeping the higher-effort
                           # version and pooling the other's unseen runs.
+LOOP_JOIN_M     = 15.0    # a loop's two ends must refine to within this to count as a closure.
+                          # Two parallel streets the 25 m grid can't separate (Shirley Rd vs
+                          # Belmont Ave, ~40 m apart) otherwise fire a false "closure" across the
+                          # gap, truncating the real circuit to the tighter half-loop. Genuine
+                          # returns refine to <6 m; the parallel-street artifacts sit at 18-45 m.
 LOOP_MIN_ROUNDNESS = 0.20 # isoperimetric-quotient floor for a drawn loop; below this it is a
                           # thin sliver (a there-and-back on a parallel path the 25 m cell grid
                           # can't tell apart), not a real circuit. Tunable; printed under SEG_DEBUG.
@@ -112,6 +117,7 @@ MAX_SEGMENTS    = 100      # safety cap on rendered segments
 # outputs stable while removing nearly all the repeat network cost.
 NAME_REUSE_M    = 40.0    # reuse a cached name when a prior entry's centroid is within this
 MATCH_REUSE_M   = 50.0    # reuse a cached snap when a prior entry's centroid is within this
+STAR_REUSE_M    = 40.0    # keep a star attached when the segment's centroid is within this of it
 CACHE_PRUNE_M   = 150.0   # drop cache entries this far from every current segment (anti-bloat)
 
 # Anchored segments: a loop you usually run *inside* a longer route never self-crosses, so
@@ -682,7 +688,7 @@ def _runs_signature(runs):
             sig += f"|{poly[0]}|{poly[-1]}"
         h.update(sig.encode("utf-8"))
     h.update(f"params:{CELL_M},{MIN_RUNS},{MIN_LEN_M},{MATCH_COVER},"
-             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},{LOOP_DEDUPE_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,loopscale1,loopdedupe1,"
+             f"loops:{LOOP_MIN_CELLS},{LOOP_UNIQUE_FRAC},{LOOP_CLUSTER_M},{LOOP_LEN_RATIO},{LOOP_MIN_SEG_M},{LOOP_DEDUPE_M},{LOOP_JOIN_M},refine2,round1,medoid1,laps1,merge1,twophase2,matchturn1,loopfloor1,climbrev1,loopscale1,loopdedupe1,loopjoin1,"
              f"shape1:{CLIMB_MIN_LEN_M},{LOOP_MIN_ROUNDNESS},{LOOP_OVERLAP_FRAC},{CHAIN_SELFCROSS_M},"
              f"thruloop1:{LOOP_THRU_COV},{LOOP_THRU_LENRATIO},"
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
@@ -864,10 +870,20 @@ def _apply_stars(segments):
     so re-importing an exported segment_stars.json takes effect immediately."""
     raw = _load_json(STARS_CACHE)
     starred = set(raw) if isinstance(raw, list) else set()
+    # Centroids of the starred keys. The exact geo_key shifts run-to-run as the medoid
+    # effort changes (adding runs silently orphans the exact match), so a segment whose
+    # centroid sits within STAR_REUSE_M of a starred key is treated as the same starred
+    # route — the same tolerance the name/match caches use (see NAME_REUSE_M).
+    star_cens = [c for c in (_key_centroid(k) for k in starred) if c is not None]
     for s in segments:
         poly = s.get("polyline") or []
         s["geo_key"] = _geo_key(poly) if len(poly) >= 1 else ""
-        s["starred"] = s["geo_key"] in starred
+        if s["geo_key"] in starred:
+            s["starred"] = True
+            continue
+        cen = _key_centroid(s["geo_key"]) if s["geo_key"] else None
+        s["starred"] = bool(cen and any(
+            _haversine_m(cen[0], cen[1], c[0], c[1]) <= STAR_REUSE_M for c in star_cens))
     return segments
 
 
@@ -1019,19 +1035,21 @@ def _loop_record(cells, pts, i, j):
 
 
 def _run_loops(seq, min_len=LOOP_MIN_LEN_M):
-    """Minimal closed sub-loops inside one run's cell sequence, each at least `min_len`.
+    """Closed laps inside one run's cell sequence, each at least `min_len`.
 
     As the track advances we remember the most recent index each cell was visited.
-    Whenever the current cell lands in the neighbourhood of a cell visited a little
-    earlier, the span between them closes a loop. Taking the *most recent* prior visit
-    yields the tightest loop. Of overlapping candidates we keep the shortest (the tightest
-    real lap); candidates over disjoint time windows are separate laps and are all kept,
-    so repeating a loop within one session yields one entry per lap. Loops must be long
-    enough and mostly single-pass (not an out-and-back retrace)."""
+    Whenever the current cell lands in the neighbourhood of a cell visited earlier the
+    span between them may close a loop. But the 3x3 cell neighbourhood spans ~40 m, so
+    two parallel streets fire a *false* closure across the gap between them; the tighter
+    such span is only half the real circuit. So we keep a candidate only when its two
+    ends genuinely meet (refine to within `LOOP_JOIN_M`), then, per loop location, return
+    the *dominant recurring lap* rather than the tightest closure: the length band holding
+    the most disjoint laps. That surfaces the full circuit a runner repeats instead of an
+    inner sub-loop or the parallel-street half-loop, and yields one entry per real lap."""
     cells = [c for c, _ in seq]
     pts = [p for _, p in seq]
     last_pos = {}
-    cand = []
+    genuine = []   # (ri, rj, refined_len, centroid) for candidates that truly close
     for j, c in enumerate(cells):
         for nb in _neighbours(c):
             i = last_pos.get(nb)
@@ -1040,18 +1058,54 @@ def _run_loops(seq, min_len=LOOP_MIN_LEN_M):
                 if min_len <= d <= 12000:
                     sub = cells[i:j + 1]
                     if len(set(sub)) / len(sub) >= LOOP_UNIQUE_FRAC:
-                        cand.append((i, j, d))
+                        ri, rj = _refine_loop_ends(pts, i, j)
+                        if _haversine_m(pts[ri]["lat"], pts[ri]["lon"],
+                                        pts[rj]["lat"], pts[rj]["lon"]) <= LOOP_JOIN_M:
+                            genuine.append((ri, rj, pts[rj]["d"] - pts[ri]["d"],
+                                            _loop_centroid(pts[ri:rj + 1])))
         last_pos[c] = j
 
-    cand.sort(key=lambda x: x[2])   # shortest (tightest lap) first
-    loops, kept = [], []            # kept: index intervals already taken
-    for i, j, d in cand:
-        if any(i < kj and j > ki for ki, kj in kept):   # same time window as a kept lap
-            continue
-        kept.append((i, j))
-        ri, rj = _refine_loop_ends(pts, i, j)
-        loops.append(_loop_record(cells, pts, ri, rj))
+    loops = []
+    for grp in _group_loop_candidates(genuine):
+        for ri, rj in _dominant_laps(grp):
+            loops.append(_loop_record(cells, pts, ri, rj))
     return loops
+
+
+def _group_loop_candidates(genuine, radius=LOOP_CLUSTER_M):
+    """Cluster genuine loop candidates by ground centroid so each physical loop location
+    is resolved independently — a single run may lap several distinct circuits, and the
+    dominant length must be chosen per location, not pooled across the whole run."""
+    groups = []   # each: {"cen": (lat, lon), "n": int, "items": [candidate, ...]}
+    for item in genuine:
+        lat, lon = item[3]
+        for g in groups:
+            if _haversine_m(lat, lon, g["cen"][0], g["cen"][1]) <= radius:
+                g["items"].append(item)
+                g["n"] += 1
+                g["cen"] = (g["cen"][0] + (lat - g["cen"][0]) / g["n"],
+                            g["cen"][1] + (lon - g["cen"][1]) / g["n"])
+                break
+        else:
+            groups.append({"cen": (lat, lon), "n": 1, "items": [item]})
+    return [g["items"] for g in groups]
+
+
+def _dominant_laps(items, ratio=LOOP_LEN_RATIO):
+    """Pick the dominant recurring lap at one location: the length band (within `ratio`)
+    holding the most disjoint laps, ties broken toward the *longer* lap so a full circuit
+    beats an inner sub-loop that recurs equally often. Returns those disjoint (ri, rj)."""
+    best = None   # (disjoint_count, band_length, [(ri, rj), ...])
+    for centre in sorted({round(it[2]) for it in items}):
+        lo, hi = centre / ratio, centre * ratio
+        band = sorted((it for it in items if lo <= it[2] <= hi), key=lambda it: it[2])
+        kept = []
+        for ri, rj, _rd, _cen in band:
+            if not any(ri < kj and rj > ki for ki, kj in kept):
+                kept.append((ri, rj))
+        if best is None or (len(kept), centre) > (best[0], best[1]):
+            best = (len(kept), centre, kept)
+    return best[2] if best else []
 
 
 def _refine_loop_ends(pts, i, j, window=4):
@@ -1701,6 +1755,19 @@ def _dedupe(segments):
 def _geo_key(poly):
     a, mid, b = poly[0], poly[len(poly) // 2], poly[-1]
     return "|".join(f"{p[0]:.4f},{p[1]:.4f}" for p in (a, mid, b))
+
+
+def _key_centroid(key):
+    """Centroid (lat, lon) of a _geo_key string's points, or None if unparseable.
+    Used to compare a stored star's location against a segment tolerantly, the same
+    way _located_cache does for the name/match caches."""
+    try:
+        pts = [tuple(float(x) for x in p.split(",")) for p in key.split("|")]
+    except (ValueError, IndexError):
+        return None
+    if not pts:
+        return None
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
 
 def _reverse_geocode(lat, lon, zoom=18, memo=None):

@@ -1025,12 +1025,16 @@ function fmtPauseDur(s) {
   return (h ? h + ':' + mm + ':' + ss : m + ':' + ss);
 }
 
-// Index of the polyline vertex nearest a given coordinate (squared planar distance;
-// fine at run scale). Used to locate where a pause's stop/resume points sit along
-// the recorded route.
-function nearestPolyIdx(line, lat, lon) {
-  var best = 0, bestD = Infinity;
-  for (var i = 0; i < line.length; i++) {
+// Nearest polyline vertex to a coordinate. When lo/hi are given the search is limited
+// to that index window; unbounded otherwise. A pause covers little ground, so the resume
+// vertex sits within a few vertices of the stop vertex — bounding the resume search stops
+// it snapping to another pass of a route that revisits the same spot (back-and-forth
+// intervals, laps), which would otherwise dot a huge stretch that should stay green.
+function nearestPolyIdx(line, lat, lon, lo, hi) {
+  lo = (lo == null || lo < 0) ? 0 : lo;
+  hi = (hi == null || hi > line.length - 1) ? line.length - 1 : hi;
+  var best = lo, bestD = Infinity;
+  for (var i = lo; i <= hi; i++) {
     var dla = line[i][0] - lat, dlo = line[i][1] - lon;
     var d = dla * dla + dlo * dlo;
     if (d < bestD) { bestD = d; best = i; }
@@ -1038,16 +1042,20 @@ function nearestPolyIdx(line, lat, lon) {
   return best;
 }
 
+var PAUSE_RESUME_WINDOW = 12;  // vertices searched around the stop for the resume point
+
 // Polyline index ranges [i0, i1] covered while the run was paused but still moving
-// (pauses carrying a resume point rlat/rlon). Sorted and merged so overlapping
-// pauses at the same spot don't leave solid slivers between dotted stretches.
+// (pauses carrying a resume point rlat/rlon). The stop vertex is matched globally; the
+// resume vertex is matched only within PAUSE_RESUME_WINDOW of it, so a revisited route
+// can't snap the resume to a far-away pass and dot everything after it. Sorted and merged
+// so overlapping pauses at the same spot don't leave solid slivers between dotted stretches.
 function pausedRouteRanges(r) {
   var line = r.gps_polyline || [];
   var raw = [];
   (r.pauses || []).forEach(function(p) {
     if (p.rlat == null || p.rlon == null || p.lat == null || p.lon == null) return;
     var i0 = nearestPolyIdx(line, p.lat, p.lon);
-    var i1 = nearestPolyIdx(line, p.rlat, p.rlon);
+    var i1 = nearestPolyIdx(line, p.rlat, p.rlon, i0 - PAUSE_RESUME_WINDOW, i0 + PAUSE_RESUME_WINDOW);
     if (i1 < i0) { var t = i0; i0 = i1; i1 = t; }
     if (i1 > i0) raw.push([i0, i1]);
   });

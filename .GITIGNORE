@@ -26,8 +26,10 @@ Thumbs.db
 *.html
 
 # Claude
-.claude/
+.claude/*
+!.claude/skills/
 graphify-out/
+CLAUDE.md
 
 # Todo
 todo
