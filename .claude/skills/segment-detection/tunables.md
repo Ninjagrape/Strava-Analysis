@@ -68,6 +68,7 @@ Verify: `rg -n "^LOOP_" lib/generate_segments.py`
 | `LOOP_LEN_RATIO` | 1.35 | ratio | Same-loop length agreement (also the phase-2 lap gate) | 1.5-lap passes pollute lap counts | Honest lap-length variation excluded, undercounting |
 | `LOOP_DEDUPE_M` | 120.0 | m | Loops with drawn centroids within this are one circuit at different lap scales (canonicalize) | Distinct adjacent circuits collapse | Multi-scale duplicates of one circuit rendered |
 | `LOOP_MIN_ROUNDNESS` | 0.20 | isoperimetric quotient | Floor for a drawn loop; below it is a there-and-back sliver | Skinny but real circuits (long thin blocks) rejected | Parallel-path there-and-backs render as loops |
+| `LOOP_JOIN_M` | 15.0 (2026-07-04) | m | A loop candidate's two ends must refine to within this to count as a closure; wider is two parallel streets the grid can't separate (Shirley Rd vs Belmont Ave, ~40 m), not a real return. Genuine closures refine to <6 m, artifacts 18-45 m | Real loops that close loosely (>15 m GPS drift) dropped; do not exceed the ~18 m artifact floor | Parallel-street half-loops truncate the real circuit again |
 | `LOOP_OVERLAP_FRAC` | 0.60 | fraction | A non-loop covering this much of a loop's cells is a fragment, dropped | 3/4-loop fragments survive next to the loop | Real climbs that share part of a loop get dropped |
 | `LOOP_THRU_COV` | 0.50 | fraction | Coverage of a loop by a comparable-length straight segment that marks it as a false up-and-back loop | False parallel-way loops survive | Real loops with a long through-corridor dropped |
 | `LOOP_THRU_LENRATIO` | 0.90 | ratio | The covering segment must also be >= this fraction of the loop's length | Same as above | Same as above |
@@ -175,7 +176,7 @@ visible to the cache:
 Constants that ARE interpolated (their value literally appears in the token, so
 changing them self-invalidates): `CELL_M`, `MIN_RUNS`, `MIN_LEN_M`, `MATCH_COVER`,
 `LOOP_MIN_CELLS`, `LOOP_UNIQUE_FRAC`, `LOOP_LEN_RATIO`, `LOOP_CLUSTER_M`, `LOOP_MIN_SEG_M`,
-`LOOP_DEDUPE_M`, `CLIMB_MIN_LEN_M`, `LOOP_MIN_ROUNDNESS`, `LOOP_OVERLAP_FRAC`,
+`LOOP_DEDUPE_M`, `LOOP_JOIN_M`, `CLIMB_MIN_LEN_M`, `LOOP_MIN_ROUNDNESS`, `LOOP_OVERLAP_FRAC`,
 `CHAIN_SELFCROSS_M`, `LOOP_THRU_COV`, `LOOP_THRU_LENRATIO`, `ANCHOR_TOL_M`,
 `ANCHOR_COVER`, `ANCHOR_CLOSE_M`, `AUTO_ANCHOR_MAX_CANDIDATES`,
 `AUTO_ANCHOR_MIN_RUNS`, `AUTO_ANCHOR_MINED_GAP_M`, `SUBCLIMB_MIN_GRADE`,

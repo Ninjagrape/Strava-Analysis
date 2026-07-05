@@ -216,9 +216,15 @@ Purpose: find circuits (self-closing routes), which corridor mining cannot repre
   its distance is between the floor and a hard-coded 12000 m cap
   (`rg -n "12000" lib/generate_segments.py`), and at least `LOOP_UNIQUE_FRAC` (0.80,
   as of 2026-07; `rg -n "^LOOP_UNIQUE_FRAC" lib/generate_segments.py`) of its cells are
-  visited only once (rejecting out-and-back retraces). Overlapping candidates keep the
-  shortest; disjoint time windows are separate laps. `_refine_loop_ends` nudges the
-  endpoints to the tightest closure.
+  visited only once (rejecting out-and-back retraces). `_refine_loop_ends` nudges the
+  endpoints to the tightest closure, and a candidate is kept only if that closure is
+  within `LOOP_JOIN_M` (15.0 m, as of 2026-07-04) — a wider "closure" is two parallel
+  streets the 25 m grid can't tell apart (Shirley Rd vs Belmont Ave), not a real return,
+  and would truncate the circuit to its tighter half. Genuine candidates are then grouped
+  by centroid (`_group_loop_candidates`, one group per physical loop) and `_dominant_laps`
+  returns, per group, the disjoint laps in the length band with the most instances (ties
+  to the longer band). This surfaces the full circuit a runner repeats rather than the
+  tightest closure — the earlier shortest-per-window rule mined only the half-loop.
 - Clustering: `_cluster_loops` groups loop instances across runs when centroids are
   within `LOOP_CLUSTER_M` (120.0 m, as of 2026-07;
   `rg -n "^LOOP_CLUSTER_M" lib/generate_segments.py`) and lengths agree within

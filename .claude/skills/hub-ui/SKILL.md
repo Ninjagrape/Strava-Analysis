@@ -47,7 +47,7 @@ Note the tab-bar button order is Overview, Best Efforts, Segments, Goals, Analyt
 
 Other load-bearing pieces:
 
-- `_build_runs(rows, threshold_mps)`: converts CSV rows to per-run dicts for the JS frontend. Parses the JSON columns `fit_splits` (lap splits), `fit_km_splits`, `fit_gps_polyline`, `fit_distance_stream`; computes `pauses` (`_detect_pauses`), `pace_zones`, `best_efforts` (from `BEST_EFFORT_DEFS`), then stamps `run_type` via `_classify_run`. The whole list is embedded as `const RUNS` (~7.2 MB of the HTML as of 2026-07).
+- `_build_runs(rows, threshold_mps)`: converts CSV rows to per-run dicts for the JS frontend. Parses the JSON columns `fit_splits` (lap splits), `fit_km_splits`, `fit_gps_polyline`, `fit_distance_stream`; computes `pauses` (`_detect_pauses`) and `pause_ranges` (`_paused_route_ranges`, the polyline index ranges the map draws dotted — JS `pausedRouteRanges` is just a passthrough), `pace_zones`, `best_efforts` (from `BEST_EFFORT_DEFS`), then stamps `run_type` via `_classify_run`. The whole list is embedded as `const RUNS` (~7.2 MB of the HTML as of 2026-07).
 - `HUB_CSS = """..."""` and `HUB_JS = r"""..."""`: plain/raw module-level triple-quoted strings, NOT f-strings, so braces inside them need no doubling.
 - `generate(...)`: assembles the final HTML string. CSS order is `BEST_EFFORTS_CSS + GOAL_CSS + ANALYTICS_PANEL_CSS + SEGMENTS_CSS + HUB_CSS` in one `<style>` block, hub CSS last so its rules win.
 - `main()`: orchestrates and writes `dashboards/TrainingHub.html` (`out.write_text(html, encoding="utf-8")`).
@@ -82,6 +82,20 @@ Three coexisting patterns, by role: plain/raw non-f triple-quoted strings for CS
 8. **easy**, fallback (also when there is no threshold, so all zone times are zero).
 
 Zone times come from `_compute_pace_zones(km_splits, threshold_mps)`; the boundaries are a **local literal** `bounds = [0.77, 0.87, 0.93, 1.03]` inside that function, not module constants (grep: `grep -n "bounds = \[0.77" generate_hub.py`). The threshold speed is the best-5K proxy: `_compute_threshold` takes the all-time fastest `best_5k_s`, and `_threshold_at` refines it per run to the fastest 5K within a centered window that widens 60 → 120 → 240 → 480 days (`THRESHOLD_WINDOW_DAYS = 60`), so old runs are judged against contemporaneous fitness. `HUB_JS` mirrors the same boundaries in its zone-colouring code (`if (frac < 0.77) ...` and `ZONE_NAMES`, as of 2026-07), change both together.
+
+## Tunables (pause detection and map overlay)
+
+All in `generate_hub.py` (as of 2026-07; grep: `grep -n "PAUSE_" generate_hub.py`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `PAUSE_MIN_GAP_S` | 20 | absolute floor (s); inter-sample steps shorter than this are never pauses |
+| `PAUSE_GAP_MULTIPLIER` | 5 | ... and the step's dt must also be >= this x the run's median step dt |
+| `PAUSE_MOVE_MIN_M` | 30.0 | stop→resume separation below which a pause gets no resume coord (lone marker, no dotted hop) |
+| `PAUSE_SNAP_WINDOW_M` | 200.0 | half-window (arc metres) searched for the polyline vertex nearest a pause's STOP coordinate |
+| `MAP_PACE_WIN_KM` | 0.05 | backward extension of the map's dotted range; must match `PACE_WIN_KM` in `HUB_JS` (the chart's), change both together |
+
+Pause positions on the **chart** come straight from the stream's `d` values; pause ranges on the **map** come from `_paused_route_ranges`, which snaps each pause's STOP GPS coordinate to the polyline (anchored sequentially pause-to-pause) for `i0`, then places the resume end `i1` by stepping `i0`'s arc length forward by `move_m` — the ground actually covered stop→resume, measured along the stream's own coordinates in `_detect_pauses` (`_stream_arc_m`) and stripped from the pause dict before serialisation. Decimation preserves arc length between kept vertices, so this lands on the resume even through a move-during-pause meander where auto-pause froze the recorded distance while the runner wandered on (e.g. Power Pyramid pause 3, ~110 m down King St while recorded distance advances 11 m). Three traps this guards against, from lapped/out-and-back routes: (1) do not reintroduce a global distance-ratio mapping (stream `d`, polyline arc length, and Strava's `Distance` are three different bases, and ground covered while paused advances arc length but not `d`, so ratio error compounds per pause — the pre-2026-07 misalignment); (2) do not use a global-nearest resume snap over a wide window (a superseded `PAUSE_WALK_MPS` walking-budget grabbed a later lap pass); (3) do not match the resume by GPS proximity to the resume coord (a superseded forward `RESUME_RADIUS_M`/`RESUME_MAX_ARC_M` scan, removed 2026-07, grabbed the RETURN-leg pass on an out-and-back meander and overshot up the street — the Power Pyramid pause 3 bug). The `move_m` arc-step handles all three.
 
 ## Segment stars round-trip
 

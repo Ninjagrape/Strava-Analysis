@@ -296,6 +296,13 @@ def _percentile(sorted_vals: list[float], q: float) -> float:
 # absolute, and at least PAUSE_GAP_MULTIPLIER × the run's median step time. The
 # multiplier keeps genuinely slow running (which raises every step's dt uniformly)
 # from being mistaken for a stop.
+#
+# A single real stop that creeps forward (GPS drift while standing, or a slow walk)
+# emits several consecutive over-floor steps, so we coalesce adjacent flagged steps
+# into one pause. The merged pause carries `d` (stop distance) and `d2` (resume
+# distance), letting the chart dash and label the whole slow stretch as one event
+# instead of stacking a marker per sample. On an interval session this is the
+# difference between 9 markers and ~22.
 PAUSE_MIN_GAP_S      = 20    # absolute floor (seconds); ignore steps shorter than this
 PAUSE_GAP_MULTIPLIER = 5     # ... and require dt >= this × the run's median step dt
 # Only dot the route across a pause when the run genuinely relocated during it. Every
@@ -305,6 +312,15 @@ PAUSE_GAP_MULTIPLIER = 5     # ... and require dt >= this × the run's median st
 # stop→resume stretch is dotted (slow movement during the pause, or a stop-and-
 # resume-elsewhere gap the polyline hops across).
 PAUSE_MOVE_MIN_M     = 30.0
+# Half-window (metres of route arc length) searched for the polyline vertex nearest a
+# pause's STOP coordinate. Generous enough to absorb GPS-vs-device distance disagreement
+# over one inter-pause stretch (measured ~12% on a real run), tight enough not to snap
+# onto another pass of an out-and-back/lap route.
+PAUSE_SNAP_WINDOW_M  = 200.0
+# Must match HUB_JS's PACE_WIN_KM (the pace chart's backward pause extension) — the
+# map's dotted stretch is extended backward by the same amount so both visualisations
+# agree on where a pause "starts". Change both together.
+MAP_PACE_WIN_KM      = 0.05
 
 
 def _nearest_coord(dist_stream: list[dict], start_idx: int, step: int) -> dict | None:
@@ -320,18 +336,38 @@ def _nearest_coord(dist_stream: list[dict], start_idx: int, step: int) -> dict |
     return None
 
 
+def _stream_arc_m(dist_stream: list[dict], a: int, b: int) -> float:
+    """Ground distance (metres) covered along the stream's own coordinates between
+    indices a and b inclusive. During an auto-pause the recorded distance is frozen
+    while the runner keeps moving, so this path length — not the stop→resume straight
+    line — is how far the route physically advanced across the pause."""
+    total = 0.0
+    prev = None
+    for k in range(max(0, a), min(len(dist_stream), b + 1)):
+        p = dist_stream[k]
+        if p.get("lat") is None or p.get("lon") is None:
+            continue
+        if prev is not None:
+            total += _haversine_km(prev[0], prev[1], p["lat"], p["lon"]) * 1000.0
+        prev = (p["lat"], p["lon"])
+    return total
+
+
 def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
     """Detect recording pauses from an over-distance stream.
 
     Returns a list of one dict per pause:
-        {"d": km, "dur": seconds[, "lat", "lon"][, "rlat", "rlon"]}
-    `d` is the distance at which recording stopped (for the graph mark). `lat`/`lon`
-    is the pause (stop) location on the route map (omitted for GPS-less runs, which
-    still get graph marks). `rlat`/`rlon` are the resume location, present when the
-    route advanced between stopping and resuming, letting the map dot that stretch —
-    whether slow movement during the pause or a stop-and-resume-elsewhere gap (the
-    polyline hops near-straight across the latter). A plain stationary pause where
-    stop and resume coincide has no resume point and shows as a lone marker.
+        {"d": km, "d2": km, "dur": seconds[, "lat", "lon"][, "rlat", "rlon"]}
+    `d` is the distance at which recording stopped and `d2` where it resumed (for the
+    graph, which dashes and labels the whole [d, d2] span). Consecutive over-floor
+    steps are coalesced into one pause, so a stop that creeps forward is a single
+    event, not one marker per sample. `lat`/`lon` is the stop location on the route
+    map (omitted for GPS-less runs, which still get graph marks). `rlat`/`rlon` are
+    the resume location, present when the route advanced between stopping and resuming,
+    letting the map dot that stretch — whether slow movement during the pause or a
+    stop-and-resume-elsewhere gap (the polyline hops near-straight across the latter).
+    A plain stationary pause where stop and resume coincide has no resume point and
+    shows as a lone marker.
     """
     if not dist_stream or len(dist_stream) < 5:
         return []
@@ -345,21 +381,37 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
 
     floor = max(PAUSE_MIN_GAP_S, PAUSE_GAP_MULTIPLIER * median_dt)
 
-    pauses = []
+    # Group consecutive over-floor steps: each group is (start_i, end_i, total_dt),
+    # where the step i is the gap between dist_stream[i-1] (before) and [i] (after).
+    groups = []
     for i in range(1, len(dist_stream)):
-        prev = dist_stream[i - 1]
-        cur = dist_stream[i]
-        dt = cur.get("t", 0) - prev.get("t", 0)
+        dt = dist_stream[i].get("t", 0) - dist_stream[i - 1].get("t", 0)
         if dt < floor:
             continue
-        d = prev.get("d", 0.0)
-        pause = {"d": round(d, 3), "dur": round(dt)}
-        # Stop / resume locations: nearest coordinate-bearing samples on each side of
-        # the gap (coords are sparse, so we walk outward). `stop` places the marker;
-        # `stop`->`resume` is the short route stretch the map dots, mirroring the
-        # dotted pause segment on the over-distance chart.
-        stop   = _nearest_coord(dist_stream, i - 1, -1) or _nearest_coord(dist_stream, i, +1)
-        resume = _nearest_coord(dist_stream, i, +1)
+        if groups and i == groups[-1][1] + 1:
+            g = groups[-1]
+            groups[-1] = (g[0], i, g[2] + dt)
+        else:
+            groups.append((i, i, dt))
+
+    pauses = []
+    for start_i, end_i, total_dt in groups:
+        first_prev = dist_stream[start_i - 1]
+        last_cur = dist_stream[end_i]
+        pause = {
+            "d":   round(first_prev.get("d", 0.0), 3),
+            "d2":  round(last_cur.get("d", 0.0), 3),
+            "dur": round(total_dt),
+            # Ground actually covered stop→resume; consumed by _paused_route_ranges to
+            # place the dotted-route end, then stripped before the pause is serialised.
+            "move_m": round(_stream_arc_m(dist_stream, start_i - 1, end_i), 1),
+        }
+        # Stop / resume locations: nearest coordinate-bearing samples outside the group
+        # (coords are sparse, so we walk outward). `stop` places the marker; `stop`->
+        # `resume` is the route stretch the map dots, mirroring the dashed pause segment
+        # on the over-distance chart.
+        stop   = _nearest_coord(dist_stream, start_i - 1, -1) or _nearest_coord(dist_stream, end_i, +1)
+        resume = _nearest_coord(dist_stream, end_i, +1)
         if stop is not None:
             pause["lat"] = stop["lat"]
             pause["lon"] = stop["lon"]
@@ -374,6 +426,107 @@ def _detect_pauses(dist_stream: list[dict]) -> list[dict]:
             pause["rlon"] = resume["lon"]
         pauses.append(pause)
     return pauses
+
+
+def _polyline_cum_m(line: list) -> list[float]:
+    """Cumulative flat-earth arc length (metres) along a lat/lon polyline."""
+    cum = [0.0]
+    for i in range(1, len(line)):
+        dy = (line[i][0] - line[i - 1][0]) * 111320.0
+        dx = (line[i][1] - line[i - 1][1]) * 111320.0 * math.cos(math.radians(line[i - 1][0]))
+        cum.append(cum[-1] + math.hypot(dx, dy))
+    return cum
+
+
+def _idx_at_arc_m(cum: list[float], target_m: float) -> int:
+    """First polyline index whose cumulative arc length >= target_m (clamped)."""
+    target_m = max(0.0, min(cum[-1], target_m))
+    lo, hi = 0, len(cum) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if cum[mid] < target_m:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _nearest_poly_idx(line: list, lat: float, lon: float, lo: int, hi: int) -> int:
+    """Nearest polyline vertex to (lat, lon) within the closed index window [lo, hi].
+    Bounding the search stops it snapping to another pass of a route that revisits
+    the same spot (out-and-back intervals, laps)."""
+    lo = max(0, lo)
+    hi = min(len(line) - 1, hi)
+    best, best_d = lo, float("inf")
+    for i in range(lo, hi + 1):
+        d = _haversine_km(line[i][0], line[i][1], lat, lon)
+        if d < best_d:
+            best_d, best = d, i
+    return best
+
+
+def _paused_route_ranges(gps_polyline: list, pauses: list[dict]) -> list[list[int]]:
+    """Polyline index ranges [i0, i1] the map draws dotted, one per pause.
+
+    A pause's stream distance (`d`) cannot be projected onto the polyline by a global
+    distance ratio: the stream, the polyline arc length, and Strava's official distance
+    are three different bases, and ground covered while paused adds arc length without
+    advancing `d`, so ratio error compounds pause after pause on an interval session.
+    Instead each stop/resume is snapped to the vertex nearest its own GPS coordinate
+    (the same coordinates the amber pause markers use). The nearest search is bounded
+    to PAUSE_SNAP_WINDOW_M of arc around a coarse guess anchored at the previous
+    pause's resolved position, which disambiguates repeated passes on lapped routes
+    and stops error accumulating across pauses. The resume end is placed by stepping the
+    stop's arc length forward by the ground actually covered during the pause (`move_m`,
+    measured along the stream coords); this dots a move-during-pause meander without a
+    GPS-proximity match, which on an out-and-back meander snaps to the return-leg pass.
+    """
+    line = gps_polyline
+    if not pauses or len(line) < 2:
+        return []
+    cum = _polyline_cum_m(line)
+    if cum[-1] <= 0:
+        return []
+
+    anchor_idx, anchor_d = 0, 0.0
+    raw = []
+    for p in pauses:
+        if p.get("lat") is None or p.get("lon") is None:
+            continue  # GPS-less streams never reach the map; skip defensively
+
+        guess0 = cum[anchor_idx] + max(0.0, p["d"] - anchor_d) * 1000.0
+        i0 = _nearest_poly_idx(line, p["lat"], p["lon"],
+                               _idx_at_arc_m(cum, guess0 - PAUSE_SNAP_WINDOW_M),
+                               _idx_at_arc_m(cum, guess0 + PAUSE_SNAP_WINDOW_M))
+        # Instantaneous pace looks ahead ~50 m, so samples before the stop already read
+        # slow; extend backward so the dotted route covers the chart's dashed dip.
+        i0_back = _idx_at_arc_m(cum, cum[i0] - MAP_PACE_WIN_KM * 1000.0)
+
+        d2 = p.get("d2", p["d"])
+        arc_gap = max(0.0, d2 - p["d"]) * 1000.0
+        if p.get("rlat") is not None and p.get("rlon") is not None:
+            # Advance i1 by the ground actually covered during the pause (measured along
+            # the stream's own coordinates in _detect_pauses). Decimation preserves arc
+            # length between the vertices it keeps, so stepping cum[i0] forward by that
+            # path length lands on the resume even when the runner wandered out and back.
+            # Matching the resume coordinate by GPS proximity instead grabs the RETURN-leg
+            # pass on such a meander (Power Pyramid pause 3) and overshoots up the street.
+            i1 = _idx_at_arc_m(cum, cum[i0] + p.get("move_m", arc_gap))
+        else:
+            i1 = _idx_at_arc_m(cum, cum[i0] + arc_gap)
+
+        if i1 > i0_back:
+            raw.append([i0_back, i1])
+        anchor_idx, anchor_d = i1, d2
+
+    raw.sort(key=lambda rg: rg[0])
+    merged: list[list[int]] = []
+    for rg in raw:
+        if merged and rg[0] <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], rg[1])
+        else:
+            merged.append(rg)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -450,8 +603,12 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             dist_stream = []
 
-        # Recording pauses/gaps derived from the stream's elapsed-time field
+        # Recording pauses/gaps derived from the stream's elapsed-time field, plus the
+        # polyline index ranges the map draws dotted for them.
         pauses = _detect_pauses(dist_stream)
+        pause_ranges = _paused_route_ranges(gps_polyline, pauses)
+        for p in pauses:
+            p.pop("move_m", None)  # internal to range placement; keep it out of the JSON
 
         # Per-run best efforts
         best_efforts = []
@@ -489,6 +646,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "gps_polyline": gps_polyline,
             "dist_stream": dist_stream,
             "pauses": pauses,
+            "pause_ranges": pause_ranges,
         })
 
     # Classify each run once the full distance distribution is known, so "long"
@@ -1025,48 +1183,20 @@ function fmtPauseDur(s) {
   return (h ? h + ':' + mm + ':' + ss : m + ':' + ss);
 }
 
-// Nearest polyline vertex to a coordinate. When lo/hi are given the search is limited
-// to that index window; unbounded otherwise. A pause covers little ground, so the resume
-// vertex sits within a few vertices of the stop vertex — bounding the resume search stops
-// it snapping to another pass of a route that revisits the same spot (back-and-forth
-// intervals, laps), which would otherwise dot a huge stretch that should stay green.
-function nearestPolyIdx(line, lat, lon, lo, hi) {
-  lo = (lo == null || lo < 0) ? 0 : lo;
-  hi = (hi == null || hi > line.length - 1) ? line.length - 1 : hi;
-  var best = lo, bestD = Infinity;
-  for (var i = lo; i <= hi; i++) {
-    var dla = line[i][0] - lat, dlo = line[i][1] - lon;
-    var d = dla * dla + dlo * dlo;
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  return best;
-}
+// Instantaneous pace uses a forward look-ahead window (STREAM_PACE_WINDOW_M in
+// strava_compile.py, ~50 m), so samples this far BEFORE a stop already read as slow.
+// The pace chart extends each pause span backward by this much; the route map's
+// equivalent extension is precomputed in Python (MAP_PACE_WIN_KM in generate_hub.py,
+// kept in sync) so the dotted dip and the dotted route cover the same ground.
+var PACE_WIN_KM = 0.05;
 
-var PAUSE_RESUME_WINDOW = 12;  // vertices searched around the stop for the resume point
-
-// Polyline index ranges [i0, i1] covered while the run was paused but still moving
-// (pauses carrying a resume point rlat/rlon). The stop vertex is matched globally; the
-// resume vertex is matched only within PAUSE_RESUME_WINDOW of it, so a revisited route
-// can't snap the resume to a far-away pass and dot everything after it. Sorted and merged
-// so overlapping pauses at the same spot don't leave solid slivers between dotted stretches.
+// Polyline index ranges [i0, i1] to draw dotted, one per pause. Computed in Python
+// (_paused_route_ranges in generate_hub.py) by snapping each pause's stop coord onto
+// the run's gps_polyline then stepping forward by the ground covered during the pause,
+// anchored sequentially pause-to-pause so index-mapping error can't accumulate across
+// a multi-pause interval session.
 function pausedRouteRanges(r) {
-  var line = r.gps_polyline || [];
-  var raw = [];
-  (r.pauses || []).forEach(function(p) {
-    if (p.rlat == null || p.rlon == null || p.lat == null || p.lon == null) return;
-    var i0 = nearestPolyIdx(line, p.lat, p.lon);
-    var i1 = nearestPolyIdx(line, p.rlat, p.rlon, i0 - PAUSE_RESUME_WINDOW, i0 + PAUSE_RESUME_WINDOW);
-    if (i1 < i0) { var t = i0; i0 = i1; i1 = t; }
-    if (i1 > i0) raw.push([i0, i1]);
-  });
-  raw.sort(function(a, b) { return a[0] - b[0]; });
-  var merged = [];
-  raw.forEach(function(rg) {
-    var last = merged[merged.length - 1];
-    if (last && rg[0] <= last[1]) last[1] = Math.max(last[1], rg[1]);
-    else merged.push([rg[0], rg[1]]);
-  });
-  return merged;
+  return r.pause_ranges || [];
 }
 
 // Draw the run's route, breaking the solid green line into dotted amber stretches
@@ -2010,16 +2140,22 @@ function drawDistMetric(runId, metricKey, opts) {
   var geo = stream.filter(function(p) { return p.lat != null && p.lon != null && p.d != null; })
                   .map(function(p) { return {d: p.d, lat: p.lat, lon: p.lon}; });
 
-  // Pause distances (where recording stopped). The sample at this distance carries
-  // a forward-window pace measured across the gap, so it spikes; we dash the line
-  // segments touching it and exclude it from the y-scale so it doesn't dominate.
+  // Pause spans [d, d2] (stop -> resume distance). Samples inside a span carry a
+  // forward-window pace measured across the gap, so they spike; we dash the line over
+  // the whole span and exclude those samples from the y-scale so they don't dominate.
+  // The span is extended backward by PACE_WIN_KM because instantaneous pace uses a
+  // forward look-ahead window (STREAM_PACE_WINDOW_M in strava_compile.py, ~50 m), so
+  // samples that much distance BEFORE the stop already have contaminated pace and would
+  // otherwise render as a solid-green descent offset from the dashed dip.
   var EPS = 1e-6;
-  var pauseDs = (r.pauses || []).map(function(p) { return p.d; });
+  var pauseRanges = (r.pauses || []).map(function(p) {
+    return [p.d - PACE_WIN_KM, p.d2 != null ? p.d2 : p.d];
+  });
   function isPausePoint(d) {
-    return pauseDs.some(function(pd) { return Math.abs(pd - d) <= EPS; });
+    return pauseRanges.some(function(rg) { return d >= rg[0] - EPS && d <= rg[1] + EPS; });
   }
   function segIsPaused(d0, d1) {
-    return pauseDs.some(function(pd) { return pd >= d0 - EPS && pd <= d1 + EPS; });
+    return pauseRanges.some(function(rg) { return !(d1 < rg[0] - EPS || d0 > rg[1] + EPS); });
   }
 
   var xs = pts.map(function(p) { return p.d; });
@@ -2045,6 +2181,10 @@ function drawDistMetric(runId, metricKey, opts) {
   function px(d) { return padL + (d - xmin) / xspan * (W - padL - padR); }
   function py(v) {
     var t = (v - ymin) / yspan;
+    // Paused samples are excluded from the y-scale (their pace spikes across the gap),
+    // so they can fall outside [ymin, ymax]; pin them to the band edge so the dotted
+    // orange line stays on-chart instead of shooting off the top/bottom.
+    if (t < 0) t = 0; else if (t > 1) t = 1;
     if (metric.invert) t = 1 - t; // faster pace (smaller s/km) plotted higher
     return H - padB - t * (H - padT - padB);
   }
@@ -2091,12 +2231,14 @@ function drawDistMetric(runId, metricKey, opts) {
   }
 
   // Pause labels: the paused stretch of the line is drawn dotted (dashPath); here we
-  // just add the stop's duration above each pause. Only those inside the visible
-  // (possibly zoomed) window.
+  // just add the stop's duration centered over each pause span. Only spans overlapping
+  // the visible (possibly zoomed) window.
   var pauseSvg = '';
   (r.pauses || []).forEach(function(p) {
-    if (p.d < xmin || p.d > xmax) return;
-    var x = px(p.d).toFixed(1);
+    var lo = p.d, hi = (p.d2 != null ? p.d2 : p.d);
+    if (hi < xmin || lo > xmax) return;
+    var mid = Math.min(xmax, Math.max(xmin, (lo + hi) / 2));
+    var x = px(mid).toFixed(1);
     pauseSvg += '<text x="' + x + '" y="' + (padT + 8) +
       '" font-size="8" fill="#f0ad4e" text-anchor="middle">&#9208; ' + fmtPauseDur(p.dur) + '</text>';
   });
@@ -2220,6 +2362,7 @@ function onDistHover(e, holder) {
   function px(d) { return st.padL + (d - st.xmin) / st.xspan * (st.W - st.padL - st.padR); }
   function py(v) {
     var t = (v - st.ymin) / st.yspan;
+    if (t < 0) t = 0; else if (t > 1) t = 1;  // pin paused samples to the band edge (see paint py)
     if (st.invert) t = 1 - t;
     return st.H - st.padB - t * (st.H - st.padT - st.padB);
   }
