@@ -2163,8 +2163,21 @@ function drawDistMetric(runId, metricKey, opts) {
                    .map(function(p) { return p[metricKey]; });
   if (scaleYs.length < 2) scaleYs = pts.map(function(p) { return p[metricKey]; });
   var dataMin = Math.min.apply(null, xs), dataMax = Math.max.apply(null, xs);
+  // A pause can sit in the no-pace tail (the last ~STREAM_PACE_WINDOW_M carry no
+  // forward pace) or the lead-in, so its span falls outside the pace samples'
+  // range. Widen the x-domain to each pause's full span so a boundary pause and
+  // its dotted segment/label stay on-chart instead of being clipped away.
+  pauseRanges.forEach(function(rg) {
+    if (rg[0] < dataMin) dataMin = Math.max(0, rg[0]);
+    if (rg[1] > dataMax) dataMax = rg[1];
+  });
   var ymin = Math.min.apply(null, scaleYs), ymax = Math.max.apply(null, scaleYs);
   if (ymax === ymin) ymax = ymin + 1;
+  // Pad the y-band so the fastest/slowest real samples don't sit flush against the
+  // axis edges — the slowest green pace gets breathing room below it rather than
+  // resting on the baseline. Paused spikes are already excluded from ymin/ymax.
+  var ypad = (ymax - ymin) * 0.06;
+  ymin -= ypad; ymax += ypad;
 
   // Horizontal zoom window (driven by the scroll wheel). Stored on the holder so
   // it survives redraws — e.g. switching metric tabs keeps you zoomed on the same
@@ -2207,6 +2220,19 @@ function drawDistMetric(runId, metricKey, opts) {
       prevPaused = paused;
     }
   }
+  // A pause beyond the last pace sample (or before the first) has no pts to dash
+  // through, so the loop above skips it. Draw an explicit dotted connector held at
+  // the nearest real pace so an end-of-run or start-of-run pause still shows a
+  // dotted segment reaching its resume distance.
+  var firstP = pts[0], lastP = pts[pts.length - 1];
+  (r.pauses || []).forEach(function(p) {
+    var lo = p.d - PACE_WIN_KM, hi = (p.d2 != null ? p.d2 : p.d);
+    if (hi > lastP.d + EPS) {
+      dashPath += 'M' + pt(lastP) + 'L' + px(hi).toFixed(1) + ',' + py(lastP[metricKey]).toFixed(1) + ' ';
+    } else if (lo < firstP.d - EPS) {
+      dashPath += 'M' + px(lo).toFixed(1) + ',' + py(firstP[metricKey]).toFixed(1) + 'L' + pt(firstP) + ' ';
+    }
+  });
   var area = 'M' + px(pts[0].d).toFixed(1) + ',' + (H - padB) +
     pts.map(function(p) { return 'L' + px(p.d).toFixed(1) + ',' + py(p[metricKey]).toFixed(1); }).join('') +
     'L' + px(pts[pts.length - 1].d).toFixed(1) + ',' + (H - padB) + 'Z';
@@ -2238,7 +2264,9 @@ function drawDistMetric(runId, metricKey, opts) {
     var lo = p.d, hi = (p.d2 != null ? p.d2 : p.d);
     if (hi < xmin || lo > xmax) return;
     var mid = Math.min(xmax, Math.max(xmin, (lo + hi) / 2));
-    var x = px(mid).toFixed(1);
+    // Keep the centered label inside the canvas so a pause near the right edge
+    // (e.g. an end-of-run stop) isn't truncated at the SVG boundary.
+    var x = Math.min(W - 18, Math.max(padL + 2, px(mid))).toFixed(1);
     pauseSvg += '<text x="' + x + '" y="' + (padT + 8) +
       '" font-size="8" fill="#f0ad4e" text-anchor="middle">&#9208; ' + fmtPauseDur(p.dur) + '</text>';
   });
