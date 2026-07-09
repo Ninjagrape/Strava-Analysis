@@ -623,6 +623,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
 
         runs.append({
             "id":          len(runs),
+            "strava_id":   (row.get("Activity ID") or "").strip(),
             "name":        (row.get("Activity Name") or "Run").strip() or "Run",
             "description": (row.get("Activity Description") or "").strip(),
             "date_long":   dt.strftime("%d %b %Y"),
@@ -1885,6 +1886,12 @@ function segAttemptList(seg) {
 function openRunFromSeg(runId) {
   // Layered above the segment overlay; closing the run overlay returns here.
   openRunOverlay(runId);
+}
+
+function openRunByStravaId(sid) {
+  // Best-effort cards carry the Strava activity id; resolve it to the internal run.
+  var r = RUNS.find(function(x) { return x.strava_id === sid; });
+  if (r) openRunOverlay(r.id);   // openRunOverlay guards on polyline length
 }
 
 function fmtSegTime(s) {

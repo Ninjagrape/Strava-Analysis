@@ -207,6 +207,7 @@ def top3_for_band(
         ga_s    = ga_time(s, gain, dist_km)
         efforts.append({
             "s":           s,
+            "strava_id":   (r.get("Activity ID") or "").strip(),
             "raw_pace":    fmt_pace(s, target_m),
             "ga_pace":     fmt_pace(ga_s, target_m),
             "time_str":    fmt_time(s),
@@ -275,6 +276,8 @@ BEST_EFFORTS_CSS = """
 .band-header{background:#2a2a2a;border-radius:8px 8px 0 0;padding:7px 14px;border:1px solid #3a3a3a;border-bottom:none;}
 .band-label{font-size:13px;font-weight:600;margin:0;color:#eee;}
 .run-card{background:#222;border:1px solid #3a3a3a;padding:9px 14px;display:grid;grid-template-columns:26px 1fr auto;gap:0 10px;align-items:start;}
+.run-card.clickable{cursor:pointer;}
+.run-card.clickable:hover{background:#282828;}
 .run-card:last-child{border-radius:0 0 8px 8px;}
 .run-card+.run-card{border-top:none;}
 .medal{font-size:15px;line-height:1.7;}
@@ -295,8 +298,14 @@ def render_band(label: str, efforts: list[dict]) -> str:
     for i, e in enumerate(efforts):
         extra_style = ' style="border-radius:0 0 8px 8px;"' if i == last_idx else ""
         meta = f"{e['date']} · {e['dist_km']:.1f}km run · {e['gain']:.0f}m gain"
+        sid = e.get("strava_id")
+        card_class = "run-card clickable" if sid else "run-card"
+        click_attrs = (
+            f" onclick=\"openRunByStravaId('{sid}')\" title=\"Open run analysis\""
+            if sid else ""
+        )
         cards.append(f"""\
-  <div class="run-card"{extra_style}>
+  <div class="{card_class}"{extra_style}{click_attrs}>
     <span class="medal">{MEDALS[i]}</span>
     <div>
       <p class="run-name">{e['activity']}</p>
