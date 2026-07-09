@@ -28,19 +28,19 @@ description: Stage 1 of the Strava-Analysis pipeline - strava_compile.py parses 
 1. **Locate export**: `find_strava_export` picks the newest-by-mtime `export_*.zip` in `--downloads` (default `~/Downloads`); falls back to the newest `export_*/` folder. `--archive` bypasses discovery entirely.
 2. **Unzip** (if `.zip`): `unzip_archive` extracts into `<--tmp>/extracted` (tmp default: `%TEMP%/strava_fit`) and returns the subdir containing `activities.csv`.
 3. **Load metadata**: `load_activities_csv` reads the export's `activities.csv` (plain `csv.DictReader`, utf-8-sig).
-4. **Load parse cache**: unless `--rebuild`, `load_prior_fit_cache` maps activity id → parsed columns from the single most-recent-by-mtime `csv_data/*_strava.csv`. See the verified semantics below, this cache currently never fires.
+4. **Load parse cache**: unless `--rebuild`, `load_prior_fit_cache` maps activity id → parsed columns from the single most-recent-by-mtime `csv_data/*_strava.csv`. See the verified semantics below, this cache is live as of 2026-07-08.
 5. **Parallel parse**: every `.fit.gz`/`.fit` in `<export>/activities/` whose id missed the cache is decompressed (`decompress_fit_gz`, skipped if the `.fit` already sits in tmp) and parsed by `parse_fit` in a `ProcessPoolExecutor` (`--workers`, default CPU count). `.fit.gz` wins over a bare `.fit` with the same id.
 6. **Merge**: each `activities.csv` row is joined to its parsed stats via `extract_activity_id(row["Filename"])` (double `.stem`, so `activities/1234.fit.gz` → `1234`), then filtered by `--sport` (substring match against "Activity Type" and `fit_sport`; default `running`).
 7. **Write**: `csv_data/YYYY-MM-DD_strava.csv`, dated by the **export archive's mtime**, not today (`--out` overrides). Re-compiling the same export overwrites the same file.
 8. Stream columns (`_STREAM_KEYS`: `fit_splits, fit_km_splits, fit_gps_polyline, fit_distance_stream`) are ordered last so column order stays stable.
 
-### Parse-cache semantics (VERIFIED 2026-07-02)
+### Parse-cache semantics (VERIFIED 2026-07-09, re-armed 2026-07-08)
 
 The enriched CSV is *designed* to be the parse cache: a cache hit for an activity id copies that row's parsed columns verbatim (as strings) and skips the `.fit` parse. Reuse fires for an id only when ALL of: `--rebuild` not passed; the newest prior CSV loads without exception; that CSV has a row whose `Filename` yields the same id; and the row has at least one non-empty non-`activities.csv` column. Only the newest prior CSV is consulted (`break` after the first readable one).
 
-**Why the 2026-07-02 live run reused 0 of 79 despite a prior CSV existing**: `load_prior_fit_cache` reads the prior CSV with `load_activities_csv` (plain `csv.DictReader`), and `strava_compile.py` never calls `csv.field_size_limit`. Enriched stream cells now exceed Python's 131,072-char default (measured: max cell 312,233 chars; 14 cells over), so the read raises `_csv.Error: field larger than field limit`, the bare `except Exception: continue` swallows it, and the cache loads empty. It is NOT a filename-keying or same-day-name collision (the cache is loaded before the output is written). Consequence: at current stream density the parse cache is dead code and every compile is a full re-parse, still only ~2.8 s for 79 files with 28 workers (as of 2026-07-02). Grep: `grep -n "field_size_limit" strava_compile.py` (no hits = still broken).
+**Why the cache is live as of 2026-07-08**: `strava_compile.py` now raises `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))` at module top (added `import sys` and the call right after the `from datetime import datetime` line). Enriched stream cells exceed Python's 131,072-char default (measured: max cell 312,233 chars; 14 cells over), so before this fix `load_prior_fit_cache`'s read via `load_activities_csv` (plain `csv.DictReader`) raised `_csv.Error: field larger than field limit`, swallowed by a bare `except Exception: continue`, and the cache loaded empty. Now the read succeeds: a normal compile reports "Reused 79 cached, parsed 0 new"; a `--rebuild` compile parses all 79 fresh; the two outputs are byte-identical (verified). Grep: `grep -n "field_size_limit" strava_compile.py` (should show a hit near the top of the file).
 
-**Changes that REQUIRE `--rebuild`**: anything inside `parse_fit` or its helpers, stream/polyline density constants, `_distance_stream`, `_best_efforts`, `_per_km_splits`, `_detect_reps`, `_pace_zone_secs`. A cache hit copies old values verbatim, so without `--rebuild` such changes silently do nothing to previously-parsed rows. Today the broken cache masks this, but never rely on the bug: pass `--rebuild` anyway, and if the field-limit bug is ever fixed the requirement becomes real again.
+**Changes that REQUIRE `--rebuild`**: anything inside `parse_fit` or its helpers, stream/polyline density constants, `_distance_stream`, `_best_efforts`, `_per_km_splits`, `_detect_reps`, `_pace_zone_secs`. A cache hit copies old values verbatim, so without `--rebuild` such changes silently do nothing to previously-parsed rows. This is now genuinely load-bearing: the cache is live, so a parse-logic edit without `--rebuild` will silently keep serving old values from prior runs.
 
 ### Stream construction (`_distance_stream`)
 
@@ -102,14 +102,14 @@ See `.claude/skills/caches-and-invalidation/SKILL.md`.
            print(row["fit_start_time"], len(pts), n, round(n / len(pts), 3) if pts else "-")
    ```
    Expect density ~1.0 (verified 1.0 on all recent runs, 2026-07-02). Density ≪ 1.0 means elevation regressed to exact-epoch attachment, restore the `elev_at` distance-interpolation pattern, then `python strava_compile.py --rebuild` and re-run the hub. If density is fine, the bug is downstream (segment-detection skill).
-2. **`_csv.Error: field larger than field limit`**: the reader is missing `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))`. Set in `lib/generate_analytics.py` and `lib/generate_dashboards.py` only (as of 2026-07): `grep -rn "field_size_limit" .`, add the same line (plus `import sys`) near the top of the failing reader. `generate_hub.py` works without calling it because it imports `load_rows` from `lib/generate_dashboards.py`, whose module-level call raises the limit as an import side effect. `strava_compile.py` itself lacks it, which is what kills its parse cache (see above).
+2. **`_csv.Error: field larger than field limit`**: the reader is missing `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))`. Set in `lib/generate_analytics.py`, `lib/generate_dashboards.py`, and `strava_compile.py` (as of 2026-07-08): `grep -rn "field_size_limit" .`, add the same line (plus `import sys`) near the top of the failing reader. `generate_hub.py` works without calling it because it imports `load_rows` from `lib/generate_dashboards.py`, whose module-level call raises the limit as an import side effect. `strava_compile.py` now raises it too, which is what re-armed its parse cache (see above).
 3. **New runs not appearing**: (a) confirm discovery picked the export you think, compile prints `Found Strava export zip: export_*.zip`, chosen by newest mtime in `--downloads`; a stale zip with a newer mtime wins. (b) Check the run survives the `--sport` filter (default `running`, substring match). (c) Check `Matched N/M activities` output, an unmatched row means its `Filename` id has no `.fit` in `<export>/activities/`. (d) Remember the output file is dated by archive mtime; the hub reads the lexicographically last `csv_data/*_strava.csv`, so an old export can write "behind" a newer-dated file.
 4. **Parse slow**: run `python strava_compile.py --profile` (or `STRAVA_PROFILE=1`), prints wall time, worker count, and the 5 slowest files. Tune `--workers N` (default CPU count; 28 workers, 79 files: parse phase ~2.3 s inside a ~2.8 s total compile, 2026-07-02). One pathological .fit (slowest seen: 1.21 s) dominates when workers ≫ files remaining.
 
 ## Verification
 
 - Full pass: `python strava_compile.py --rebuild --profile` exits 0 and prints `Rows: 79, Columns: 153` (counts grow with new runs).
-- Cache line: `Reused X cached, parsed Y new`, as of 2026-07 expect `Reused 0` every time (field-limit bug above).
+- Cache line: `Reused X cached, parsed Y new`, as of 2026-07-08 a normal (non-`--rebuild`) compile reuses all previously-parsed rows and only parses new .fit files, e.g. `Reused 79 cached, parsed 0 new` when nothing changed.
 - Elevation density snippet from playbook 1 prints ~1.0.
 - Constants unchanged: `grep -n "STREAM_POINTS_PER_KM\|STREAM_MAX_POINTS\|GPS_MAX_POINTS" strava_compile.py`.
 - End-to-end checks: `.claude/skills/validation-playbook/SKILL.md`.
@@ -117,7 +117,7 @@ See `.claude/skills/caches-and-invalidation/SKILL.md`.
 ## Pitfalls
 
 - Stream elevation key is `elev`, not `e`; missing keys are omitted per-point, not nulled.
-- The parse cache silently never fires as of 2026-07 (field-limit bug); `Reused 0 cached` is expected, not proof your `--rebuild` worked. Fixing the bug means stale-cache behaviour returns: parse-logic edits will then need `--rebuild` to take effect.
+- The parse cache is live as of 2026-07-08; `Reused N cached, parsed 0 new` on an unchanged export is expected, not a sign your `--rebuild` failed to do anything. Because the cache is live, parse-logic or density edits now genuinely need `--rebuild` to reach previously-parsed rows, a cache hit silently keeps serving old values otherwise.
 - Cached rows (when reuse works) are strings copied verbatim from the prior CSV, never re-derived.
 - Output CSV date = export archive mtime, not run date; two compiles of the same export overwrite one file.
 - `decompress_fit_gz` skips decompression when the `.fit` already exists in `--tmp`; a corrupt half-written tmp file persists until deleted.

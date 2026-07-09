@@ -28,7 +28,7 @@ Data flows one way: enriched CSV → Python dicts → `json.dumps` → `const` g
 
 ### How the CSV is read (verified)
 
-`main()` globs `csv_data/*_strava.csv`, takes the lexicographically last (newest date), and calls `load_rows(csv_path)` imported from `lib/generate_dashboards.py`. `generate_hub.py` never calls `csv.field_size_limit` itself; the limit is raised as an **import side effect**, `lib/generate_dashboards.py` executes `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))` at module top (as of 2026-07), and the `from generate_dashboards import ...` at the top of `generate_hub.py` runs it before any CSV is touched. Grep: `grep -rn "field_size_limit" .`
+`main()` globs `csv_data/*_strava.csv`, takes the lexicographically last (newest date), and calls `load_rows(csv_path)` imported from `lib/generate_dashboards.py`. `generate_hub.py` never calls `csv.field_size_limit` itself; the limit is raised as an **import side effect**, `lib/generate_dashboards.py` executes `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))` at module top (as of 2026-07), and the `from generate_dashboards import ...` at the top of `generate_hub.py` runs it before any CSV is touched. `strava_compile.py` also raises it now (as of 2026-07-08), so all three of `lib/generate_analytics.py`, `lib/generate_dashboards.py`, and `strava_compile.py` set it. Grep: `grep -rn "field_size_limit" .`
 
 ## Key files and functions
 
@@ -113,7 +113,7 @@ Pause positions on the **chart** come straight from the stream's `d` values; pau
 - Generator surface intact: `grep -n "def generate\|def main\|def _build_runs\|def _classify_run" generate_hub.py`.
 - Tab bodies still sourced from the lib modules: `grep -n "body_best_efforts\|body_goal_dashboard\|body_analytics\|body_segments" generate_hub.py`.
 - Emission blocks: `grep -n "^HUB_CSS\|^HUB_JS\|combined_css" generate_hub.py`.
-- CSV field limit still an import side effect: `grep -rn "field_size_limit" .` (expect only lib/generate_analytics.py and lib/generate_dashboards.py).
+- CSV field limit still an import side effect: `grep -rn "field_size_limit" .` (expect lib/generate_analytics.py, lib/generate_dashboards.py, and strava_compile.py, three files as of 2026-07-08).
 - End to end: `python generate_hub.py` prints `Threshold pace (from best 5K): ...`, `Loaded N runs`, `Written: ...TrainingHub.html`; open the file and click through all 6 tabs with the console open.
 
 ## Pitfalls

@@ -30,6 +30,7 @@ from config import load_config
 # Per-phase timing inside build_segments, printed only under --profile (STRAVA_PROFILE).
 PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
 SEG_DEBUG = bool(os.environ.get("STRAVA_SEG_DEBUG"))   # print per-segment match/reject diagnostics
+SEG_REBUILD = bool(os.environ.get("STRAVA_SEG_REBUILD"))  # force a full segment rebuild, ignore segments_cache.json
 
 # ---------------------------------------------------------------------------
 # Tunable detection parameters (conservative: few, high-confidence benchmarks)
@@ -704,9 +705,11 @@ def build_segments(runs):
     """Detect recurring benchmark segments across all runs. Cached on the run set."""
     sig = _runs_signature(runs)
     cached = _load_json(SEG_CACHE)
-    if cached and cached.get("signature") == sig:
+    if cached and cached.get("signature") == sig and not SEG_REBUILD:
         print(f"Segments: loaded {len(cached['segments'])} from cache")
         return _apply_stars(cached["segments"])
+    if SEG_REBUILD:
+        print("Segments: STRAVA_SEG_REBUILD set, ignoring cache and rebuilding")
 
     _t = time.perf_counter()
     def _lap(_label):

@@ -50,8 +50,9 @@ Grep: `grep -n "add_argument" strava_compile.py`.
 
 - `STRAVA_PROFILE=1`, per-phase timings in both compile and hub (hub: `_build_runs`, `build_segments`, panels, HTML size). PowerShell: `$env:STRAVA_PROFILE="1"; python generate_hub.py`.
 - `STRAVA_SEG_DEBUG=1`, per-segment match/reject diagnostics from `lib/generate_segments.py`.
+- `STRAVA_SEG_REBUILD=1`, force a segment rebuild: `build_segments` ignores a matching `segments_cache.json` and re-detects (then re-saves). Equivalent to `python main.py --rebuild-segments`. Cleaner than hand-deleting the cache file.
 
-Grep: `grep -rn "STRAVA_PROFILE\|STRAVA_SEG_DEBUG" generate_hub.py lib/generate_segments.py strava_compile.py`.
+Grep: `grep -rn "STRAVA_PROFILE\|STRAVA_SEG_DEBUG\|STRAVA_SEG_REBUILD" generate_hub.py lib/generate_segments.py strava_compile.py`.
 
 ## Key files and functions
 
@@ -68,8 +69,8 @@ Grep: `grep -rn "STRAVA_PROFILE\|STRAVA_SEG_DEBUG" generate_hub.py lib/generate_
 
    | I changed... | Run |
    |---|---|
-   | Stream/density/parse logic in `strava_compile.py` (`STREAM_*`, `GPS_*`, best efforts, splits, intervals) | `python strava_compile.py --rebuild` then `python generate_hub.py`. Semantics of `--rebuild` and why it is mandatory: `.claude/skills/compile-and-streams/SKILL.md`. `GPS_*` edits change `len(gps_polyline)`, so segments self-invalidate via `_runs_signature`. `STREAM_*`-only edits (plus `GEO_GAP_MAX_M` and `STREAM_PACE_WINDOW_M`) change only `dist_stream`, which the signature never hashes, so you must ALSO delete `cache/segments_cache.json` by hand; edge cases → `.claude/skills/caches-and-invalidation/SKILL.md` |
-   | Segment-detection logic or tunables in `lib/generate_segments.py` | Bump a version token in the params string inside `_runs_signature` AND delete `cache/segments_cache.json`, then `python generate_hub.py`. The signature does not hash `dist_stream`, so skipping this serves stale results |
+   | Stream/density/parse logic in `strava_compile.py` (`STREAM_*`, `GPS_*`, best efforts, splits, intervals) | `python strava_compile.py --rebuild` then `python generate_hub.py`. Semantics of `--rebuild` and why it is mandatory: `.claude/skills/compile-and-streams/SKILL.md`. `GPS_*` edits change `len(gps_polyline)`, so segments self-invalidate via `_runs_signature`. `STREAM_*`-only edits (plus `GEO_GAP_MAX_M` and `STREAM_PACE_WINDOW_M`) change only `dist_stream`, which the signature never hashes, so you must ALSO force a segment rebuild: `STRAVA_SEG_REBUILD=1 python generate_hub.py` (or delete `cache/segments_cache.json`); the two together are `python main.py --rebuild-all`. Edge cases → `.claude/skills/caches-and-invalidation/SKILL.md` |
+   | Segment-detection logic or tunables in `lib/generate_segments.py` | Force a rebuild: `python main.py --rebuild-segments` (or `STRAVA_SEG_REBUILD=1 python generate_hub.py`), which re-detects regardless of signature and re-saves the cache. For a durable invalidation (so future runs without the flag do not serve stale results, e.g. on another checkout), ALSO bump a version token in the `_runs_signature` params string. The signature does not hash `dist_stream`, so relying on it alone serves stale results |
    | Hub HTML/JS/CSS in `generate_hub.py` | `python generate_hub.py` only (~1.7 s; the HTML is fully regenerated every run) |
    | Analytics or dashboards formulas in `lib/generate_analytics.py` / `lib/generate_dashboards.py` | `python generate_hub.py` only |
    | Nothing, new Strava export downloaded | `python main.py` (full pipeline; discovery picks the newest-mtime export in `~/Downloads`) |
@@ -81,16 +82,16 @@ Grep: `grep -rn "STRAVA_PROFILE\|STRAVA_SEG_DEBUG" generate_hub.py lib/generate_
 ## Verification
 
 - Pipeline green: `python main.py --profile` exits 0 and ends with `All done in ~4.5s.` (79 runs, as of 2026-07-02); compile prints `Rows: 79, Columns: 153`, hub prints `Loaded 79 runs` and `Segments: loaded 73 from cache` on a warm hit.
-- Forwarding still true: `grep -n "forward_args\|STEPS" main.py`, exactly two steps, compile `True`, hub `False`.
-- Hub still env-only: `grep -n "argparse\|add_argument" generate_hub.py` returns nothing.
+- Forwarding still true: `grep -n "MAIN_ONLY_FLAGS\|compile_args\|steps = " main.py`, exactly two steps; orchestration-only flags (`--rebuild-segments`, `--rebuild-all`) are stripped from `compile_args`, and `--rebuild-all` appends `--rebuild` for compile.
+- Hub still env-only: `grep -n "argparse\|add_argument" generate_hub.py` returns nothing (the hub takes no CLI flags; `main.py` passes it no args and drives it via env).
 - Output freshness: check `dashboards/TrainingHub.html` mtime changed after the run.
 - Whether the regenerated output is *correct*: `.claude/skills/validation-playbook/SKILL.md`.
 
 ## Pitfalls
 
 - `python generate_hub.py --profile` does nothing, the hub reads env vars only; use `STRAVA_PROFILE=1` (or run via `main.py --profile`, which sets it for you).
-- `python main.py` forwards flags only to compile: `main.py --rebuild --workers 4` works, but no flag can reach the hub.
-- `Reused 0 cached, parsed N new` from compile is currently normal, not a `--rebuild` confirmation, the parse cache never fires as of 2026-07 (field-limit bug; details in `.claude/skills/compile-and-streams/SKILL.md`).
+- `python main.py` forwards compile flags to compile (`main.py --rebuild --workers 4`) and translates its own `--rebuild-segments` / `--rebuild-all` into `STRAVA_SEG_REBUILD` for the hub. A bare compile flag still cannot otherwise reach the hub; use the env var or the two orchestration flags.
+- `Reused N cached, parsed 0 new` from compile is the normal warm state as of 2026-07-08 (the parse cache is live). `Reused 0 cached, parsed N new` means a real re-parse: either `--rebuild`, or the first compile after adding new runs. Details in `.claude/skills/compile-and-streams/SKILL.md`.
 - `Segments: loaded N from cache` after a detection edit means your change was NOT applied, signature hit on stale params; see decision-table row 2.
 - The hub picks the lexicographically last `csv_data/*_strava.csv`; dated names sort correctly, but a hand-named `--out` file (e.g. `test_strava.csv`) can shadow or hide the real newest data.
 - Compiling an old export writes a file dated by that export's mtime, which can sort *behind* an existing newer-dated CSV, the hub will then silently ignore it.

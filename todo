@@ -2,18 +2,19 @@
 [] Anticipate runs may or may not have HR data
 
 ## Repo
-[] Fix repo bugs from skill-lib-handover
-**Open items (as of 2026-07-04):**
-1. The library is gitignored: user's uncommitted `.GITIGNORE` edit ignores `CLAUDE.md`, and `.claude/` was already ignored. Nothing committed. User must decide to un-ignore (e.g. `!.claude/skills/`) and commit, or keep local-only.
-2. Known repo bug, documented not fixed: strava_compile.py's parse cache is dead code (missing `csv.field_size_limit` in `load_prior_fit_cache`, bare except swallows the error, every compile re-parses; ~2.8 s so low-impact). Fixing it re-arms the cache, `--rebuild` stays mandatory after parse-logic changes.
-3. `minetti_cost`/`ga_time` duplicated in both lib modules have cosmetically diverged (outputs still identical); edit both or accept drift.
+[x] Fix repo bugs from skill-lib-handover
 
+## Best efforts
+[] Hyperlink to run tab map
 
 ## Segment
 
 
 ## Runs
 
+## Analytics
+[] Toggle between different types/families of graphs
+[] Toggle which simple plots are shown (Fm23 style)
 
 ## Simple plots
 [] Distribution of pace and distance and elevation

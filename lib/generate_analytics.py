@@ -36,22 +36,7 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-
-# ---------------------------------------------------------------------------
-# Shared helpers (mirrors generate_dashboards.py so this file stands alone)
-# ---------------------------------------------------------------------------
-
-def minetti_cost(g: float) -> float:
-    return 155.4 * g ** 5 - 30.4 * g ** 4 - 43.3 * g ** 3 + 46.3 * g ** 2 + 19.5 * g + 3.6
-
-COST_FLAT = minetti_cost(0)
-
-
-def ga_time(raw_s: float, elev_gain_m: float, dist_km: float) -> float:
-    if not dist_km:
-        return raw_s
-    grade = (elev_gain_m / 2) / (dist_km * 1000)
-    return raw_s * (COST_FLAT / minetti_cost(grade))
+from grade import minetti_cost, COST_FLAT, ga_time
 
 
 def num(row: dict, key: str):

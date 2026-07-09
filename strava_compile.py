@@ -9,8 +9,13 @@ import zipfile
 import shutil
 import csv
 import json
+import sys
 from pathlib import Path
 from datetime import datetime
+
+# Enriched-CSV stream fields (fit_distance_stream) can exceed the default
+# 128 KB per-field limit; load_prior_fit_cache reads them back as the parse cache.
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 try:
     from fitparse import FitFile

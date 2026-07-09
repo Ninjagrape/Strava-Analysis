@@ -38,6 +38,22 @@ python generate_hub.py     # step 2: CSV → dashboards/TrainingHub.html
 
 The output CSV is written to `csv_data/YYYY-MM-DD_strava.csv` (the subdirectory is created automatically). The date is taken from the export zip's file modification time — i.e. when you downloaded it from Strava — so the filename reflects the export generation date rather than the day you ran the script.
 
+### Rebuild controls
+
+Both the `.fit` parse (compile) and segment detection (hub) are cached, so a normal run reuses prior work and only processes what changed. Three `main.py` flags force a rebuild when you have edited the logic behind a cache:
+
+| Command | Re-parses every `.fit` | Re-detects segments |
+|---|---|---|
+| `python main.py --rebuild` | yes | no |
+| `python main.py --rebuild-segments` | no | yes |
+| `python main.py --rebuild-all` | yes | yes |
+
+`--rebuild` is forwarded to the compile step (see [Incremental compilation](#incremental-compilation)); `--rebuild-segments` forces segment re-detection via the `STRAVA_SEG_REBUILD` environment variable. For a hub-only regenerate (no recompile), set it directly:
+
+```bash
+STRAVA_SEG_REBUILD=1 python generate_hub.py   # ignore segments_cache.json and re-detect
+```
+
 ### Personalization (optional)
 
 Everything is derived from your export, so no setup is required. To add race-goal cards to the
@@ -312,7 +328,7 @@ All effort times are corrected for elevation before any analysis. The Minetti me
 cost(g) = 155.4g⁵ − 30.4g⁴ − 43.3g³ + 46.3g² + 19.5g + 3.6
 ```
 
-A raw effort time is scaled by `cost(0) / cost(g)` to produce the equivalent flat-ground time. Grade is computed as `elevation_gain / (2 × distance_m)` — the factor of 2 treats elevation gain as a one-way uphill contribution (conservative, since descents provide only partial recovery).
+A raw effort time is scaled by `cost(0) / cost(g)` to produce the equivalent flat-ground time. Grade is computed as `elevation_gain / (2 × distance_m)` — the factor of 2 treats elevation gain as a one-way uphill contribution (conservative, since descents provide only partial recovery). The `minetti_cost` and `ga_time` helpers live in `lib/grade.py` and are shared by both dashboard modules.
 
 #### 2. Personal Riegel curve fitting
 
@@ -457,8 +473,10 @@ Segment names come from OpenStreetMap reverse geocoding (Nominatim) — nearby r
 suburb names compose labels like *"Shirley Road to Cable Street (Wollstonecraft)"* or
 *"Morton Street loop (Waverton)"*. Network lookups (Overpass and Nominatim) are rate-limited and
 **cached on disk** in `cache/`, and the whole detection result is cached on a signature of the
-run set, so a rebuild over unchanged runs reuses everything and makes no network calls. All
-detection thresholds are tunable constants at the top of `generate_segments.py`.
+run set, so a rebuild over unchanged runs reuses everything and makes no network calls. To
+force a fresh detection after changing detection logic, set `STRAVA_SEG_REBUILD=1` (or run
+`python main.py --rebuild-segments`); see [Rebuild controls](#rebuild-controls). All detection
+thresholds are tunable constants at the top of `generate_segments.py`.
 
 ### Starring and filtering segments
 
@@ -527,6 +545,7 @@ Strava-Analysis/
 │   ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 │   ├── generate_analytics.py       # analytics logic; also runs standalone
 │   ├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
+│   ├── grade.py                    # shared Minetti grade-adjustment helpers (minetti_cost, ga_time)
 │   └── config.py                   # loads optional cache/config.json (races + segment anchors)
 ├── config.example.json         # sample personalization file; copy to cache/config.json
 ├── csv_data/                   # output CSVs (gitignored)

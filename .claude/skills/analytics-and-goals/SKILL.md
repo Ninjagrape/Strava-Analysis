@@ -1,6 +1,6 @@
 ---
 name: analytics-and-goals
-description: Debugging and extending the Strava-Analysis training-analytics numbers. Use when CTL/ATL/TSB, ACWR, monotony/strain, critical speed, VDOT, pace-zone distribution, Riegel predictions, training targets, goal gaps, or best-effort tables look wrong (spikes, zeros, missing months, implausible paces); when adding a new analytics metric; when the Analytics, Best Efforts, Goals, or Overview panels disagree with each other; or when a CSV reader dies with "field larger than field limit". Covers lib/generate_analytics.py (longitudinal fitness math) and lib/generate_dashboards.py (per-distance performance math), the duplicated minetti_cost/ga_time grade adjustment, the three distinct "threshold" definitions, and how the hub's best-5K threshold feeds run classification.
+description: Debugging and extending the Strava-Analysis training-analytics numbers. Use when CTL/ATL/TSB, ACWR, monotony/strain, critical speed, VDOT, pace-zone distribution, Riegel predictions, training targets, goal gaps, or best-effort tables look wrong (spikes, zeros, missing months, implausible paces); when adding a new analytics metric; when the Analytics, Best Efforts, Goals, or Overview panels disagree with each other; or when a CSV reader dies with "field larger than field limit". Covers lib/generate_analytics.py (longitudinal fitness math) and lib/generate_dashboards.py (per-distance performance math), the shared minetti_cost/ga_time grade adjustment now living in lib/grade.py, the three distinct "threshold" definitions, and how the hub's best-5K threshold feeds run classification.
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 
@@ -34,7 +34,7 @@ Both are imported by `generate_hub.py` and embedded as tab bodies (`body_analyti
 - **Analytics display zones** (`pace_zones_from_cs`): anchored to fitted critical speed, not to either of the above.
 - **Legacy compile-side zones** (`PACE_ZONE_THRESHOLD_MPS` feeding `_pace_zone_secs` in `strava_compile.py`): writes the `fit_pace_zone_secs` column, which nothing in `generate_hub.py` currently reads (as of 2026-07, verified by grep); superseded by the hub-side zones above.
 
-**Grade adjustment** underpins nearly everything: `minetti_cost(g)` is the Minetti metabolic-cost quintic `155.4g⁵ − 30.4g⁴ − 43.3g³ + 46.3g² + 19.5g + 3.6`; `ga_time(raw_s, gain, dist_km)` scales a time by `COST_FLAT / minetti_cost(grade)` with `grade = (gain/2)/(dist_km*1000)` (half the one-way ascent ratio). **These two functions are semantically identical but have already cosmetically diverged across the two modules** (as of 2026-07: `generate_analytics.py` and `generate_dashboards.py`; spacing differs in `minetti_cost`, and the dashboards `ga_time` carries a docstring the analytics copy lacks; grade-adjustment outputs were verified identical across all 79 rows; grep recipe in Verification). Editing one silently diverges the other further.
+**Grade adjustment** underpins nearly everything: `minetti_cost(g)` is the Minetti metabolic-cost quintic `155.4g⁵ − 30.4g⁴ − 43.3g³ + 46.3g² + 19.5g + 3.6`; `ga_time(raw_s, gain, dist_km)` scales a time by `COST_FLAT / minetti_cost(grade)` with `grade = (gain/2)/(dist_km*1000)` (half the one-way ascent ratio). **These were previously duplicated across the two modules and had begun to cosmetically diverge; as of 2026-07-08 they are defined once in `lib/grade.py`** (`minetti_cost`, `COST_FLAT`, `ga_time`), and both `lib/generate_analytics.py` and `lib/generate_dashboards.py` do `from grade import minetti_cost, COST_FLAT, ga_time`. Editing `lib/grade.py` now updates both callers at once; grep recipe in Verification.
 
 ## Key files and functions
 
@@ -47,7 +47,7 @@ Both are imported by `generate_hub.py` and embedded as tab bodies (`body_analyti
 | Critical speed | `fit_critical_speed` | analytics | OLS on `dist = CS·t + D'` over GA bests | only points ≥ 1200 m; needs ≥ 2 | CS ~2.5–5 m/s, D' ~100–600 m, r² near 1 (domain heuristic) |
 | CS pace zones | `pace_zones_from_cs` | analytics | zone edges as multiples of CS pace | 1.30, 1.155, 1.08, 1.02, 0.97, 0.85 | 5 zones |
 | VDOT | `daniels_vo2max`, `vdot_trend` | analytics | `(−4.60 + 0.182258v + 0.000104v²) / pct_max`, v in m/min; monthly max over 1mi/2mi/5K/10K GA bests | pct_max = 0.8 + 0.1894393e^(−0.012778t) + 0.2989558e^(−0.1932605t), t in min | recreational ~35–60 (domain heuristic) |
-| GA time | `minetti_cost`, `ga_time` | **both** (duplicated) | `raw_s × COST_FLAT/minetti_cost((gain/2)/dist_m)` | Minetti quintic above | GA ≤ raw on net-uphill runs |
+| GA time | `minetti_cost`, `ga_time` | `lib/grade.py` (shared, imported by both) | `raw_s × COST_FLAT/minetti_cost((gain/2)/dist_m)` | Minetti quintic above | GA ≤ raw on net-uphill runs |
 | Best efforts | `top3_for_band` | dashboards | sort `best_*_s` ascending, top 3; GA shown alongside | `is_interval`: (elapsed−moving)/elapsed ≥ 0.20 excluded unless band allows |, |
 | Riegel | `riegel`, `fit_riegel` | dashboards | `t1·(d2/d1)^1.06`; fitted `T = a·D^b` via log-log OLS | b clamped [1.0, 1.15], fallback 1.06 | b 1.0–1.15 by construction |
 | Training targets | `derive_training_target` | dashboards | ≥1500 m: fitted-curve pace ×0.97–1.0; reps: % of predicted 5K pace | 1 km ×0.96–0.98, 800 m ×0.93–0.96, 400 m ×0.88–0.93 | targets faster than 5K pace for reps |
@@ -93,8 +93,8 @@ Re-run after the change into `after.json` and diff; any drift beyond float noise
 ## Verification
 
 - Function inventory still true: `rg -n "^def " lib/generate_analytics.py lib/generate_dashboards.py`
-- Duplication still present (expect 2 hits each): `rg -n "^def minetti_cost|^def ga_time" lib/`
-- Field-limit raise (expect exactly these 2 files): `rg -rn "field_size_limit" .`, snapshot: `lib/generate_analytics.py` and `lib/generate_dashboards.py`, both `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))`
+- Shared grade module, not duplicated (expect 1 hit each, both in lib/grade.py): `rg -n "^def minetti_cost|^def ga_time" lib/`
+- Field-limit raise (expect exactly these 3 files as of 2026-07-08): `rg -rn "field_size_limit" .`, snapshot: `lib/generate_analytics.py`, `lib/generate_dashboards.py`, and `strava_compile.py`, all `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))`
 - CTL/ATL constants: `rg -n "exp\(-1 / 4?2\)|exp\(-1 / 7\)" lib/generate_analytics.py`
 - Hub threshold chain: `rg -n "_compute_threshold|THRESHOLD_WINDOW_DAYS|bounds = \[0.77|_classify_run" generate_hub.py`
 - Riegel clamp and exponent: `rg -n "1.06|1.15" lib/generate_dashboards.py`
@@ -102,8 +102,8 @@ Re-run after the change into `after.json` and diff; any drift beyond float noise
 
 ## Pitfalls
 
-- **`csv.field_size_limit`**: enriched-CSV stream cells (`fit_distance_stream` etc.) exceed the stdlib default of 128 KB per field. Both modules raise it to `min(sys.maxsize, 2**31 - 1)` immediately after importing `csv`, any new reader script must do the same or `csv.DictReader` raises "field larger than field limit".
-- **Minetti duplication**: `minetti_cost`/`ga_time` exist in both `lib/generate_analytics.py` and `lib/generate_dashboards.py` (deliberate, so each file stands alone). The two copies have already begun to drift cosmetically (spacing in `minetti_cost`, a docstring on only the dashboards `ga_time`) though their outputs still match across all 79 rows; that is exactly the divergence this pitfall warns about, one step short of a numeric split. A fix or tweak applied to one silently diverges GA paces between the Analytics tab and the Best Efforts/Goals tabs. Always edit both; verify with the grep above.
+- **`csv.field_size_limit`**: enriched-CSV stream cells (`fit_distance_stream` etc.) exceed the stdlib default of 128 KB per field. `lib/generate_analytics.py`, `lib/generate_dashboards.py`, and `strava_compile.py` all raise it to `min(sys.maxsize, 2**31 - 1)` immediately after importing `csv` (as of 2026-07-08), any new reader script must do the same or `csv.DictReader` raises "field larger than field limit".
+- **Minetti, now shared**: `minetti_cost`/`ga_time`/`COST_FLAT` used to be duplicated in `lib/generate_analytics.py` and `lib/generate_dashboards.py` and had begun to drift cosmetically (spacing in `minetti_cost`, a docstring on only the dashboards `ga_time`). As of 2026-07-08 they live once in `lib/grade.py`, imported by both, so the drift risk is gone; a fix there now reaches the Analytics tab and the Best Efforts/Goals tabs identically. Verify with the grep above.
 - **`timezonefinder` is optional**: `_get_tz_finder` catches `ImportError` and sets a `False` sentinel; `parse_date` then leaves `Activity Date` as recorded (UTC). Verified fallback: no crash, but evening runs in UTC-ahead timezones land on the previous calendar day, shifting daily load, ACWR windows, and monthly VDOT buckets. If day-boundary numbers look off, check the library is installed before debugging math.
 - **Sparse-data crash**: `fit_critical_speed` returns `(None, None, None)` with fewer than 2 GA best efforts ≥ 1200 m, but `generate()` formats `{cs:.2f}`/`{dprime:.0f}`/`{r2:.3f}` unguarded, a near-empty CSV raises TypeError in the analytics panel (as of 2026-07).
 - **Two Riegel paths can disagree**: the predictions table and race cards use fixed-exponent `riegel()` (b = 1.06) anchored on the GA best 10K; training targets use the fitted `(a, b)` curve. A "prediction" and a "target" at the same distance are not supposed to match exactly.
