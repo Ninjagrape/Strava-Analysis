@@ -29,7 +29,7 @@ Two `lib/` modules compute every "derived number", both reading the same enriche
 Both are imported by `generate_hub.py` and embedded as tab bodies (`body_analytics`, `body_best_efforts`, `body_goal_dashboard`, `overview_sections`); each also has a standalone `main()`.
 
 **Three live "threshold" definitions plus one legacy, do not conflate them (as of 2026-07):**
-- **Hub threshold speed** (`_compute_threshold` in `generate_hub.py`): all-time best 5K → m/s (`5000/best_5k_s`); `_threshold_at` re-derives it per run from the fastest 5K in a centered window (`THRESHOLD_WINDOW_DAYS = 60`, widening ×2/×4/×8 if empty). Feeds `_compute_pace_zones` (speed-fraction bounds `[0.77, 0.87, 0.93, 1.03]`) whose zone shares drive `_classify_run` (race/threshold/tempo/long/recovery/easy). This best-5K proxy is the shared linchpin of run classification.
+- **Hub threshold speed** (`_compute_threshold` in `generate_hub.py`): as of 2026-07-09 this delegates to `robust_threshold_mps(rows)` in `lib/generate_analytics.py`, the 5K-equivalent read off a multi-point grade-adjusted Riegel fit (`fit_current_curve`, `fit_riegel` over GA bests at `_CURVE_FIT_DISTS` = 1 km/1 mi/5 k/10 k/15 k/half), falling back to the single raw best 5K only when under 2 points fit. This replaced the old single-`5000/best_5k_s` anchor so one downhill/one-off 5K no longer skews classification. `_threshold_at` still gives each run a contemporaneous value, but now by scaling that robust anchor by the run era's fastest-5K vs the all-time-best-5K ratio (`THRESHOLD_WINDOW_DAYS = 60`, widening ×2/×4/×8), so recent runs get exactly the anchor and older/less-fit eras a proportionally slower one. Feeds `_compute_pace_zones` (speed-fraction bounds `[0.77, 0.87, 0.93, 1.03]`) whose zone shares drive `_classify_run` (race/threshold/tempo/long/recovery/easy). This fitted-curve proxy is the shared linchpin of run classification, and the Analytics "Current paces" card renders the same curve.
 - **Analytics load threshold** (`session_loads`): the 15th-percentile (fast-end) grade-adjusted pace across all runs, not the best 5K.
 - **Analytics display zones** (`pace_zones_from_cs`): anchored to fitted critical speed, not to either of the above.
 - **Legacy compile-side zones** (`PACE_ZONE_THRESHOLD_MPS` feeding `_pace_zone_secs` in `strava_compile.py`): writes the `fit_pace_zone_secs` column, which nothing in `generate_hub.py` currently reads (as of 2026-07, verified by grep); superseded by the hub-side zones above.
@@ -98,7 +98,7 @@ Re-run after the change into `after.json` and diff; any drift beyond float noise
 - CTL/ATL constants: `rg -n "exp\(-1 / 4?2\)|exp\(-1 / 7\)" lib/generate_analytics.py`
 - Hub threshold chain: `rg -n "_compute_threshold|THRESHOLD_WINDOW_DAYS|bounds = \[0.77|_classify_run" generate_hub.py`
 - Riegel clamp and exponent: `rg -n "1.06|1.15" lib/generate_dashboards.py`
-- Live baseline (as of 2026-07-02): hub prints `Threshold pace (from best 5K): 4:48/km` on 79 runs.
+- Live baseline (as of 2026-07-09): hub prints `Threshold pace (from fitness curve): 4:52/km` on 79 runs (the multi-point fitted anchor; was `from best 5K: 4:48/km` before the 2026-07-09 robust-anchor change).
 
 ## Pitfalls
 

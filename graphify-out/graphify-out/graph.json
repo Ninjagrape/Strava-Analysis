@@ -1,0 +1,2371 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "manifest.json",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "manifest",
+      "community": 2,
+      "norm_label": "manifest.json"
+    },
+    {
+      "label": "generate_hub.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L2",
+      "_origin": "ast",
+      "id": "manifest_generate_hub_py",
+      "community": 15,
+      "norm_label": "generate_hub.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L3",
+      "_origin": "ast",
+      "id": "manifest_generate_hub_py_mtime",
+      "community": 15,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L4",
+      "_origin": "ast",
+      "id": "manifest_generate_hub_py_ast_hash",
+      "community": 15,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L5",
+      "_origin": "ast",
+      "id": "manifest_generate_hub_py_semantic_hash",
+      "community": 15,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "main.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "manifest_main_py",
+      "community": 2,
+      "norm_label": "main.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L8",
+      "_origin": "ast",
+      "id": "manifest_main_py_mtime",
+      "community": 2,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L9",
+      "_origin": "ast",
+      "id": "manifest_main_py_ast_hash",
+      "community": 2,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L10",
+      "_origin": "ast",
+      "id": "manifest_main_py_semantic_hash",
+      "community": 2,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "strava_compile.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L12",
+      "_origin": "ast",
+      "id": "manifest_strava_compile_py",
+      "community": 22,
+      "norm_label": "strava_compile.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L13",
+      "_origin": "ast",
+      "id": "manifest_strava_compile_py_mtime",
+      "community": 22,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L14",
+      "_origin": "ast",
+      "id": "manifest_strava_compile_py_ast_hash",
+      "community": 22,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L15",
+      "_origin": "ast",
+      "id": "manifest_strava_compile_py_semantic_hash",
+      "community": 22,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "README.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L17",
+      "_origin": "ast",
+      "id": "manifest_readme_md",
+      "community": 21,
+      "norm_label": "readme.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L18",
+      "_origin": "ast",
+      "id": "manifest_readme_md_mtime",
+      "community": 21,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L19",
+      "_origin": "ast",
+      "id": "manifest_readme_md_ast_hash",
+      "community": 21,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L20",
+      "_origin": "ast",
+      "id": "manifest_readme_md_semantic_hash",
+      "community": 21,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "config.example.json",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L22",
+      "_origin": "ast",
+      "id": "manifest_config_example_json",
+      "community": 14,
+      "norm_label": "config.example.json"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L23",
+      "_origin": "ast",
+      "id": "manifest_config_example_json_mtime",
+      "community": 14,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L24",
+      "_origin": "ast",
+      "id": "manifest_config_example_json_ast_hash",
+      "community": 14,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L25",
+      "_origin": "ast",
+      "id": "manifest_config_example_json_semantic_hash",
+      "community": 14,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "lib/config.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L27",
+      "_origin": "ast",
+      "id": "manifest_lib_config_py",
+      "community": 16,
+      "norm_label": "lib/config.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L28",
+      "_origin": "ast",
+      "id": "manifest_lib_config_py_mtime",
+      "community": 16,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L29",
+      "_origin": "ast",
+      "id": "manifest_lib_config_py_ast_hash",
+      "community": 16,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L30",
+      "_origin": "ast",
+      "id": "manifest_lib_config_py_semantic_hash",
+      "community": 16,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "lib/generate_analytics.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L32",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_analytics_py",
+      "community": 17,
+      "norm_label": "lib/generate_analytics.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L33",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_analytics_py_mtime",
+      "community": 17,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L34",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_analytics_py_ast_hash",
+      "community": 17,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L35",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_analytics_py_semantic_hash",
+      "community": 17,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "lib/generate_dashboards.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L37",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_dashboards_py",
+      "community": 18,
+      "norm_label": "lib/generate_dashboards.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L38",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_dashboards_py_mtime",
+      "community": 18,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L39",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_dashboards_py_ast_hash",
+      "community": 18,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L40",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_dashboards_py_semantic_hash",
+      "community": 18,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "lib/generate_segments.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L42",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_segments_py",
+      "community": 19,
+      "norm_label": "lib/generate_segments.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L43",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_segments_py_mtime",
+      "community": 19,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L44",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_segments_py_ast_hash",
+      "community": 19,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L45",
+      "_origin": "ast",
+      "id": "manifest_lib_generate_segments_py_semantic_hash",
+      "community": 19,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "lib/grade.py",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L47",
+      "_origin": "ast",
+      "id": "manifest_lib_grade_py",
+      "community": 20,
+      "norm_label": "lib/grade.py"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L48",
+      "_origin": "ast",
+      "id": "manifest_lib_grade_py_mtime",
+      "community": 20,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L49",
+      "_origin": "ast",
+      "id": "manifest_lib_grade_py_ast_hash",
+      "community": 20,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L50",
+      "_origin": "ast",
+      "id": "manifest_lib_grade_py_semantic_hash",
+      "community": 20,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/analytics-and-goals/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L52",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_analytics_and_goals_skill_md",
+      "community": 3,
+      "norm_label": ".claude/skills/analytics-and-goals/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L53",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_analytics_and_goals_skill_md_mtime",
+      "community": 3,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L54",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_analytics_and_goals_skill_md_ast_hash",
+      "community": 3,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L55",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_analytics_and_goals_skill_md_semantic_hash",
+      "community": 3,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/caches-and-invalidation/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L57",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_caches_and_invalidation_skill_md",
+      "community": 4,
+      "norm_label": ".claude/skills/caches-and-invalidation/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L58",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_caches_and_invalidation_skill_md_mtime",
+      "community": 4,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L59",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_caches_and_invalidation_skill_md_ast_hash",
+      "community": 4,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L60",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_caches_and_invalidation_skill_md_semantic_hash",
+      "community": 4,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/compile-and-streams/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L62",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_compile_and_streams_skill_md",
+      "community": 5,
+      "norm_label": ".claude/skills/compile-and-streams/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L63",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_compile_and_streams_skill_md_mtime",
+      "community": 5,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L64",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_compile_and_streams_skill_md_ast_hash",
+      "community": 5,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L65",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_compile_and_streams_skill_md_semantic_hash",
+      "community": 5,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/external-apis/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L67",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_external_apis_skill_md",
+      "community": 6,
+      "norm_label": ".claude/skills/external-apis/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L68",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_external_apis_skill_md_mtime",
+      "community": 6,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L69",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_external_apis_skill_md_ast_hash",
+      "community": 6,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L70",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_external_apis_skill_md_semantic_hash",
+      "community": 6,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/hub-ui/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L72",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_hub_ui_skill_md",
+      "community": 7,
+      "norm_label": ".claude/skills/hub-ui/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L73",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_hub_ui_skill_md_mtime",
+      "community": 7,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L74",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_hub_ui_skill_md_ast_hash",
+      "community": 7,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L75",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_hub_ui_skill_md_semantic_hash",
+      "community": 7,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/project-map/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L77",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_project_map_skill_md",
+      "community": 8,
+      "norm_label": ".claude/skills/project-map/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L78",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_project_map_skill_md_mtime",
+      "community": 8,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L79",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_project_map_skill_md_ast_hash",
+      "community": 8,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L80",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_project_map_skill_md_semantic_hash",
+      "community": 8,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/run-and-regenerate/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L82",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_run_and_regenerate_skill_md",
+      "community": 9,
+      "norm_label": ".claude/skills/run-and-regenerate/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L83",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_run_and_regenerate_skill_md_mtime",
+      "community": 9,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L84",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_run_and_regenerate_skill_md_ast_hash",
+      "community": 9,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L85",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_run_and_regenerate_skill_md_semantic_hash",
+      "community": 9,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/segment-detection/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L87",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_skill_md",
+      "community": 2,
+      "norm_label": ".claude/skills/segment-detection/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L88",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_skill_md_mtime",
+      "community": 2,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L89",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_skill_md_ast_hash",
+      "community": 2,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L90",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_skill_md_semantic_hash",
+      "community": 2,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/segment-detection/debugging-playbook.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L92",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_debugging_playbook_md",
+      "community": 10,
+      "norm_label": ".claude/skills/segment-detection/debugging-playbook.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L93",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_debugging_playbook_md_mtime",
+      "community": 10,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L94",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_debugging_playbook_md_ast_hash",
+      "community": 10,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L95",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_debugging_playbook_md_semantic_hash",
+      "community": 10,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/segment-detection/pipeline-stages.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L97",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_pipeline_stages_md",
+      "community": 11,
+      "norm_label": ".claude/skills/segment-detection/pipeline-stages.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L98",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_pipeline_stages_md_mtime",
+      "community": 11,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L99",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_pipeline_stages_md_ast_hash",
+      "community": 11,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L100",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_pipeline_stages_md_semantic_hash",
+      "community": 11,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/segment-detection/tunables.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L102",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_tunables_md",
+      "community": 12,
+      "norm_label": ".claude/skills/segment-detection/tunables.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L103",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_tunables_md_mtime",
+      "community": 12,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L104",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_tunables_md_ast_hash",
+      "community": 12,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L105",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_segment_detection_tunables_md_semantic_hash",
+      "community": 12,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": ".claude/skills/validation-playbook/SKILL.md",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L107",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_validation_playbook_skill_md",
+      "community": 13,
+      "norm_label": ".claude/skills/validation-playbook/skill.md"
+    },
+    {
+      "label": "mtime",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L108",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_validation_playbook_skill_md_mtime",
+      "community": 13,
+      "norm_label": "mtime"
+    },
+    {
+      "label": "ast_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L109",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_validation_playbook_skill_md_ast_hash",
+      "community": 13,
+      "norm_label": "ast_hash"
+    },
+    {
+      "label": "semantic_hash",
+      "file_type": "code",
+      "source_file": "manifest.json",
+      "source_location": "L110",
+      "_origin": "ast",
+      "id": "manifest_claude_skills_validation_playbook_skill_md_semantic_hash",
+      "community": 13,
+      "norm_label": "semantic_hash"
+    },
+    {
+      "label": "GRAPH_REPORT.md",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "graph_report",
+      "community": 1,
+      "norm_label": "graph_report.md"
+    },
+    {
+      "label": "Graph Report - C:\\Users\\LeeMo\\Documents\\GitHub\\Strava-Analysis  (2026-07-09)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "community": 1,
+      "norm_label": "graph report - c:\\users\\leemo\\documents\\github\\strava-analysis  (2026-07-09)"
+    },
+    {
+      "label": "Corpus Check",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L3",
+      "_origin": "ast",
+      "id": "graph_report_corpus_check",
+      "community": 1,
+      "norm_label": "corpus check"
+    },
+    {
+      "label": "Summary",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L7",
+      "_origin": "ast",
+      "id": "graph_report_summary",
+      "community": 1,
+      "norm_label": "summary"
+    },
+    {
+      "label": "Community Hubs (Navigation)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L12",
+      "_origin": "ast",
+      "id": "graph_report_community_hubs_navigation",
+      "community": 1,
+      "norm_label": "community hubs (navigation)"
+    },
+    {
+      "label": "God Nodes (most connected - your core abstractions)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L33",
+      "_origin": "ast",
+      "id": "graph_report_god_nodes_most_connected_your_core_abstractions",
+      "community": 1,
+      "norm_label": "god nodes (most connected - your core abstractions)"
+    },
+    {
+      "label": "Surprising Connections (you probably didn't know these)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L45",
+      "_origin": "ast",
+      "id": "graph_report_surprising_connections_you_probably_didn_t_know_these",
+      "community": 1,
+      "norm_label": "surprising connections (you probably didn't know these)"
+    },
+    {
+      "label": "Import Cycles",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L57",
+      "_origin": "ast",
+      "id": "graph_report_import_cycles",
+      "community": 1,
+      "norm_label": "import cycles"
+    },
+    {
+      "label": "Hyperedges (group relationships)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L61",
+      "_origin": "ast",
+      "id": "graph_report_hyperedges_group_relationships",
+      "community": 1,
+      "norm_label": "hyperedges (group relationships)"
+    },
+    {
+      "label": "Communities (19 total, 1 thin omitted)",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L66",
+      "_origin": "ast",
+      "id": "graph_report_communities_19_total_1_thin_omitted",
+      "community": 0,
+      "norm_label": "communities (19 total, 1 thin omitted)"
+    },
+    {
+      "label": "Community 0 - \"Analytics & Cache Concepts\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L68",
+      "_origin": "ast",
+      "id": "graph_report_community_0_analytics_cache_concepts",
+      "community": 0,
+      "norm_label": "community 0 - \"analytics & cache concepts\""
+    },
+    {
+      "label": "Community 1 - \"Analytics Computation Module\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L72",
+      "_origin": "ast",
+      "id": "graph_report_community_1_analytics_computation_module",
+      "community": 0,
+      "norm_label": "community 1 - \"analytics computation module\""
+    },
+    {
+      "label": "Community 2 - \"Best-Efforts & Goals Module\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L76",
+      "_origin": "ast",
+      "id": "graph_report_community_2_best_efforts_goals_module",
+      "community": 0,
+      "norm_label": "community 2 - \"best-efforts & goals module\""
+    },
+    {
+      "label": "Community 3 - \"Hub Generation & Classification\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L80",
+      "_origin": "ast",
+      "id": "graph_report_community_3_hub_generation_classification",
+      "community": 0,
+      "norm_label": "community 3 - \"hub generation & classification\""
+    },
+    {
+      "label": "Community 4 - \"Fit Parsing & Compile\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L84",
+      "_origin": "ast",
+      "id": "graph_report_community_4_fit_parsing_compile",
+      "community": 0,
+      "norm_label": "community 4 - \"fit parsing & compile\""
+    },
+    {
+      "label": "Community 5 - \"Segment Naming & Road Snapping\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L88",
+      "_origin": "ast",
+      "id": "graph_report_community_5_segment_naming_road_snapping",
+      "community": 0,
+      "norm_label": "community 5 - \"segment naming & road snapping\""
+    },
+    {
+      "label": "Community 6 - \"Corridor Mining & Cells\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L92",
+      "_origin": "ast",
+      "id": "graph_report_community_6_corridor_mining_cells",
+      "community": 0,
+      "norm_label": "community 6 - \"corridor mining & cells\""
+    },
+    {
+      "label": "Community 7 - \"Segment Dedupe & Anchoring\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L96",
+      "_origin": "ast",
+      "id": "graph_report_community_7_segment_dedupe_anchoring",
+      "community": 0,
+      "norm_label": "community 7 - \"segment dedupe & anchoring\""
+    },
+    {
+      "label": "Community 8 - \"Effort Matching & Climbs\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L100",
+      "_origin": "ast",
+      "id": "graph_report_community_8_effort_matching_climbs",
+      "community": 0,
+      "norm_label": "community 8 - \"effort matching & climbs\""
+    },
+    {
+      "label": "Community 9 - \"Segment Classification & Elevation\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L104",
+      "_origin": "ast",
+      "id": "graph_report_community_9_segment_classification_elevation",
+      "community": 0,
+      "norm_label": "community 9 - \"segment classification & elevation\""
+    },
+    {
+      "label": "Community 10 - \"Anchored Loop Segments\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L108",
+      "_origin": "ast",
+      "id": "graph_report_community_10_anchored_loop_segments",
+      "community": 0,
+      "norm_label": "community 10 - \"anchored loop segments\""
+    },
+    {
+      "label": "Community 11 - \"Loop Candidate Detection\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L112",
+      "_origin": "ast",
+      "id": "graph_report_community_11_loop_candidate_detection",
+      "community": 0,
+      "norm_label": "community 11 - \"loop candidate detection\""
+    },
+    {
+      "label": "Community 12 - \"Config Loading\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L116",
+      "_origin": "ast",
+      "id": "graph_report_community_12_config_loading",
+      "community": 0,
+      "norm_label": "community 12 - \"config loading\""
+    },
+    {
+      "label": "Community 13 - \"Loop Geometry & Medoid\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L120",
+      "_origin": "ast",
+      "id": "graph_report_community_13_loop_geometry_medoid",
+      "community": 0,
+      "norm_label": "community 13 - \"loop geometry & medoid\""
+    },
+    {
+      "label": "Community 14 - \"Loop Clustering\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L124",
+      "_origin": "ast",
+      "id": "graph_report_community_14_loop_clustering",
+      "community": 0,
+      "norm_label": "community 14 - \"loop clustering\""
+    },
+    {
+      "label": "Community 15 - \"Reverse-Geocode Naming\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L128",
+      "_origin": "ast",
+      "id": "graph_report_community_15_reverse_geocode_naming",
+      "community": 0,
+      "norm_label": "community 15 - \"reverse-geocode naming\""
+    },
+    {
+      "label": "Community 16 - \"Loop Fragment Filtering\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L132",
+      "_origin": "ast",
+      "id": "graph_report_community_16_loop_fragment_filtering",
+      "community": 0,
+      "norm_label": "community 16 - \"loop fragment filtering\""
+    },
+    {
+      "label": "Community 17 - \"Geo-Track Densification\"",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L136",
+      "_origin": "ast",
+      "id": "graph_report_community_17_geo_track_densification",
+      "community": 0,
+      "norm_label": "community 17 - \"geo-track densification\""
+    },
+    {
+      "label": "Knowledge Gaps",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L140",
+      "_origin": "ast",
+      "id": "graph_report_knowledge_gaps",
+      "community": 1,
+      "norm_label": "knowledge gaps"
+    },
+    {
+      "label": "Suggested Questions",
+      "file_type": "document",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L145",
+      "_origin": "ast",
+      "id": "graph_report_suggested_questions",
+      "community": 1,
+      "norm_label": "suggested questions"
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L52",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_analytics_and_goals_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L57",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_caches_and_invalidation_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L62",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_compile_and_streams_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L67",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_external_apis_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L72",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_hub_ui_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L77",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_project_map_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L82",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_run_and_regenerate_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L92",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_segment_detection_debugging_playbook_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L97",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_segment_detection_pipeline_stages_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L87",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_segment_detection_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L102",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_segment_detection_tunables_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L107",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_claude_skills_validation_playbook_skill_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L22",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_config_example_json",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L2",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_generate_hub_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L27",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_lib_config_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L32",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_lib_generate_analytics_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L37",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_lib_generate_dashboards_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L42",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_lib_generate_segments_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L47",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_lib_grade_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L7",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_main_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L17",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_readme_md",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L12",
+      "weight": 1.0,
+      "source": "manifest",
+      "target": "manifest_strava_compile_py",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L4",
+      "weight": 1.0,
+      "source": "manifest_generate_hub_py",
+      "target": "manifest_generate_hub_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L3",
+      "weight": 1.0,
+      "source": "manifest_generate_hub_py",
+      "target": "manifest_generate_hub_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L5",
+      "weight": 1.0,
+      "source": "manifest_generate_hub_py",
+      "target": "manifest_generate_hub_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L9",
+      "weight": 1.0,
+      "source": "manifest_main_py",
+      "target": "manifest_main_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L8",
+      "weight": 1.0,
+      "source": "manifest_main_py",
+      "target": "manifest_main_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L10",
+      "weight": 1.0,
+      "source": "manifest_main_py",
+      "target": "manifest_main_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L14",
+      "weight": 1.0,
+      "source": "manifest_strava_compile_py",
+      "target": "manifest_strava_compile_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L13",
+      "weight": 1.0,
+      "source": "manifest_strava_compile_py",
+      "target": "manifest_strava_compile_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L15",
+      "weight": 1.0,
+      "source": "manifest_strava_compile_py",
+      "target": "manifest_strava_compile_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L19",
+      "weight": 1.0,
+      "source": "manifest_readme_md",
+      "target": "manifest_readme_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L18",
+      "weight": 1.0,
+      "source": "manifest_readme_md",
+      "target": "manifest_readme_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L20",
+      "weight": 1.0,
+      "source": "manifest_readme_md",
+      "target": "manifest_readme_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L24",
+      "weight": 1.0,
+      "source": "manifest_config_example_json",
+      "target": "manifest_config_example_json_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L23",
+      "weight": 1.0,
+      "source": "manifest_config_example_json",
+      "target": "manifest_config_example_json_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L25",
+      "weight": 1.0,
+      "source": "manifest_config_example_json",
+      "target": "manifest_config_example_json_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L29",
+      "weight": 1.0,
+      "source": "manifest_lib_config_py",
+      "target": "manifest_lib_config_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L28",
+      "weight": 1.0,
+      "source": "manifest_lib_config_py",
+      "target": "manifest_lib_config_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L30",
+      "weight": 1.0,
+      "source": "manifest_lib_config_py",
+      "target": "manifest_lib_config_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L34",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_analytics_py",
+      "target": "manifest_lib_generate_analytics_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L33",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_analytics_py",
+      "target": "manifest_lib_generate_analytics_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L35",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_analytics_py",
+      "target": "manifest_lib_generate_analytics_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L39",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_dashboards_py",
+      "target": "manifest_lib_generate_dashboards_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L38",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_dashboards_py",
+      "target": "manifest_lib_generate_dashboards_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L40",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_dashboards_py",
+      "target": "manifest_lib_generate_dashboards_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L44",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_segments_py",
+      "target": "manifest_lib_generate_segments_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L43",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_segments_py",
+      "target": "manifest_lib_generate_segments_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L45",
+      "weight": 1.0,
+      "source": "manifest_lib_generate_segments_py",
+      "target": "manifest_lib_generate_segments_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L49",
+      "weight": 1.0,
+      "source": "manifest_lib_grade_py",
+      "target": "manifest_lib_grade_py_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L48",
+      "weight": 1.0,
+      "source": "manifest_lib_grade_py",
+      "target": "manifest_lib_grade_py_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L50",
+      "weight": 1.0,
+      "source": "manifest_lib_grade_py",
+      "target": "manifest_lib_grade_py_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L54",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_analytics_and_goals_skill_md",
+      "target": "manifest_claude_skills_analytics_and_goals_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L53",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_analytics_and_goals_skill_md",
+      "target": "manifest_claude_skills_analytics_and_goals_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L55",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_analytics_and_goals_skill_md",
+      "target": "manifest_claude_skills_analytics_and_goals_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L59",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_caches_and_invalidation_skill_md",
+      "target": "manifest_claude_skills_caches_and_invalidation_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L58",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_caches_and_invalidation_skill_md",
+      "target": "manifest_claude_skills_caches_and_invalidation_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L60",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_caches_and_invalidation_skill_md",
+      "target": "manifest_claude_skills_caches_and_invalidation_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L64",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_compile_and_streams_skill_md",
+      "target": "manifest_claude_skills_compile_and_streams_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L63",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_compile_and_streams_skill_md",
+      "target": "manifest_claude_skills_compile_and_streams_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L65",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_compile_and_streams_skill_md",
+      "target": "manifest_claude_skills_compile_and_streams_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L69",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_external_apis_skill_md",
+      "target": "manifest_claude_skills_external_apis_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L68",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_external_apis_skill_md",
+      "target": "manifest_claude_skills_external_apis_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L70",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_external_apis_skill_md",
+      "target": "manifest_claude_skills_external_apis_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L74",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_hub_ui_skill_md",
+      "target": "manifest_claude_skills_hub_ui_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L73",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_hub_ui_skill_md",
+      "target": "manifest_claude_skills_hub_ui_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L75",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_hub_ui_skill_md",
+      "target": "manifest_claude_skills_hub_ui_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L79",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_project_map_skill_md",
+      "target": "manifest_claude_skills_project_map_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L78",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_project_map_skill_md",
+      "target": "manifest_claude_skills_project_map_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L80",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_project_map_skill_md",
+      "target": "manifest_claude_skills_project_map_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L84",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_run_and_regenerate_skill_md",
+      "target": "manifest_claude_skills_run_and_regenerate_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L83",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_run_and_regenerate_skill_md",
+      "target": "manifest_claude_skills_run_and_regenerate_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L85",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_run_and_regenerate_skill_md",
+      "target": "manifest_claude_skills_run_and_regenerate_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L89",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_skill_md",
+      "target": "manifest_claude_skills_segment_detection_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L88",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_skill_md",
+      "target": "manifest_claude_skills_segment_detection_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L90",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_skill_md",
+      "target": "manifest_claude_skills_segment_detection_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L94",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_debugging_playbook_md",
+      "target": "manifest_claude_skills_segment_detection_debugging_playbook_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L93",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_debugging_playbook_md",
+      "target": "manifest_claude_skills_segment_detection_debugging_playbook_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L95",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_debugging_playbook_md",
+      "target": "manifest_claude_skills_segment_detection_debugging_playbook_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L99",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_pipeline_stages_md",
+      "target": "manifest_claude_skills_segment_detection_pipeline_stages_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L98",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_pipeline_stages_md",
+      "target": "manifest_claude_skills_segment_detection_pipeline_stages_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L100",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_pipeline_stages_md",
+      "target": "manifest_claude_skills_segment_detection_pipeline_stages_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L104",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_tunables_md",
+      "target": "manifest_claude_skills_segment_detection_tunables_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L103",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_tunables_md",
+      "target": "manifest_claude_skills_segment_detection_tunables_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L105",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_segment_detection_tunables_md",
+      "target": "manifest_claude_skills_segment_detection_tunables_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L109",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_validation_playbook_skill_md",
+      "target": "manifest_claude_skills_validation_playbook_skill_md_ast_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L108",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_validation_playbook_skill_md",
+      "target": "manifest_claude_skills_validation_playbook_skill_md_mtime",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "manifest.json",
+      "source_location": "L110",
+      "weight": 1.0,
+      "source": "manifest_claude_skills_validation_playbook_skill_md",
+      "target": "manifest_claude_skills_validation_playbook_skill_md_semantic_hash",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L1",
+      "weight": 1.0,
+      "source": "graph_report",
+      "target": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L66",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_communities_19_total_1_thin_omitted",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L12",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_community_hubs_navigation",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L3",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_corpus_check",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L33",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_god_nodes_most_connected_your_core_abstractions",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L61",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_hyperedges_group_relationships",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L57",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_import_cycles",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L140",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_knowledge_gaps",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L145",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_suggested_questions",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L7",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_summary",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L45",
+      "weight": 1.0,
+      "source": "graph_report_graph_report_c_users_leemo_documents_github_strava_analysis_2026_07_09",
+      "target": "graph_report_surprising_connections_you_probably_didn_t_know_these",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L68",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_0_analytics_cache_concepts",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L108",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_10_anchored_loop_segments",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L112",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_11_loop_candidate_detection",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L116",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_12_config_loading",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L120",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_13_loop_geometry_medoid",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L124",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_14_loop_clustering",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L128",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_15_reverse_geocode_naming",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L132",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_16_loop_fragment_filtering",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L136",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_17_geo_track_densification",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L72",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_1_analytics_computation_module",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L76",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_2_best_efforts_goals_module",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L80",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_3_hub_generation_classification",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L84",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_4_fit_parsing_compile",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L88",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_5_segment_naming_road_snapping",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L92",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_6_corridor_mining_cells",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L96",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_7_segment_dedupe_anchoring",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L100",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_8_effort_matching_climbs",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "GRAPH_REPORT.md",
+      "source_location": "L104",
+      "weight": 1.0,
+      "source": "graph_report_communities_19_total_1_thin_omitted",
+      "target": "graph_report_community_9_segment_classification_elevation",
+      "confidence_score": 1.0
+    }
+  ],
+  "hyperedges": [],
+  "built_at_commit": "f0ba58ba4064d11157cebe0d21e09d4de76fd7d3"
+}

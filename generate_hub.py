@@ -32,6 +32,7 @@ from generate_dashboards import (
 from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
     ANALYTICS_PANEL_CSS, body_analytics, overview_sections,
+    robust_threshold_mps,
 )
 from generate_segments import build_segments, body_segments, SEGMENTS_CSS
 
@@ -138,18 +139,13 @@ def _heatmap_points(runs: list[dict], max_dist_km: float = 150.0) -> list:
 
 def _compute_threshold(rows: list[dict]) -> float | None:
     """
-    Derive threshold speed (m/s) from the best 5K time across all runs.
-    5K pace is a reliable proxy for lactate threshold for recreational runners.
+    Derive threshold speed (m/s) from a multi-point, grade-adjusted fitness curve
+    (robust_threshold_mps: the 5K-equivalent off a Riegel fit over best efforts at
+    several endurance distances). This resists a single hot or downhill run skewing
+    the anchor; it falls back to the raw best 5K when too few efforts exist to fit.
+    5K-equivalent pace is a reliable proxy for lactate threshold for recreational runners.
     """
-    best = None
-    for row in rows:
-        s = num(row, "best_5k_s")
-        if s and s > 0:
-            if best is None or s < best:
-                best = s
-    if best and best > 0:
-        return round(5000.0 / best, 4)  # m/s
-    return None
+    return robust_threshold_mps(rows)
 
 
 THRESHOLD_WINDOW_DAYS = 60   # centered window for contemporaneous fitness
@@ -168,22 +164,27 @@ def _build_threshold_curve(rows: list[dict]) -> list[tuple[datetime, float]]:
 
 
 def _threshold_at(dt: datetime, efforts: list[tuple[datetime, float]],
-                  fallback: float | None) -> float | None:
-    """Threshold m/s from the fastest 5K within a centered window of `dt`.
+                  robust_mps: float | None) -> float | None:
+    """Contemporaneous threshold m/s for a run on `dt`.
 
-    Widens the window progressively (60 -> 120 -> 240 -> 480 days) when no 5K
-    falls in range, so sparse eras stay anchored to a nearby effort rather than
-    the all-time best. Uses `fallback` (all-time best) only when no effort
-    exists at all, so a run's pace zones reflect fitness *at the time it was run*.
+    `robust_mps` (the multi-point fitted anchor) sets the fitness *level*; this then
+    scales it by how that era's 5K compares to the all-time best 5K, so an older run
+    from a less-fit era is judged against a proportionally slower threshold rather than
+    today's peak. The fastest 5K in a centered window (widening 60 -> 120 -> 240 -> 480
+    days) supplies the era's speed; when the window contains the all-time best (recent
+    runs) the ratio is 1 and the threshold is exactly `robust_mps`. Falls back to
+    `robust_mps` when no 5K effort exists at all.
     """
-    if not efforts:
-        return fallback
+    if not efforts or not robust_mps:
+        return robust_mps
+    all_time = min(s for _, s in efforts)  # fastest raw 5K ever (seconds)
     for mult in (1, 2, 4, 8):
         span = THRESHOLD_WINDOW_DAYS * mult
         best = min((s for d, s in efforts if abs((d - dt).days) <= span), default=None)
         if best:
-            return round(5000.0 / best, 4)
-    return fallback
+            # ratio = era_speed / peak_speed = all_time / best (<= 1 for slower eras)
+            return round(robust_mps * (all_time / best), 4)
+    return robust_mps
 
 
 def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[float]:
@@ -3101,9 +3102,9 @@ def main():
     threshold_mps = _compute_threshold(rows)
     if threshold_mps:
         threshold_pace = fmt_pace(1000.0, threshold_mps * 1000.0)
-        print(f"Threshold pace (from best 5K): {threshold_pace}")
+        print(f"Threshold pace (from fitness curve): {threshold_pace}")
     else:
-        print("No 5K best effort found; pace zones disabled")
+        print("No best efforts found; pace zones disabled")
 
     t0 = time.perf_counter()
     runs = _build_runs(rows, threshold_mps)

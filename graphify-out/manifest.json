@@ -1,0 +1,137 @@
+{
+  "generate_hub.py": {
+    "mtime": 1783570482.728367,
+    "ast_hash": "82c6ec60085131d4bba1d9636031ac3a",
+    "semantic_hash": "82c6ec60085131d4bba1d9636031ac3a"
+  },
+  "main.py": {
+    "mtime": 1783519763.254908,
+    "ast_hash": "dbde2523c333106bb4284b59fe35e29c",
+    "semantic_hash": "dbde2523c333106bb4284b59fe35e29c"
+  },
+  "strava_compile.py": {
+    "mtime": 1783518759.138499,
+    "ast_hash": "86727be21c0164223df64bd9634f1496",
+    "semantic_hash": "86727be21c0164223df64bd9634f1496"
+  },
+  "README.md": {
+    "mtime": 1783520502.640409,
+    "ast_hash": "7bff93f3f1b07c42955ddea7d66ffd52",
+    "semantic_hash": "7bff93f3f1b07c42955ddea7d66ffd52"
+  },
+  "config.example.json": {
+    "mtime": 1782524944.380552,
+    "ast_hash": "74b588d1833a9141ac7b1036e44acc30",
+    "semantic_hash": "74b588d1833a9141ac7b1036e44acc30"
+  },
+  "lib/config.py": {
+    "mtime": 1782913191.6833632,
+    "ast_hash": "0b4f91d1f75070ab6bf908f2b048531d",
+    "semantic_hash": "0b4f91d1f75070ab6bf908f2b048531d"
+  },
+  "lib/generate_analytics.py": {
+    "mtime": 1783575807.8358734,
+    "ast_hash": "6bfb667042d36e8397c04f7970b46a1c",
+    "semantic_hash": "6bfb667042d36e8397c04f7970b46a1c"
+  },
+  "lib/generate_dashboards.py": {
+    "mtime": 1783567289.9398253,
+    "ast_hash": "ccabfbbf258f682e9e21713036c7d1fa",
+    "semantic_hash": "ccabfbbf258f682e9e21713036c7d1fa"
+  },
+  "lib/generate_segments.py": {
+    "mtime": 1783519718.0451245,
+    "ast_hash": "e2bb3417f5761d64a40baef9e3c3f8bc",
+    "semantic_hash": "e2bb3417f5761d64a40baef9e3c3f8bc"
+  },
+  "lib/grade.py": {
+    "mtime": 1783518789.288432,
+    "ast_hash": "8cee34c300206cb2a1cc61f946eade29",
+    "semantic_hash": "8cee34c300206cb2a1cc61f946eade29"
+  },
+  ".claude/skills/analytics-and-goals/SKILL.md": {
+    "mtime": 1783576052.8951087,
+    "ast_hash": "a3a41619dcf4d7f57a1fec0df776f109",
+    "semantic_hash": "a3a41619dcf4d7f57a1fec0df776f109"
+  },
+  ".claude/skills/caches-and-invalidation/SKILL.md": {
+    "mtime": 1783520179.3774838,
+    "ast_hash": "6e98cf5932d0863a308925b15eccafb6",
+    "semantic_hash": "6e98cf5932d0863a308925b15eccafb6"
+  },
+  ".claude/skills/compile-and-streams/SKILL.md": {
+    "mtime": 1783519405.770759,
+    "ast_hash": "21f8345f2d259099499bdf34d0d6a806",
+    "semantic_hash": "21f8345f2d259099499bdf34d0d6a806"
+  },
+  ".claude/skills/external-apis/SKILL.md": {
+    "mtime": 1783124218.8300223,
+    "ast_hash": "5aa7e4620d664eedcb7e759b24d4c710",
+    "semantic_hash": "5aa7e4620d664eedcb7e759b24d4c710"
+  },
+  ".claude/skills/hub-ui/SKILL.md": {
+    "mtime": 1783576095.9418101,
+    "ast_hash": "09393998091d672cdcb2332cb158df21",
+    "semantic_hash": "09393998091d672cdcb2332cb158df21"
+  },
+  ".claude/skills/project-map/SKILL.md": {
+    "mtime": 1783519201.258973,
+    "ast_hash": "369189bcf05b72b10e75b0bc594773c3",
+    "semantic_hash": "369189bcf05b72b10e75b0bc594773c3"
+  },
+  ".claude/skills/run-and-regenerate/SKILL.md": {
+    "mtime": 1783520120.0688255,
+    "ast_hash": "9912d1fcadf5af90530500c1b1b0e139",
+    "semantic_hash": "9912d1fcadf5af90530500c1b1b0e139"
+  },
+  ".claude/skills/segment-detection/SKILL.md": {
+    "mtime": 1783124853.7331078,
+    "ast_hash": "0cc1a2859a85075e7f85998f13882584",
+    "semantic_hash": "0cc1a2859a85075e7f85998f13882584"
+  },
+  ".claude/skills/segment-detection/debugging-playbook.md": {
+    "mtime": 1783124232.63599,
+    "ast_hash": "17841ce8ce37b8f5f44d8f89733305d9",
+    "semantic_hash": "17841ce8ce37b8f5f44d8f89733305d9"
+  },
+  ".claude/skills/segment-detection/pipeline-stages.md": {
+    "mtime": 1783170297.4526496,
+    "ast_hash": "aa773fc4f66ca3d982e637a7a0f58d5a",
+    "semantic_hash": "aa773fc4f66ca3d982e637a7a0f58d5a"
+  },
+  ".claude/skills/segment-detection/tunables.md": {
+    "mtime": 1783170263.9780188,
+    "ast_hash": "b95e99f75cb2f624919b3d24a3948e8a",
+    "semantic_hash": "b95e99f75cb2f624919b3d24a3948e8a"
+  },
+  ".claude/skills/validation-playbook/SKILL.md": {
+    "mtime": 1783124218.843253,
+    "ast_hash": "d4101a44151119d2b85970391cb86355",
+    "semantic_hash": "d4101a44151119d2b85970391cb86355"
+  },
+  "graphify-out/.graphify_labels.json": {
+    "mtime": 1783576625.950425,
+    "ast_hash": "279ade9b78bbb875a3c214fd8222be9d",
+    "semantic_hash": ""
+  },
+  "graphify-out/cost.json": {
+    "mtime": 1783576750.0613456,
+    "ast_hash": "0a6abd1251490f49f8ff1490a1d9c4dc",
+    "semantic_hash": ""
+  },
+  "graphify-out/graph.json": {
+    "mtime": 1783576572.7777584,
+    "ast_hash": "ccccf5eca5069756a78878881a93396a",
+    "semantic_hash": ""
+  },
+  "graphify-out/manifest.json": {
+    "mtime": 1783576510.6245663,
+    "ast_hash": "32c2bf8eeac8afc4eacb15b0bf106a14",
+    "semantic_hash": ""
+  },
+  "graphify-out/GRAPH_REPORT.md": {
+    "mtime": 1783576625.950425,
+    "ast_hash": "f57531a8ce338702553916d42020bdca",
+    "semantic_hash": ""
+  }
+}

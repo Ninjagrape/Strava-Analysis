@@ -28,7 +28,7 @@ Thumbs.db
 # Claude
 .claude/*
 !.claude/skills/
-graphify-out/
+# graphify-out/
 CLAUDE.md
 
 # Todo

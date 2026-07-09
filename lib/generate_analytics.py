@@ -37,6 +37,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from grade import minetti_cost, COST_FLAT, ga_time
+from generate_dashboards import fit_riegel
 
 
 def num(row: dict, key: str):
@@ -671,6 +672,46 @@ def _ranged(ranges: list[tuple], default_label: str, render_fn) -> str:
             f'{"".join(divs)}</div>')
 
 
+def _best_5k_threshold_mps(rows: list[dict]) -> float | None:
+    """All-time best 5K -> threshold m/s (single raw point). Fallback anchor only;
+    prefer robust_threshold_mps. Mirrors the original generate_hub._compute_threshold."""
+    best = None
+    for r in rows:
+        s = num(r, "best_5k_s")
+        if s and s > 0 and (best is None or s < best):
+            best = s
+    return round(5000.0 / best, 4) if best else None
+
+
+# Distances used for the current-fitness curve fit (metres, from CS_DISTANCES). These
+# are exactly the six distances the card displays, so every shown pace is interpolated
+# within the fit range rather than extrapolated (fitting the endurance set alone
+# projected a 1 km faster than the athlete's actual best). The truly anaerobic 400 m /
+# 804 m sprints and the redundant 2 mi point are excluded so they don't distort the fit.
+_CURVE_FIT_DISTS = frozenset({1_000.0, 1_609.344, 5_000.0, 10_000.0, 15_000.0, 21_097.5})
+
+
+def fit_current_curve(rows: list[dict]) -> tuple | None:
+    """Personal power-law T = a * D^b over grade-adjusted best efforts at several
+    endurance distances. Multi-point and grade-adjusted, so no single hot or downhill
+    run dominates the estimate. Returns (a, b, n_points) or None if under 2 points."""
+    pts = [(d, t) for d, t in best_effort_points(rows) if d in _CURVE_FIT_DISTS]
+    if len(pts) < 2:
+        return None
+    a, b = fit_riegel(pts)
+    return a, b, len(pts)
+
+
+def robust_threshold_mps(rows: list[dict]) -> float | None:
+    """Threshold speed (m/s) as the fitted curve's 5K-equivalent, not a single raw 5K.
+    Falls back to the raw best 5K when too few endurance efforts exist to fit a curve."""
+    fit = fit_current_curve(rows)
+    if fit:
+        a, b, _ = fit
+        return round(5000.0 / (a * 5000.0 ** b), 4)
+    return _best_5k_threshold_mps(rows)
+
+
 def generate(rows: list[dict], updated: str) -> str:
     loads = session_loads(rows)
     daily = daily_series(loads)
@@ -769,6 +810,44 @@ def generate(rows: list[dict], updated: str) -> str:
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
+    # current paces, from the multi-point grade-adjusted fitness curve (fit_current_curve),
+    # the same robust anchor the Runs tab now classifies tempo/threshold with.
+    curve = fit_current_curve(rows)
+    thr_mps = robust_threshold_mps(rows)
+    paces_card = ""   # empty => card is hidden when the curve can't be fit
+    if curve and thr_mps:
+        a, b, n_fit = curve
+        p = 1000.0 / thr_mps                      # s/km at threshold speed (5K-equiv off the curve)
+        # Z3/Z4 bands mirror generate_hub bounds [0.87, 0.93, 1.03] (speed fractions).
+        # Slower pace = larger s/km, so divide by the slow-end fraction for the slow bound.
+        thr_lo = fmt_pace_from_s_per_km(p / 1.03)  # threshold (Z4) fast bound
+        thr_hi = fmt_pace_from_s_per_km(p / 0.93)  # ...slow bound
+        tmp_lo = fmt_pace_from_s_per_km(p / 0.93)  # tempo (Z3) fast bound
+        tmp_hi = fmt_pace_from_s_per_km(p / 0.87)  # ...slow bound
+        # equivalent-effort paces read straight off the fitted curve T = a * D^b.
+        dist_defs = [("1 km", 1000.0), ("1 mile", 1609.344), ("5 km", 5000.0),
+                     ("10 km", 10000.0), ("15 km", 15000.0), ("Half", 21_097.5)]
+        pace_rows = ""
+        for label, d in dist_defs:
+            t = a * d ** b
+            pace_rows += (f"<tr><td>{label}</td><td>{fmt_time(t)}</td>"
+                          f"<td>{fmt_pace_from_s_per_km(t / (d / 1000.0))}/km</td></tr>")
+        paces_card = f"""
+<div class="section">
+  <p class="section-title">Current paces</p>
+  <div class="card">
+    <div class="stat-row">
+      <div class="stat"><p class="stat-label">Threshold pace</p><p class="stat-value green">{thr_lo}-{thr_hi}/km</p><p class="stat-sub">Z4 (0.93-1.03 &times; threshold speed)</p></div>
+      <div class="stat"><p class="stat-label">Tempo pace</p><p class="stat-value amber">{tmp_lo}-{tmp_hi}/km</p><p class="stat-sub">Z3 (0.87-0.93 &times; threshold speed)</p></div>
+    </div>
+    <table>
+      <thead><tr><th>Distance</th><th>Equivalent time</th><th>Pace</th></tr></thead>
+      <tbody>{pace_rows}</tbody>
+    </table>
+    <p class="note">From a personal power-law curve (T = a&middot;D<sup>b</sup>, b={b:.2f}) fitted over your grade-adjusted best efforts at {n_fit} distances from 1 km to the half, so no single downhill or one-off run skews it. This is the same robust anchor the Runs tab uses to classify tempo and threshold efforts. Tempo and threshold are the classifier's Z3/Z4 pace bands; the distance rows are equivalent honest-effort paces given current fitness, not training targets.</p>
+  </div>
+</div>"""
+
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -834,7 +913,7 @@ def generate(rows: list[dict], updated: str) -> str:
     <p class="note">The running analog of Strava's power curve: distance = CS × time + D'. Critical speed is your sustainable threshold; D' is the fixed distance you can cover above it before fatigue. Model column shows the predicted time at each distance.</p>
   </div>
 </div>
-
+{paces_card}
 <div class="section">
   <p class="section-title">VO₂max estimate (VDOT) by month</p>
   <div class="card">

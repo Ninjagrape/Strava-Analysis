@@ -81,7 +81,7 @@ Three coexisting patterns, by role: plain/raw non-f triple-quoted strings for CS
 7. **recovery**, zone-1 share >= `RECOVERY_Z1_SHARE` (0.70).
 8. **easy**, fallback (also when there is no threshold, so all zone times are zero).
 
-Zone times come from `_compute_pace_zones(km_splits, threshold_mps)`; the boundaries are a **local literal** `bounds = [0.77, 0.87, 0.93, 1.03]` inside that function, not module constants (grep: `grep -n "bounds = \[0.77" generate_hub.py`). The threshold speed is the best-5K proxy: `_compute_threshold` takes the all-time fastest `best_5k_s`, and `_threshold_at` refines it per run to the fastest 5K within a centered window that widens 60 → 120 → 240 → 480 days (`THRESHOLD_WINDOW_DAYS = 60`), so old runs are judged against contemporaneous fitness. `HUB_JS` mirrors the same boundaries in its zone-colouring code (`if (frac < 0.77) ...` and `ZONE_NAMES`, as of 2026-07), change both together.
+Zone times come from `_compute_pace_zones(km_splits, threshold_mps)`; the boundaries are a **local literal** `bounds = [0.77, 0.87, 0.93, 1.03]` inside that function, not module constants (grep: `grep -n "bounds = \[0.77" generate_hub.py`). The threshold speed is a **multi-point fitted anchor** (as of 2026-07-09, was the single best-5K proxy before): `_compute_threshold` delegates to `robust_threshold_mps` in `lib/generate_analytics.py` (5K-equivalent off a grade-adjusted Riegel fit over best efforts at 1 km/1 mi/5 k/10 k/15 k/half), and `_threshold_at` gives each run a contemporaneous value by scaling that anchor by the era's fastest-5K vs all-time-best-5K ratio (window widens 60 → 120 → 240 → 480 days, `THRESHOLD_WINDOW_DAYS = 60`), so old runs are judged against contemporaneous fitness. `HUB_JS` mirrors the same boundaries in its zone-colouring code (`if (frac < 0.77) ...` and `ZONE_NAMES`, as of 2026-07), change both together.
 
 ## Tunables (pause detection and map overlay)
 
@@ -114,7 +114,7 @@ Pause positions on the **chart** come straight from the stream's `d` values; pau
 - Tab bodies still sourced from the lib modules: `grep -n "body_best_efforts\|body_goal_dashboard\|body_analytics\|body_segments" generate_hub.py`.
 - Emission blocks: `grep -n "^HUB_CSS\|^HUB_JS\|combined_css" generate_hub.py`.
 - CSV field limit still an import side effect: `grep -rn "field_size_limit" .` (expect lib/generate_analytics.py, lib/generate_dashboards.py, and strava_compile.py, three files as of 2026-07-08).
-- End to end: `python generate_hub.py` prints `Threshold pace (from best 5K): ...`, `Loaded N runs`, `Written: ...TrainingHub.html`; open the file and click through all 6 tabs with the console open.
+- End to end: `python generate_hub.py` prints `Threshold pace (from fitness curve): ...` (was `from best 5K` before 2026-07-09), `Loaded N runs`, `Written: ...TrainingHub.html`; open the file and click through all 6 tabs with the console open.
 
 ## Pitfalls
 
