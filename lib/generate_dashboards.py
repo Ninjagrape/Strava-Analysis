@@ -3,7 +3,7 @@
 generate_dashboards.py
 Generates two HTML dashboards from a strava_compile.py enriched CSV:
   - top_runs_by_distance.html   best efforts by distance band (top 3 per band)
-  - goal_dashboard.html         race goal gaps, speed targets, weekly mileage
+  - goal_dashboard.html         race goal gaps, speed targets
 
 
 
@@ -17,7 +17,6 @@ best_*_s columns, fit_avg_cadence, Elevation Gain, etc).
 import csv
 import math
 import sys
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -221,44 +220,6 @@ def top3_for_band(
     return efforts[:3]
 
 
-def weekly_mileage(rows: list[dict]) -> list[tuple[str, float]]:
-    """Returns list of (week_label, km) for every ISO week present, oldest first.
-    The dashboard's range toggle slices this to 3M/6M/1Y/All."""
-    weekly: dict[tuple, float] = defaultdict(float)
-    for r in rows:
-        try:
-            dt = datetime.strptime(r.get("Activity Date", ""), "%b %d, %Y, %I:%M:%S %p")
-        except ValueError:
-            continue
-        dist_km = float(r.get("Distance") or 0) / 1000
-        weekly[dt.isocalendar()[:2]] += dist_km
-    return [(f"W{wk}", km) for (yr, wk), km in sorted(weekly.items())]
-
-
-def weekly_runs(rows: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Returns (week_label, [run, ...]) for every ISO week present, oldest week
-    first and oldest run first within each week. Each run carries the three
-    metrics the bar breakdown can be sized by (distance, moving time, elevation
-    gain), so the Runs view can split a week's count-height bar by any of them."""
-    weekly: dict[tuple, list[dict]] = defaultdict(list)
-    for r in rows:
-        try:
-            dt = datetime.strptime(r.get("Activity Date", ""), "%b %d, %Y, %I:%M:%S %p")
-        except ValueError:
-            continue
-        weekly[dt.isocalendar()[:2]].append({
-            "dt":   dt,
-            "km":   float(r.get("Distance") or 0) / 1000,
-            "dur":  float(r.get("Moving Time") or 0),
-            "elev": float(r.get("Elevation Gain") or 0),
-        })
-    out = []
-    for key in sorted(weekly):
-        runs = sorted(weekly[key], key=lambda x: x["dt"])
-        out.append((f"W{key[1]}", runs))
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Best efforts dashboard
 # ---------------------------------------------------------------------------
@@ -414,30 +375,6 @@ GOAL_CSS = """
 .pred-target{font-size:10px;}
 .pred-target.ok{color:#5cb85c;}
 .pred-target.warn{color:#e0a020;}
-
-.spark-wrap{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 14px;}
-.spark-label{font-size:10px;color:#555;margin:0 0 6px;}
-.mi-tabs{display:flex;gap:6px;margin-bottom:8px;}
-.mi-btn{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
-.mi-btn:hover{color:#ccc;}
-.mi-btn.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
-.bars{display:flex;align-items:flex-end;gap:4px;height:48px;}
-.bar-col{display:flex;flex-direction:column;align-items:center;flex:1;}
-.bar-rect{width:100%;border-radius:2px 2px 0 0;background:#3a5a3a;min-height:2px;}
-.bar-rect.latest{background:#5cb85c;}
-.bar-wk{font-size:8px;color:#444;margin-top:3px;text-align:center;}
-.bar-km{font-size:8px;color:#666;margin-bottom:2px;text-align:center;}
-.bar-cnt{font-size:8px;color:#666;margin-bottom:2px;text-align:center;}
-/* Runs view: a count-height bar whose interior is split into one slice per run,
-   each slice grown proportionally to the selected metric (dist/time/elev). */
-.bar-rect.run{position:relative;background:transparent;overflow:hidden;}
-.bar-stack{position:absolute;inset:0;display:flex;flex-direction:column-reverse;}
-.bar-seg{width:100%;background:#3a5a3a;box-shadow:inset 0 -1px 0 rgba(0,0,0,0.45);min-height:1px;}
-.bar-seg.alt{background:#46684a;}
-.bar-seg.latest{background:#4f9d4f;}
-.bar-seg.latest.alt{background:#5cb85c;}
-.mi-metrics{display:none;gap:6px;margin-bottom:8px;}
-.mi-group.view-runs .mi-metrics{display:flex;}
 """
 
 
@@ -491,148 +428,6 @@ def render_pred_row(dist_label: str, time_str: str, pace_str: str, note: str, no
       <td class="pred-pace">{pace_str}</td>
       <td class="pred-target {note_class}">{note}</td>
     </tr>"""
-
-
-def render_spark(weeks: list[tuple[str, float]]) -> str:
-    if not weeks:
-        return ""
-    max_km = max(km for _, km in weeks) or 1
-    cols = []
-    for i, (label, km) in enumerate(weeks):
-        pct = round(km / max_km * 100)
-        is_latest = (i == len(weeks) - 1)
-        extra = " latest" if is_latest else ""
-        label_style = ' style="color:#5cb85c;"' if is_latest else ""
-        cols.append(f"""\
-    <div class="bar-col">
-      <div class="bar-km">{km:.1f}</div>
-      <div class="bar-rect{extra}" style="height:{pct}%;"></div>
-      <div class="bar-wk"{label_style}>{label}</div>
-    </div>""")
-    return "\n".join(cols)
-
-
-# Weeks shown per range button (ISO weeks). None = all available data.
-WEEKLY_RANGES = [("3M", 13), ("6M", 26), ("1Y", 52), ("All", None)]
-WEEKLY_DEFAULT = "6M"
-
-# Runs-view metric toggle: button label, data-metric key (matches the data-*
-# attribute on each segment) and default flag.
-RUNS_METRICS = [("Dist", "km", True), ("Time", "dur", False), ("Elev", "elev", False)]
-
-
-def render_runs_spark(weeks: list[tuple[str, list[dict]]]) -> str:
-    """Bars whose height encodes the number of runs that week, with the interior
-    split into one slice per run. Each slice starts sized by distance; the metric
-    toggle re-grows them by duration or elevation. Earliest run sits at the
-    bottom (column-reverse)."""
-    if not weeks:
-        return ""
-    max_n = max(len(runs) for _, runs in weeks) or 1
-    cols = []
-    for i, (label, runs) in enumerate(weeks):
-        n = len(runs)
-        pct = round(n / max_n * 100)
-        is_latest = (i == len(weeks) - 1)
-        extra = " latest" if is_latest else ""
-        label_style = ' style="color:#5cb85c;"' if is_latest else ""
-        segs = []
-        for j, run in enumerate(runs):
-            shade = " alt" if j % 2 else ""
-            segs.append(
-                f'<div class="bar-seg{extra}{shade}" '
-                f'data-km="{run["km"]:.3f}" data-dur="{run["dur"]:.0f}" '
-                f'data-elev="{run["elev"]:.0f}" '
-                f'style="flex-grow:{run["km"]:.3f}"></div>')
-        cols.append(f"""\
-    <div class="bar-col">
-      <div class="bar-cnt">{n}</div>
-      <div class="bar-rect run{extra}" style="height:{pct}%;">
-        <div class="bar-stack">{"".join(segs)}</div>
-      </div>
-      <div class="bar-wk"{label_style}>{label}</div>
-    </div>""")
-    return "\n".join(cols)
-
-
-_MILEAGE_TOGGLE_JS = """<script>
-function miSync(g){
-  var range = g.querySelector('.mi-range .mi-btn.active').getAttribute('data-range');
-  var view  = g.querySelector('.mi-views .mi-btn.active').getAttribute('data-view');
-  g.querySelectorAll('.mi-chart').forEach(function(c){
-    c.style.display = (c.getAttribute('data-range') === range &&
-                       c.getAttribute('data-view') === view) ? '' : 'none';
-  });
-  g.classList.toggle('view-runs', view === 'runs');
-  g.querySelectorAll('.mi-label').forEach(function(l){
-    l.style.display = (l.getAttribute('data-view') === view) ? '' : 'none';
-  });
-}
-function setMileageRange(btn){
-  var g = btn.closest('.mi-group');
-  g.querySelectorAll('.mi-range .mi-btn').forEach(function(b){ b.classList.toggle('active', b === btn); });
-  miSync(g);
-}
-function setMileageView(btn){
-  var g = btn.closest('.mi-group');
-  g.querySelectorAll('.mi-views .mi-btn').forEach(function(b){ b.classList.toggle('active', b === btn); });
-  miSync(g);
-}
-function setMileageMetric(btn){
-  var g = btn.closest('.mi-group');
-  g.querySelectorAll('.mi-metrics .mi-btn').forEach(function(b){ b.classList.toggle('active', b === btn); });
-  var key = btn.getAttribute('data-metric');
-  g.querySelectorAll('.mi-chart[data-view="runs"] .bar-rect.run').forEach(function(bar){
-    var segs = bar.querySelectorAll('.bar-seg'), total = 0;
-    segs.forEach(function(s){ total += parseFloat(s.getAttribute('data-' + key)) || 0; });
-    segs.forEach(function(s){
-      var v = parseFloat(s.getAttribute('data-' + key)) || 0;
-      s.style.flexGrow = total > 0 ? v : 1;  // all-zero week (e.g. flat runs by elev): equal slices
-    });
-  });
-}
-</script>"""
-
-
-def render_mileage(weeks_runs: list[tuple[str, list[dict]]]) -> str:
-    """Weekly bars wrapped in a 3M/6M/1Y/All range toggle plus a Km/Runs view
-    toggle (self-contained: carries its own CSS classes and toggle script, so it
-    works standalone and in the hub). Km view = total km per week; Runs view =
-    bar height by run count, each bar split into per-run slices sized by the
-    selected metric (distance/time/elevation)."""
-    if not weeks_runs:
-        return '<div class="spark-wrap"><p class="spark-label">No weekly data yet.</p></div>'
-    range_btns, charts = [], []
-    for label, n in WEEKLY_RANGES:
-        active = label == WEEKLY_DEFAULT
-        window = weeks_runs if n is None else weeks_runs[-n:]
-        range_btns.append(
-            f'<button class="mi-btn{" active" if active else ""}" '
-            f'data-range="{label}" onclick="setMileageRange(this)">{label}</button>')
-        km_window = [(lbl, sum(r["km"] for r in runs)) for lbl, runs in window]
-        km_style = "" if active else ' style="display:none"'  # Km is the default view
-        charts.append(
-            f'<div class="mi-chart" data-range="{label}" data-view="km"{km_style}>'
-            f'<div class="bars">{render_spark(km_window)}</div></div>')
-        charts.append(
-            f'<div class="mi-chart" data-range="{label}" data-view="runs" style="display:none">'
-            f'<div class="bars">{render_runs_spark(window)}</div></div>')
-    view_btns = (
-        '<button class="mi-btn active" data-view="km" onclick="setMileageView(this)">Km</button>'
-        '<button class="mi-btn" data-view="runs" onclick="setMileageView(this)">Runs</button>')
-    metric_btns = "".join(
-        f'<button class="mi-btn{" active" if default else ""}" '
-        f'data-metric="{key}" onclick="setMileageMetric(this)">{lbl}</button>'
-        for lbl, key, default in RUNS_METRICS)
-    return (
-        '<div class="spark-wrap mi-group">'
-        f'<div class="mi-tabs mi-range">{"".join(range_btns)}</div>'
-        f'<div class="mi-tabs mi-views">{view_btns}</div>'
-        f'<div class="mi-metrics">{metric_btns}</div>'
-        '<p class="spark-label mi-label" data-view="km">km per week (ISO weeks) · green = most recent</p>'
-        '<p class="spark-label mi-label" data-view="runs" style="display:none">'
-        'runs per week · bar height = run count, slices = each run\'s share of the selected metric</p>'
-        f'{"".join(charts)}{_MILEAGE_TOGGLE_JS}</div>')
 
 
 def _predict_race_time(race: Race, t10k_ga: float, riegel_a: float, riegel_b: float) -> float:
@@ -839,9 +634,6 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
             pred_rows_html.append(render_pred_row(
                 label, fmt_time(ps), fmt_pace(ps, dist_m), note, note_class))
 
-    # --- Weekly mileage sparkline (with range toggle) ---
-    mileage_html = render_mileage(weekly_runs(rows))
-
     # --- Assemble HTML ---
     return f"""\
 <!DOCTYPE html>
@@ -884,11 +676,6 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
 {''.join(pred_rows_html)}
     </tbody>
   </table>
-</div>
-
-<div class="section">
-  <p class="section-title">Weekly mileage</p>
-  {mileage_html}
 </div>
 
 </body>

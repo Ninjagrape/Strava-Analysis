@@ -2,7 +2,7 @@
 """
 generate_hub.py
 Generates dashboards/TrainingHub.html — a self-contained training hub with:
-  - Overview panel: summary stats, fitness indicators, weekly mileage
+  - Overview panel: summary stats, fitness indicators, distance/elevation/time trends
   - Runs panel: searchable run list with per-run analytics
 
 No external HTML files are required. Imports shared logic from
@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
 from generate_dashboards import (
     load_rows, fmt_pace, fmt_time, ga_time, is_interval,
-    fmt_pace_from_s_per_km, weekly_mileage, weekly_runs, render_mileage,
+    fmt_pace_from_s_per_km,
     BEST_EFFORTS_CSS, GOAL_CSS,
     body_best_efforts, body_goal_dashboard,
 )
@@ -905,14 +905,6 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .ov-rec .ov-grid{margin-bottom:10px}
 .ov-rec-advice{font-size:12px;color:#bbb;line-height:1.55;margin:0 0 8px}
 .ov-rec-foot{font-size:10px;color:#555;margin:0;line-height:1.5}
-.spark-wrap{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 14px}
-.spark-label{font-size:10px;color:#555;margin:0 0 6px}
-.bars{display:flex;align-items:flex-end;gap:4px;height:48px}
-.bar-col{display:flex;flex-direction:column;align-items:center;flex:1}
-.bar-rect{width:100%;border-radius:2px 2px 0 0;background:#3a5a3a;min-height:2px}
-.bar-rect.latest{background:#5cb85c}
-.bar-wk{font-size:8px;color:#444;margin-top:3px;text-align:center}
-.bar-km{font-size:8px;color:#666;margin-bottom:2px;text-align:center}
 
 /* Runs panel */
 #panel-runs{height:calc(100vh - 44px);overflow:hidden}
@@ -2873,7 +2865,6 @@ def generate(
     html_segments: str,
 ) -> str:
     stats          = _overview_stats(rows, runs, threshold_mps)
-    mileage_html   = render_mileage(weekly_runs(rows))
     t0             = time.perf_counter()
     runs_json      = json.dumps(runs, ensure_ascii=False)
     if PROFILE:
@@ -2933,11 +2924,6 @@ def generate(
 </div>
 {rec_html}
 {extra_html}
-
-<div class="ov-section">
-  <p class="ov-section-title">Weekly mileage</p>
-  {mileage_html}
-</div>
 """
 
     # Embedded dashboard panel CSS comes before hub CSS so hub body rules win.

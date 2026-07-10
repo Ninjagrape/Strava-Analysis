@@ -36,7 +36,7 @@ All in `generate_hub.py` unless noted. Navigate this file by function-name searc
 
 | Tab (bar order) | Generator | Where |
 |---|---|---|
-| Overview | `overview_html` f-string inside `generate()`, fed by `_overview_stats()`, `_recommendation_html()`, `overview_sections()` (lib/generate_analytics), `render_mileage(weekly_runs(rows))` | generate_hub.py |
+| Overview | `overview_html` f-string inside `generate()`, fed by `_overview_stats()`, `_recommendation_html()`, `overview_sections()` (lib/generate_analytics); the "Weekly mileage" bar widget was removed everywhere 2026-07-10 as redundant with the distance/elevation/time chart (its helpers `render_mileage`/`weekly_runs`/`render_spark` and the mi-*/spark-* CSS/JS were deleted from lib/generate_dashboards.py and HUB_CSS) | generate_hub.py |
 | Best Efforts | `body_best_efforts(rows, updated)` | lib/generate_dashboards.py |
 | Segments | `body_segments(segments, updated)`; data from `build_segments(runs)` | lib/generate_segments.py |
 | Goals | `body_goal_dashboard(rows, updated)` | lib/generate_dashboards.py |

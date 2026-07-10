@@ -1,16 +1,16 @@
-# Graph Report - graphify-out  (2026-07-09)
+# Graph Report - graphify-out  (2026-07-10)
 
 ## Corpus Check
-- 5 files · ~29,491 words
+- 5 files · ~29,536 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 119 nodes · 117 edges · 23 communities
+- 139 nodes · 137 edges · 28 communities
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `f0ba58ba`
+- Built from commit: `3ade59b5`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -38,6 +38,11 @@
 - [[_COMMUNITY_Community 20|Community 20]]
 - [[_COMMUNITY_Community 21|Community 21]]
 - [[_COMMUNITY_Community 22|Community 22]]
+- [[_COMMUNITY_Community 23|Community 23]]
+- [[_COMMUNITY_Community 24|Community 24]]
+- [[_COMMUNITY_Community 25|Community 25]]
+- [[_COMMUNITY_Community 26|Community 26]]
+- [[_COMMUNITY_Community 27|Community 27]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `Communities (19 total, 1 thin omitted)` - 19 edges
@@ -57,7 +62,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (23 total, 0 thin omitted)
+## Communities (28 total, 0 thin omitted)
 
 ### Community 0 - "Community 0"
 Cohesion: 0.11
@@ -68,8 +73,8 @@ Cohesion: 0.18
 Nodes (10): Community Hubs (Navigation), Corpus Check, God Nodes (most connected - your core abstractions), Graph Report - C:\Users\LeeMo\Documents\GitHub\Strava-Analysis  (2026-07-09), Hyperedges (group relationships), Import Cycles, Knowledge Gaps, Suggested Questions (+2 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.22
-Nodes (8): .claude/skills/segment-detection/SKILL.md, ast_hash, mtime, semantic_hash, main.py, ast_hash, mtime, semantic_hash
+Cohesion: 0.50
+Nodes (4): .claude/skills/segment-detection/SKILL.md, ast_hash, mtime, semantic_hash
 
 ### Community 3 - "Community 3"
 Cohesion: 0.50
@@ -84,8 +89,8 @@ Cohesion: 0.50
 Nodes (4): .claude/skills/compile-and-streams/SKILL.md, ast_hash, mtime, semantic_hash
 
 ### Community 6 - "Community 6"
-Cohesion: 0.50
-Nodes (4): .claude/skills/external-apis/SKILL.md, ast_hash, mtime, semantic_hash
+Cohesion: 0.22
+Nodes (8): .claude/skills/external-apis/SKILL.md, ast_hash, mtime, semantic_hash, graphify-out/GRAPH_REPORT.md, ast_hash, mtime, semantic_hash
 
 ### Community 7 - "Community 7"
 Cohesion: 0.50
@@ -151,18 +156,40 @@ Nodes (4): README.md, ast_hash, mtime, semantic_hash
 Cohesion: 0.50
 Nodes (4): strava_compile.py, ast_hash, mtime, semantic_hash
 
+### Community 23 - "Community 23"
+Cohesion: 0.50
+Nodes (4): graphify-out/cost.json, ast_hash, mtime, semantic_hash
+
+### Community 24 - "Community 24"
+Cohesion: 0.50
+Nodes (4): graphify-out/graph.json, ast_hash, mtime, semantic_hash
+
+### Community 25 - "Community 25"
+Cohesion: 0.50
+Nodes (4): graphify-out/.graphify_labels.json, ast_hash, mtime, semantic_hash
+
+### Community 26 - "Community 26"
+Cohesion: 0.50
+Nodes (4): graphify-out/manifest.json, ast_hash, mtime, semantic_hash
+
+### Community 27 - "Community 27"
+Cohesion: 0.50
+Nodes (4): main.py, ast_hash, mtime, semantic_hash
+
 ## Knowledge Gaps
-- **93 isolated node(s):** `mtime`, `ast_hash`, `semantic_hash`, `mtime`, `ast_hash` (+88 more)
+- **108 isolated node(s):** `mtime`, `ast_hash`, `semantic_hash`, `mtime`, `ast_hash` (+103 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Communities (19 total, 1 thin omitted)` connect `Community 0` to `Community 1`?**
-  _High betweenness centrality (0.051) - this node is a cross-community bridge._
-- **Why does `generate_hub.py` connect `Community 15` to `Community 2`?**
   _High betweenness centrality (0.037) - this node is a cross-community bridge._
+- **Why does `generate_hub.py` connect `Community 15` to `Community 6`?**
+  _High betweenness centrality (0.034) - this node is a cross-community bridge._
+- **Why does `main.py` connect `Community 27` to `Community 6`?**
+  _High betweenness centrality (0.034) - this node is a cross-community bridge._
 - **What connects `mtime`, `ast_hash`, `semantic_hash` to the rest of the system?**
-  _93 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _108 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
   _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._

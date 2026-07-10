@@ -11,6 +11,8 @@ description: Orientation map for the Strava-Analysis repo. Explains the two-stag
 - You hit an unfamiliar project term (corridor, medoid, params token, ...).
 - You have a symptom but do not yet know which pipeline stage produced it.
 
+> **Cheaper than reading files:** `graphify-out/` holds a prebuilt knowledge graph of this repo (`graph.json`, `GRAPH_REPORT.md`, `graph.html`). For structural questions (call graphs, file ownership, module relationships), query it via the `/graphify` skill before opening source files; whole-file reads of the big modules cost tokens that grow with the repo. Re-run `/graphify` after structural changes.
+
 ## When NOT to use
 
 This skill only orients. For actual work, route by task:
