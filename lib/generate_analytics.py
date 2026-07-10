@@ -488,6 +488,10 @@ svg{display:block;width:100%;height:auto;}
 .rng-btn{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
 .rng-btn:hover{color:#ccc;}
 .rng-btn.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
+.sub-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 1.25rem;}
+.sub-tab{background:#222;border:1px solid #3a3a3a;color:#888;font-size:12px;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;}
+.sub-tab:hover{color:#ccc;}
+.sub-tab.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
 .ptot-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;}
 .ptot-head .rng-tabs{margin-bottom:0;}
 .ptot-total{font-size:12px;font-weight:600;color:#ccc;margin:0;}
@@ -712,7 +716,127 @@ def robust_threshold_mps(rows: list[dict]) -> float | None:
     return _best_5k_threshold_mps(rows)
 
 
-def generate(rows: list[dict], updated: str) -> str:
+# Run-type dot/line colours, mirrored verbatim from generate_hub.RUN_TYPE_COLOR so the
+# progression chart matches the Runs-tab badges. misc is excluded from the chart entirely.
+RUN_TYPE_COLOR = {
+    "recovery": "#7aa7d6", "easy": "#5cb85c", "long": "#3fb6a8", "tempo": "#e0a020",
+    "threshold": "#e8772e", "intervals": "#9b7ede", "race": "#d9534f",
+}
+# Selector order: hardest/most-specific classifications first.
+_PACE_PROG_ORDER = ["tempo", "threshold", "race", "intervals", "long", "easy", "recovery"]
+_PACE_PROG_MIN_RUNS = 3   # a type needs this many runs to earn a selector button
+_PACE_PROG_ROLL = 5       # rolling-average window (runs), min 2 present to draw the trend
+
+
+def _rolling_trend(paces: list[float]) -> list[float | None]:
+    """Trailing mean of the last _PACE_PROG_ROLL paces at each index; None until >=2 exist."""
+    out = []
+    for i in range(len(paces)):
+        window = paces[max(0, i - (_PACE_PROG_ROLL - 1)):i + 1]
+        out.append(sum(window) / len(window) if len(window) >= 2 else None)
+    return out
+
+
+def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28) -> str:
+    """Scatter of GA pace over time + rolling trend. x is proportional to real date;
+    y is s/km inverted so faster (lower s/km) sits at the top (improvement climbs)."""
+    if not dated_paces:
+        return "<p class='note'>No data.</p>"
+    pad_l = 44  # wider gutter for m:ss/km labels
+    paces = [p for _, p in dated_paces]
+    vmin, vmax = min(paces), max(paces)
+    if vmax == vmin:
+        vmax = vmin + 1
+    span = vmax - vmin
+    d0, d1 = dated_paces[0][0], dated_paces[-1][0]
+    dspan = (d1 - d0).days or 1
+
+    def x(d):
+        return pad_l + (d - d0).days / dspan * (w - pad_l - pad)
+
+    def y(v):  # inverted: fastest pace (vmin) at the top
+        return pad + (v - vmin) / span * (h - 2 * pad)
+
+    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+    for g in range(3):
+        gv = vmin + g / 2 * span
+        gy = y(gv)
+        parts.append(f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{w-pad}" y2="{gy:.1f}" stroke="#2a2a2a" stroke-width="1"/>')
+        parts.append(f'<text x="{pad_l-6}" y="{gy+3:.1f}" font-size="8" fill="#666" text-anchor="end">{fmt_pace_from_s_per_km(gv)}</text>')
+    # trend polyline first, so the dots read on top of it
+    trend = [(dated_paces[i][0], t) for i, t in enumerate(_rolling_trend(paces)) if t is not None]
+    if len(trend) >= 2:
+        pts = " ".join(f"{x(d):.1f},{y(v):.1f}" for d, v in trend)
+        parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>')
+    for d, p in dated_paces:
+        parts.append(f'<circle cx="{x(d):.1f}" cy="{y(p):.1f}" r="3" fill="{color}" opacity="0.7"/>')
+    # sparse x-axis date labels (~6, muted, like _bar_chart). Evenly spaced along the
+    # date axis rather than per data point, so clustered runs can't overprint each other.
+    n_labels = min(6, max(2, len(dated_paces)))
+    for k in range(n_labels):
+        d = d0 + timedelta(days=round(k / (n_labels - 1) * dspan))
+        parts.append(f'<text x="{x(d):.1f}" y="{h-8:.1f}" font-size="8" fill="#555" text-anchor="middle">{d.day}/{d.month}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def pace_progression_section(runs: list[dict] | None) -> str:
+    """Per-run GA pace over time for a selectable run classification, with a rolling-average
+    trend line. Returns "" when no runs are supplied (standalone build) or no type qualifies,
+    so the section simply drops out like paces_card does when the curve can't be fit."""
+    if not runs:
+        return ""
+    by_type: dict[str, list[tuple]] = defaultdict(list)
+    for r in runs:
+        rt = r.get("run_type")
+        if not rt or rt == "misc":
+            continue
+        dist_km = r.get("dist_km") or 0
+        moving_s = r.get("moving_s") or 0
+        gain = r.get("gain") or 0
+        if moving_s <= 0 or dist_km <= 0:
+            continue
+        try:
+            d = datetime.strptime(r["date_iso"], "%Y-%m-%d").date()
+        except (KeyError, ValueError, TypeError):
+            continue
+        pace = ga_time(moving_s, gain, dist_km) / dist_km  # s/km GA
+        by_type[rt].append((d, pace))
+
+    eligible = {t: sorted(v) for t, v in by_type.items() if len(v) >= _PACE_PROG_MIN_RUNS}
+    if not eligible:
+        return ""
+    ordered = [t for t in _PACE_PROG_ORDER if t in eligible]
+    default = "tempo" if "tempo" in eligible else max(eligible, key=lambda t: len(eligible[t]))
+
+    def _render(type_key):
+        data = eligible[type_key]
+        color = RUN_TYPE_COLOR.get(type_key, "#888")
+        trend = [t for t in _rolling_trend([p for _, p in data]) if t is not None]
+        cur = f"{fmt_pace_from_s_per_km(trend[-1])}/km" if trend else "—"
+        stats = (
+            f'<div class="stat-row">'
+            f'<div class="stat"><p class="stat-label">Current {type_key} pace</p>'
+            f'<p class="stat-value" style="color:{color}">{cur}</p>'
+            f'<p class="stat-sub">rolling {_PACE_PROG_ROLL}-run average (GA)</p></div>'
+            f'<div class="stat"><p class="stat-label">Runs</p>'
+            f'<p class="stat-value">{len(data)}</p>'
+            f'<p class="stat-sub">classified {type_key}</p></div>'
+            f'</div>')
+        return stats + _pace_prog_chart(data, color)
+
+    chart = _ranged([(t.capitalize(), t) for t in ordered], default.capitalize(), _render)
+    return f"""
+<div class="section">
+  <p class="section-title">Pace progression</p>
+  <div class="card">
+    {chart}
+    <p class="note">Dots are individual runs at grade-adjusted pace; the line is the rolling {_PACE_PROG_ROLL}-run average. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
+  </div>
+</div>"""
+
+
+def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> str:
     loads = session_loads(rows)
     daily = daily_series(loads)
     fitness = ctl_atl_tsb(daily)
@@ -814,6 +938,7 @@ def generate(rows: list[dict], updated: str) -> str:
     # the same robust anchor the Runs tab now classifies tempo/threshold with.
     curve = fit_current_curve(rows)
     thr_mps = robust_threshold_mps(rows)
+    pace_prog_section = pace_progression_section(runs)
     paces_card = ""   # empty => card is hidden when the curve can't be fit
     if curve and thr_mps:
         a, b, n_fit = curve
@@ -862,6 +987,13 @@ def generate(rows: list[dict], updated: str) -> str:
 <h1>Training analytics</h1>
 <p class="subtitle">Derived from pace, distance and elevation only (this device records no HR or power) · grade-adjusted · updated {updated}</p>
 
+<div class="sub-tabs">
+  <button class="sub-tab active" data-sub="injury" onclick="setSubTab(this)">Injury risk</button>
+  <button class="sub-tab" data-sub="paces" onclick="setSubTab(this)">Paces</button>
+  <button class="sub-tab" data-sub="trends" onclick="setSubTab(this)">Trends</button>
+</div>
+
+<div class="sub-panel" data-sub="injury">
 <div class="section">
   <p class="section-title">Fitness, fatigue and form</p>
   <div class="card">
@@ -897,7 +1029,11 @@ def generate(rows: list[dict], updated: str) -> str:
     <p class="note">The chart plots <strong>strain</strong> (weekly load × monotony), not monotony — so its scale runs into the hundreds. High strain with high monotony (same load every day, no easy/hard variation) is the classic overtraining signature.</p>
   </div>
 </div>
+</div>
 
+<div class="sub-panel" data-sub="paces" style="display:none">
+{pace_prog_section}
+{paces_card}
 <div class="section">
   <p class="section-title">Critical speed model</p>
   <div class="card">
@@ -913,7 +1049,9 @@ def generate(rows: list[dict], updated: str) -> str:
     <p class="note">The running analog of Strava's power curve: distance = CS × time + D'. Critical speed is your sustainable threshold; D' is the fixed distance you can cover above it before fatigue. Model column shows the predicted time at each distance.</p>
   </div>
 </div>
-{paces_card}
+</div>
+
+<div class="sub-panel" data-sub="trends" style="display:none">
 <div class="section">
   <p class="section-title">VO₂max estimate (VDOT) by month</p>
   <div class="card">
@@ -929,8 +1067,20 @@ def generate(rows: list[dict], updated: str) -> str:
     <p class="note">Steps per minute (both feet). Rising cadence at the same pace usually signals improving running economy.</p>
   </div>
 </div>
+</div>
 
 <script>
+function setSubTab(btn){{
+  var bar = btn.closest('.sub-tabs');
+  if(!bar) return;
+  var sub = btn.getAttribute('data-sub');
+  var btns = bar.querySelectorAll('.sub-tab');
+  for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i]===btn); }}
+  var panels = bar.parentNode.querySelectorAll('.sub-panel');
+  for(var j=0;j<panels.length;j++){{
+    panels[j].style.display = (panels[j].getAttribute('data-sub')===sub) ? '' : 'none';
+  }}
+}}
 function setRange(btn){{
   var g = btn.closest('.rng-group');
   if(!g) return;
@@ -1212,8 +1362,8 @@ drawPtot();
 ANALYTICS_PANEL_CSS = SHARED_CSS
 
 
-def body_analytics(rows: list[dict], updated: str) -> str:
-    html = generate(rows, updated)
+def body_analytics(rows: list[dict], updated: str, runs: list[dict] | None = None) -> str:
+    html = generate(rows, updated, runs)
     s = html.index('<body>') + len('<body>')
     e = html.index('</body>')
     return html[s:e].strip()

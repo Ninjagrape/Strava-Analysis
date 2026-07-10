@@ -40,7 +40,7 @@ All in `generate_hub.py` unless noted. Navigate this file by function-name searc
 | Best Efforts | `body_best_efforts(rows, updated)` | lib/generate_dashboards.py |
 | Segments | `body_segments(segments, updated)`; data from `build_segments(runs)` | lib/generate_segments.py |
 | Goals | `body_goal_dashboard(rows, updated)` | lib/generate_dashboards.py |
-| Analytics | `body_analytics(rows, updated)` | lib/generate_analytics.py |
+| Analytics | `body_analytics(rows, updated, runs)` — `runs` is the classified list from `_build_runs`, feeding the pace-progression chart; the panel is split into themed sub-tabs (Injury risk / Paces / Trends) via `.sub-tab`/`.sub-panel`/`data-sub` markup and a `setSubTab` JS function, deliberately distinct from the hub's top-level `.tab`/`data-panel` switching (as of 2026-07-10) | lib/generate_analytics.py |
 | Runs | Static shell markup in `generate()` (`#panel-runs`: search/filter pane + detail pane); all content rendered client-side by `HUB_JS` from `const RUNS` | generate_hub.py |
 
 Note the tab-bar button order is Overview, Best Efforts, Segments, Goals, Analytics, Runs (Segments third, as of 2026-07).

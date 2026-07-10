@@ -3122,7 +3122,7 @@ def main():
     t0 = time.perf_counter()
     html_efforts   = body_best_efforts(rows, updated)
     html_goals     = body_goal_dashboard(rows, updated)
-    html_analytics = body_analytics(rows, updated)
+    html_analytics = body_analytics(rows, updated, runs)
     html_segments  = body_segments(segments, updated)
     if PROFILE:
         print(f"[profile] panels (efforts/goals/analytics): {time.perf_counter() - t0:.2f}s")
