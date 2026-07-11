@@ -1,13 +1,7 @@
 ## General
 [] Anticipate runs may or may not have HR data
 
-## Repo
-
-## Best efforts
-
-
-## Segment
-
+[] Revamp global heatmap to anticipate global running. List hotspots as hyperlinks. Avoid outliers and focus on most common centroid of runs
 
 ## Runs
 [] Hovering over the best efforts on run tab should highlight the relevant segment for that best effort
@@ -21,8 +15,6 @@
 [] Pace vs Distance scatter graph, dist v elevation scatter
 
 ## Analysis improvements
-[x] Pace of users: 1km Pace, 5km Pace, Tempo Pace etc. These figures will also be used for filtering run tab. Dont just use 1 anchor for these like in goals but average all runs after classification on run session type.
-
 [] Predicted speeds graph with confidence interval
 
 [] Power rankings against age group

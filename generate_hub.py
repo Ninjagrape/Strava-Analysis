@@ -33,6 +33,7 @@ from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
     ANALYTICS_PANEL_CSS, body_analytics, overview_sections,
     robust_threshold_mps,
+    MAX_AS_OF_DAYS, extend_daily, _tsb_class,
 )
 from generate_segments import build_segments, body_segments, SEGMENTS_CSS
 
@@ -833,6 +834,11 @@ def _recommendation_html(rec: dict | None) -> str:
 """
 
 
+def _ov_tsb_note(tsb: float) -> str:
+    """Overview's terse form note (the Analytics tab uses its own longer wording)."""
+    return "fresh" if tsb > 5 else ("building" if tsb > -10 else "fatigued")
+
+
 def _overview_stats(rows: list[dict], runs: list[dict], threshold_mps: float | None = None) -> dict:
     total_km = sum(r["dist_km"] for r in runs)
     total_s  = sum(r["moving_s"] for r in runs)
@@ -860,9 +866,38 @@ def _overview_stats(rows: list[dict], runs: list[dict], threshold_mps: float | N
         "ctl":           round(cur["ctl"], 1),
         "atl":           round(cur["atl"], 1),
         "tsb":           round(tsb, 1),
-        "tsb_class":     "green" if tsb > 5 else ("amber" if tsb > -10 else "red"),
-        "tsb_note":      "fresh" if tsb > 5 else ("building" if tsb > -10 else "fatigued"),
+        "tsb_class":     _tsb_class(tsb),
+        "tsb_note":      _ov_tsb_note(tsb),
     }
+
+
+def _overview_asof_blocks(runs, rows, threshold_mps):
+    """Precompute Overview fitness-tile + plan-card blocks for as-of offsets 0..MAX_AS_OF_DAYS.
+
+    Mirrors generate_analytics.as_of_blocks but reuses this module's own
+    _load_recommendation/_recommendation_html so the plan-card HTML matches today's
+    render exactly. Returns (anchor_date_iso, max_date_iso, [block0, block1, ...]);
+    ("", "", []) with no data.
+    """
+    base_daily = daily_series(session_loads(rows))
+    if not base_daily:
+        return "", "", []
+    anchor = base_daily[-1][0].isoformat()
+    max_iso = (base_daily[-1][0] + timedelta(days=MAX_AS_OF_DAYS)).isoformat()
+    blocks = []
+    for k in range(MAX_AS_OF_DAYS + 1):
+        daily_k = extend_daily(base_daily, k)
+        fit_k   = ctl_atl_tsb(daily_k)
+        cur     = fit_k[-1]
+        blocks.append({
+            "ctl":      str(round(cur["ctl"], 1)),
+            "atl":      str(round(cur["atl"], 1)),
+            "tsb":      f"{cur['tsb']:+.1f}",
+            "tsbClass": _tsb_class(cur["tsb"]),
+            "tsbNote":  _ov_tsb_note(cur["tsb"]),
+            "planHtml": _recommendation_html(_load_recommendation(runs, daily_k, fit_k, threshold_mps)),
+        })
+    return anchor, max_iso, blocks
 
 
 # ---------------------------------------------------------------------------
@@ -2830,6 +2865,49 @@ initSegControls();
 
 document.getElementById('run-search').addEventListener('input', applyRunFilters);
 
+// As-of date preview (Overview): swap precomputed rest-day blocks; charts untouched.
+(function(){
+  var input = document.getElementById('asof-overview');
+  if(!input || typeof AS_OF_OVERVIEW === 'undefined' || !AS_OF_OVERVIEW.length) return;
+  var tag = document.getElementById('asof-overview-tag');
+  var reset = document.getElementById('asof-overview-reset');
+  var dec = document.getElementById('asof-overview-dec');
+  var inc = document.getElementById('asof-overview-inc');
+  var anchor = new Date(AS_OF_ANCHOR_OV + 'T00:00:00');
+  function iso(dt){ return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2)+'-'+('0'+dt.getDate()).slice(-2); }
+  function currentK(){ var k=Math.round((new Date(input.value+'T00:00:00')-anchor)/86400000); return isNaN(k)?0:k; }
+  function stepBy(delta){
+    var k=currentK()+delta;
+    if(k<0) k=0;
+    if(k>AS_OF_OVERVIEW.length-1) k=AS_OF_OVERVIEW.length-1;
+    input.value=iso(new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()+k));
+    apply();
+  }
+  function setText(id, txt){ var el=document.getElementById(id); if(el) el.textContent=txt; }
+  function apply(){
+    var d = new Date(input.value + 'T00:00:00');
+    var k = Math.round((d - anchor)/86400000);
+    if(isNaN(k) || k<0) k=0;
+    if(k>AS_OF_OVERVIEW.length-1) k=AS_OF_OVERVIEW.length-1;
+    var b = AS_OF_OVERVIEW[k];
+    setText('ov-ctl', b.ctl);
+    setText('ov-atl', b.atl);
+    var tsb=document.getElementById('ov-tsb'); if(tsb){ tsb.textContent=b.tsb; tsb.className='ov-value '+b.tsbClass; }
+    setText('ov-tsb-sub', b.tsbNote);
+    var plan=document.getElementById('ov-plan'); if(plan) plan.innerHTML=b.planHtml;
+    tag.textContent = k===0 ? 'latest data' : (k===1 ? '1 rest day ahead' : k+' rest days ahead');
+    reset.hidden = (k===0);
+    if(dec) dec.disabled = (k<=0);
+    if(inc) inc.disabled = (k>=AS_OF_OVERVIEW.length-1);
+  }
+  input.addEventListener('change', apply);
+  input.addEventListener('input', apply);
+  reset.addEventListener('click', function(){ input.value = AS_OF_ANCHOR_OV; apply(); });
+  if(dec) dec.addEventListener('click', function(){ stepBy(-1); });
+  if(inc) inc.addEventListener('click', function(){ stepBy(1); });
+  apply();
+})();
+
 // Close the expanded analysis overlay on backdrop click or Escape.
 document.getElementById('run-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeRunOverlay();
@@ -2883,6 +2961,8 @@ def generate(
         threshold_s_km = "null"
 
     rec_html = _recommendation_html(stats.get("rec"))
+    asof_anchor_ov, asof_max_ov, asof_overview_blocks = _overview_asof_blocks(runs, rows, threshold_mps)
+    asof_overview_json = json.dumps(asof_overview_blocks, ensure_ascii=False)
     heatmap_html = (
         '<div class="ov-section">\n'
         '  <p class="ov-section-title">All-time heatmap</p>\n'
@@ -2914,15 +2994,24 @@ def generate(
   </div>
 </div>
 
+<div class="asof-bar">
+  <span class="asof-title">Preview after rest days</span>
+  <label class="asof-label">as of <input type="date" id="asof-overview" min="{asof_anchor_ov}" max="{asof_max_ov}" value="{asof_anchor_ov}"></label>
+  <button type="button" class="asof-step" id="asof-overview-dec" title="one fewer rest day">&minus;1</button>
+  <button type="button" class="asof-step" id="asof-overview-inc" title="one more rest day">+1</button>
+  <span class="asof-tag" id="asof-overview-tag">latest data</span>
+  <button type="button" class="asof-reset" id="asof-overview-reset" hidden>reset</button>
+  <p class="asof-help">Form tiles and the plan below decay over rest days up to the next weekly Strava packet. History charts are unaffected.</p>
+</div>
 <div class="ov-section">
   <p class="ov-section-title">Fitness &amp; form</p>
   <div class="ov-grid">
-    <div class="ov-card"><p class="ov-label">Fitness (CTL)</p><p class="ov-value green">{stats['ctl']}</p><p class="ov-sub">42-day load</p></div>
-    <div class="ov-card"><p class="ov-label">Fatigue (ATL)</p><p class="ov-value amber">{stats['atl']}</p><p class="ov-sub">7-day load</p></div>
-    <div class="ov-card"><p class="ov-label">Form (TSB)</p><p class="ov-value {stats['tsb_class']}">{stats['tsb']:+.1f}</p><p class="ov-sub">{stats['tsb_note']}</p></div>
+    <div class="ov-card"><p class="ov-label">Fitness (CTL)</p><p class="ov-value green" id="ov-ctl">{stats['ctl']}</p><p class="ov-sub">42-day load</p></div>
+    <div class="ov-card"><p class="ov-label">Fatigue (ATL)</p><p class="ov-value amber" id="ov-atl">{stats['atl']}</p><p class="ov-sub">7-day load</p></div>
+    <div class="ov-card"><p class="ov-label">Form (TSB)</p><p class="ov-value {stats['tsb_class']}" id="ov-tsb">{stats['tsb']:+.1f}</p><p class="ov-sub" id="ov-tsb-sub">{stats['tsb_note']}</p></div>
   </div>
 </div>
-{rec_html}
+<div id="ov-plan">{rec_html}</div>
 {extra_html}
 """
 
@@ -3052,6 +3141,8 @@ def generate(
         "<script src=\"https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js\"></script>\n"
         "<script>\n"
         "const RUNS = " + runs_json + ";\n"
+        "const AS_OF_OVERVIEW = " + asof_overview_json + ";\n"
+        "const AS_OF_ANCHOR_OV = " + json.dumps(asof_anchor_ov) + ";\n"
         "const SEGMENTS = " + json.dumps(segments, ensure_ascii=False) + ";\n"
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
         "const HEATMAP_POINTS = " + heatmap_json + ";\n"

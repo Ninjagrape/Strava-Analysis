@@ -236,6 +236,150 @@ def monotony_strain(daily: list[tuple]) -> list[dict]:
     return out
 
 
+# Strava caps bulk-export downloads to one packet per week, so between packets the
+# user takes rest days with no fresh data. Let them preview up to a week of rest.
+MAX_AS_OF_DAYS = 7
+
+
+def _tsb_class(tsb: float) -> str:
+    return "green" if tsb > 5 else ("amber" if tsb > -10 else "red")
+
+
+def _tsb_note(tsb: float) -> str:
+    return ("fresh / tapered" if tsb > 5 else
+            "neutral, building" if tsb > -10 else "fatigued, watch recovery")
+
+
+def _acwr_class(acwr: float) -> str:
+    return "green" if 0.8 <= acwr <= 1.3 else ("amber" if acwr < 0.8 else "red")
+
+
+def _acwr_note(acwr: float) -> str:
+    return ("in the sweet spot" if 0.8 <= acwr <= 1.3 else
+            "detraining risk (too low)" if acwr < 0.8 else "spike, elevated injury risk")
+
+
+def _mono_class(mono: float) -> str:
+    return "green" if mono < 1.5 else ("amber" if mono < 2.0 else "red")
+
+
+def _strain_baseline(mono: list[dict]) -> tuple[float, float]:
+    """Personalised safe-strain ceiling: mean + 1 SD (and + 2 SD) of trailing weekly
+    strain, excluding the current week so a live spike doesn't raise its own bar.
+    Returns (safe_strain, strain_high); (0.0, 0.0) when there isn't enough history."""
+    strain_hist = [x["strain"] for x in mono[:-7] if x["strain"] > 0][-90:]
+    if len(strain_hist) < 8:
+        return 0.0, 0.0
+    s_mean = sum(strain_hist) / len(strain_hist)
+    s_sd = math.sqrt(sum((x - s_mean) ** 2 for x in strain_hist) / len(strain_hist))
+    return s_mean + s_sd, s_mean + 2 * s_sd
+
+
+def _strain_class(strain: float, safe_strain: float, strain_high: float) -> str:
+    if safe_strain <= 0:
+        return ""
+    return ("green" if strain < safe_strain
+            else "amber" if strain < strain_high else "red")
+
+
+def _strain_sub(safe_strain: float) -> str:
+    return (f"safe &lt; {safe_strain:.0f} (your baseline)" if safe_strain > 0
+            else "weekly load × monotony")
+
+
+def extend_daily(daily: list[tuple], k: int) -> list[tuple]:
+    """Append `k` zero-load rest days after the last day of `daily`.
+
+    Moving the as-of date forward past the last run means `k` calendar days with no
+    training, over which the load-derived metrics decay. Returns a new list; the
+    input is not mutated. `k <= 0` returns a copy unchanged.
+    """
+    if not daily or k <= 0:
+        return list(daily)
+    last_date = daily[-1][0]
+    return list(daily) + [(last_date + timedelta(days=i), 0.0)
+                          for i in range(1, k + 1)]
+
+
+def as_of_blocks(rows: list[dict]) -> tuple[str, list[dict]]:
+    """Precompute the injury-risk tab's display values for as-of offsets 0..MAX_AS_OF_DAYS.
+
+    Offset k = k rest days after the last run. Block 0 reproduces exactly the values
+    baked into the static HTML; the browser swaps in block k when the user moves the
+    date picker forward. Every numeric field is a pre-formatted string matching its
+    template's format spec, so the client does no number formatting (guarantees the
+    offset-0 block is byte-identical to the static render and avoids rounding drift).
+
+    The strain baseline (safe/high ceiling) is fixed from the real data, so only the
+    current-week strain value moves as rest days are added.
+
+    Returns (last_run_date_iso, [block0, block1, ...]); ("", []) with no data.
+    """
+    base_daily = daily_series(session_loads(rows))
+    if not base_daily:
+        return "", []
+    last_date_iso = base_daily[-1][0].isoformat()
+    safe_strain, strain_high = _strain_baseline(monotony_strain(base_daily))
+    blocks = []
+    for k in range(MAX_AS_OF_DAYS + 1):
+        daily_k = extend_daily(base_daily, k)
+        fit = ctl_atl_tsb(daily_k)[-1]
+        aw = acwr_series(daily_k)[-1]["acwr"]
+        mo = monotony_strain(daily_k)[-1]
+        tsb, strain = fit["tsb"], mo["strain"]
+        blocks.append({
+            "ctl": f"{fit['ctl']:.0f}",
+            "atl": f"{fit['atl']:.0f}",
+            "tsb": f"{tsb:+.0f}",
+            "tsbClass": _tsb_class(tsb),
+            "tsbNote": _tsb_note(tsb),
+            "acwr": f"{aw:.2f}",
+            "acwrClass": _acwr_class(aw),
+            "acwrNote": _acwr_note(aw),
+            "mono": f"{mo['monotony']:.2f}",
+            "monoClass": _mono_class(mo["monotony"]),
+            "strain": f"{strain:.0f}",
+            "strainClass": _strain_class(strain, safe_strain, strain_high),
+            "strainSub": _strain_sub(safe_strain),
+        })
+    return last_date_iso, blocks
+
+
+def _asof_chart_variants(base_daily: list[tuple]) -> tuple[list[str], list[str], list[str]]:
+    """Pre-render the three injury-tab charts for as-of offsets 0..MAX_AS_OF_DAYS.
+
+    Each list holds one full `_ranged` group per offset, rendered on the daily series
+    extended by k zero-load rest days. Offset 0 reproduces the static charts exactly
+    (same renderers), so swapping block 0 back in is a no-op visually.
+    """
+    fit_list: list[str] = []
+    acwr_list: list[str] = []
+    strain_list: list[str] = []
+    for k in range(MAX_AS_OF_DAYS + 1):
+        daily_k = extend_daily(base_daily, k)
+        fit_k = ctl_atl_tsb(daily_k)
+        acwr_k = acwr_series(daily_k)
+        mono_k = monotony_strain(daily_k)
+        fit_list.append(_ranged(DAILY_RANGES, "3M", lambda win, s=fit_k: _line_chart(
+            _last_days(s, win),
+            [("ctl", "#5cb85c", "Fitness (CTL)"),
+             ("atl", "#e0a020", "Fatigue (ATL)"),
+             ("tsb", "#5b8fd9", "Form (TSB)")],
+            yfmt=lambda v: f"{round(v / 5) * 5:g}",
+        )))
+        acwr_list.append(_ranged(DAILY_RANGES, "3M", lambda win, s=acwr_k: _bar_chart(
+            [x["date"].strftime("%#d/%#m") for x in _last_days(s, win)],
+            [round(x["acwr"], 2) for x in _last_days(s, win)], band=(0.8, 1.3),
+            yfmt=lambda v: f"{v:.1f}",
+        )))
+        strain_list.append(_ranged(DAILY_RANGES, "3M", lambda win, s=mono_k: _bar_chart(
+            [x["date"].strftime("%#d/%#m") for x in _last_days(s, win)],
+            [round(x["strain"]) for x in _last_days(s, win)], color="#5b8fd9",
+            yfmt=lambda v: f"{v:.0f}",
+        )))
+    return fit_list, acwr_list, strain_list
+
+
 # ---------------------------------------------------------------------------
 # 4 & 5. Critical-speed model and pace zones (running power-curve analog)
 # ---------------------------------------------------------------------------
@@ -492,6 +636,17 @@ svg{display:block;width:100%;height:auto;}
 .sub-tab{background:#222;border:1px solid #3a3a3a;color:#888;font-size:12px;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;}
 .sub-tab:hover{color:#ccc;}
 .sub-tab.active{color:#eee;border-color:#5cb85c;background:#1b2a1b;}
+.asof-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#1b2330;border:1px solid #2f3b4d;border-radius:8px;padding:8px 12px;margin:0 0 1rem;}
+.asof-title{font-size:12px;font-weight:600;color:#ccd;}
+.asof-label{font-size:11px;color:#9ab;display:inline-flex;align-items:center;gap:6px;}
+.asof-label input{background:#222;border:1px solid #3a3a3a;color:#eee;font-size:11px;padding:3px 6px;border-radius:6px;color-scheme:dark;}
+.asof-tag{font-size:10px;color:#8ab4d8;font-weight:600;}
+.asof-reset{background:#222;border:1px solid #3a3a3a;color:#888;font-size:10px;padding:3px 9px;border-radius:6px;cursor:pointer;}
+.asof-reset:hover{color:#ccc;}
+.asof-step{background:#222;border:1px solid #3a3a3a;color:#bcd;font-size:12px;line-height:1;padding:3px 9px;border-radius:6px;cursor:pointer;font-weight:600;}
+.asof-step:hover:not(:disabled){color:#fff;border-color:#4a5a70;}
+.asof-step:disabled{opacity:.35;cursor:default;}
+.asof-help{flex-basis:100%;font-size:10px;color:#667;margin:2px 0 0;font-style:italic;}
 .ptot-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;}
 .ptot-head .rng-tabs{margin-bottom:0;}
 .ptot-total{font-size:12px;font-weight:600;color:#ccc;margin:0;}
@@ -854,28 +1009,25 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     # Personalized safe-strain ceiling: this athlete's own recent normal, mean + 1 SD of
     # trailing weekly strain, excluding the current week so a live spike doesn't raise its
     # own bar. Strain has no universal cutoff like monotony's 2.0 because it scales with load.
-    strain_hist = [x["strain"] for x in mono[:-7] if x["strain"] > 0][-90:]
-    safe_strain = strain_high = 0.0
-    if len(strain_hist) >= 8:
-        s_mean = sum(strain_hist) / len(strain_hist)
-        s_sd = math.sqrt(sum((x - s_mean) ** 2 for x in strain_hist) / len(strain_hist))
-        safe_strain = s_mean + s_sd
-        strain_high = s_mean + 2 * s_sd
-    if safe_strain > 0:
-        strain_class = ("green" if cur_strain < safe_strain
-                        else "amber" if cur_strain < strain_high else "red")
-        strain_sub = f"safe &lt; {safe_strain:.0f} (your baseline)"
-    else:
-        strain_class = ""
-        strain_sub = "weekly load × monotony"
+    safe_strain, strain_high = _strain_baseline(mono)
+    strain_class = _strain_class(cur_strain, safe_strain, strain_high)
+    strain_sub = _strain_sub(safe_strain)
 
-    tsb_class = "green" if cur_tsb > 5 else ("amber" if cur_tsb > -10 else "red")
-    tsb_note = ("fresh / tapered" if cur_tsb > 5 else
-                "neutral, building" if cur_tsb > -10 else "fatigued, watch recovery")
-    acwr_class = "green" if 0.8 <= cur_acwr <= 1.3 else ("amber" if cur_acwr < 0.8 else "red")
-    acwr_note = ("in the sweet spot" if 0.8 <= cur_acwr <= 1.3 else
-                 "detraining risk (too low)" if cur_acwr < 0.8 else "spike, elevated injury risk")
-    mono_class = "green" if cur_mono < 1.5 else ("amber" if cur_mono < 2.0 else "red")
+    tsb_class = _tsb_class(cur_tsb)
+    tsb_note = _tsb_note(cur_tsb)
+    acwr_class = _acwr_class(cur_acwr)
+    acwr_note = _acwr_note(cur_acwr)
+    mono_class = _mono_class(cur_mono)
+
+    # As-of date preview: rest-day offsets 0..MAX_AS_OF_DAYS for the injury cards.
+    asof_anchor, asof_injury_blocks = as_of_blocks(rows)
+    asof_max = ((daily[-1][0] + timedelta(days=MAX_AS_OF_DAYS)).isoformat()
+                if daily else asof_anchor)
+    asof_injury_json = json.dumps(asof_injury_blocks, ensure_ascii=False)
+    _fit_variants, _acwr_variants, _strain_variants = _asof_chart_variants(daily)
+    asof_fit_charts_json = json.dumps(_fit_variants, ensure_ascii=False)
+    asof_acwr_charts_json = json.dumps(_acwr_variants, ensure_ascii=False)
+    asof_strain_charts_json = json.dumps(_strain_variants, ensure_ascii=False)
 
     # critical speed
     pts = best_effort_points(rows)
@@ -994,15 +1146,24 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
 </div>
 
 <div class="sub-panel" data-sub="injury">
+<div class="asof-bar">
+  <span class="asof-title">Preview after rest days</span>
+  <label class="asof-label">as of <input type="date" id="asof-injury" min="{asof_anchor}" max="{asof_max}" value="{asof_anchor}"></label>
+  <button type="button" class="asof-step" id="asof-injury-dec" title="one fewer rest day">&minus;1</button>
+  <button type="button" class="asof-step" id="asof-injury-inc" title="one more rest day">+1</button>
+  <span class="asof-tag" id="asof-injury-tag">latest data</span>
+  <button type="button" class="asof-reset" id="asof-injury-reset" hidden>reset</button>
+  <p class="asof-help">Injury-risk figures and their charts below decay over rest days up to the next weekly Strava packet.</p>
+</div>
 <div class="section">
   <p class="section-title">Fitness, fatigue and form</p>
   <div class="card">
     <div class="stat-row">
-      <div class="stat"><p class="stat-label">Fitness (CTL)</p><p class="stat-value green">{cur_ctl:.0f}</p><p class="stat-sub">42-day load</p></div>
-      <div class="stat"><p class="stat-label">Fatigue (ATL)</p><p class="stat-value amber">{cur_atl:.0f}</p><p class="stat-sub">7-day load</p></div>
-      <div class="stat"><p class="stat-label">Form (TSB)</p><p class="stat-value {tsb_class}">{cur_tsb:+.0f}</p><p class="stat-sub">{tsb_note}</p></div>
+      <div class="stat"><p class="stat-label">Fitness (CTL)</p><p class="stat-value green" id="inj-ctl">{cur_ctl:.0f}</p><p class="stat-sub">42-day load</p></div>
+      <div class="stat"><p class="stat-label">Fatigue (ATL)</p><p class="stat-value amber" id="inj-atl">{cur_atl:.0f}</p><p class="stat-sub">7-day load</p></div>
+      <div class="stat"><p class="stat-label">Form (TSB)</p><p class="stat-value {tsb_class}" id="inj-tsb">{cur_tsb:+.0f}</p><p class="stat-sub" id="inj-tsb-sub">{tsb_note}</p></div>
     </div>
-    {fitness_chart}
+    <div id="chart-fitness">{fitness_chart}</div>
   </div>
   <p class="note">Load is a pace-based stress score (grade-adjusted distance weighted by intensity vs threshold pace), the heart-rate-free equivalent of Strava's Fitness &amp; Freshness. Form = prior fitness minus prior fatigue: positive means rested, negative means carrying fatigue.</p>
 </div>
@@ -1011,9 +1172,9 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   <p class="section-title">Acute:chronic workload ratio</p>
   <div class="card">
     <div class="stat-row">
-      <div class="stat"><p class="stat-label">Current ACWR</p><p class="stat-value {acwr_class}">{cur_acwr:.2f}</p><p class="stat-sub">{acwr_note}</p></div>
+      <div class="stat"><p class="stat-label">Current ACWR</p><p class="stat-value {acwr_class}" id="inj-acwr">{cur_acwr:.2f}</p><p class="stat-sub" id="inj-acwr-sub">{acwr_note}</p></div>
     </div>
-    {acwr_chart}
+    <div id="chart-acwr">{acwr_chart}</div>
     <p class="note">Shaded band is the 0.8-1.3 sweet spot. Green bars are in range, amber below (detraining), red above (injury-risk spike).</p>
   </div>
 </div>
@@ -1022,10 +1183,10 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   <p class="section-title">Training strain &amp; monotony (Foster)</p>
   <div class="card">
     <div class="stat-row">
-      <div class="stat"><p class="stat-label">Monotony</p><p class="stat-value {mono_class}">{cur_mono:.2f}</p><p class="stat-sub">lower is better; &gt;2 is risky</p></div>
-      <div class="stat"><p class="stat-label">Strain (latest week)</p><p class="stat-value {strain_class}">{cur_strain:.0f}</p><p class="stat-sub">{strain_sub}</p></div>
+      <div class="stat"><p class="stat-label">Monotony</p><p class="stat-value {mono_class}" id="inj-mono">{cur_mono:.2f}</p><p class="stat-sub">lower is better; &gt;2 is risky</p></div>
+      <div class="stat"><p class="stat-label">Strain (latest week)</p><p class="stat-value {strain_class}" id="inj-strain">{cur_strain:.0f}</p><p class="stat-sub">{strain_sub}</p></div>
     </div>
-    {strain_chart}
+    <div id="chart-strain">{strain_chart}</div>
     <p class="note">The chart plots <strong>strain</strong> (weekly load × monotony), not monotony — so its scale runs into the hundreds. High strain with high monotony (same load every day, no easy/hard variation) is the classic overtraining signature.</p>
   </div>
 </div>
@@ -1092,6 +1253,75 @@ function setRange(btn){{
     charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
   }}
 }}
+
+// ── As-of date preview (injury tab) ──────────────────────────────────────────
+// The date picker moves the reference date forward past rest days. Each offset's
+// figures AND charts are precomputed in Python (as_of_blocks / _asof_chart_variants);
+// JS just swaps the block and the chart HTML in (preserving the active range).
+var AS_OF_INJURY = {asof_injury_json};
+var AS_OF_ANCHOR = "{asof_anchor}";
+var CHART_FITNESS = {asof_fit_charts_json};
+var CHART_ACWR = {asof_acwr_charts_json};
+var CHART_STRAIN = {asof_strain_charts_json};
+(function(){{
+  var input = document.getElementById('asof-injury');
+  if(!input || !AS_OF_INJURY.length) return;
+  var tag = document.getElementById('asof-injury-tag');
+  var reset = document.getElementById('asof-injury-reset');
+  var dec = document.getElementById('asof-injury-dec');
+  var inc = document.getElementById('asof-injury-inc');
+  var anchor = new Date(AS_OF_ANCHOR + 'T00:00:00');
+  function iso(dt){{ return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2)+'-'+('0'+dt.getDate()).slice(-2); }}
+  function currentK(){{ var k=Math.round((new Date(input.value+'T00:00:00')-anchor)/86400000); return isNaN(k)?0:k; }}
+  function stepBy(delta){{
+    var k=currentK()+delta;
+    if(k<0) k=0;
+    if(k>AS_OF_INJURY.length-1) k=AS_OF_INJURY.length-1;
+    input.value=iso(new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()+k));
+    apply();
+  }}
+  function setText(id, txt){{ var el=document.getElementById(id); if(el) el.textContent=txt; }}
+  function setStat(id, txt, cls){{ var el=document.getElementById(id); if(el){{ el.textContent=txt; el.className='stat-value '+cls; }} }}
+  function swapChart(id, html){{
+    var c = document.getElementById(id);
+    if(!c) return;
+    var active = c.querySelector('.rng-btn.active');
+    var range = active ? active.getAttribute('data-range') : null;
+    c.innerHTML = html;
+    if(range){{
+      var btns = c.querySelectorAll('.rng-btn');
+      for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i].getAttribute('data-range')===range); }}
+      var charts = c.querySelectorAll('.rng-chart');
+      for(var j=0;j<charts.length;j++){{ charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none'; }}
+    }}
+  }}
+  function apply(){{
+    var d = new Date(input.value + 'T00:00:00');
+    var k = Math.round((d - anchor)/86400000);
+    if(isNaN(k) || k<0) k=0;
+    if(k>AS_OF_INJURY.length-1) k=AS_OF_INJURY.length-1;
+    var b = AS_OF_INJURY[k];
+    setText('inj-ctl', b.ctl);
+    setText('inj-atl', b.atl);
+    setStat('inj-tsb', b.tsb, b.tsbClass);
+    setText('inj-tsb-sub', b.tsbNote);
+    setStat('inj-acwr', b.acwr, b.acwrClass);
+    setText('inj-acwr-sub', b.acwrNote);
+    setStat('inj-mono', b.mono, b.monoClass);
+    setStat('inj-strain', b.strain, b.strainClass);
+    if(typeof CHART_FITNESS!=='undefined'){{ swapChart('chart-fitness', CHART_FITNESS[k]); swapChart('chart-acwr', CHART_ACWR[k]); swapChart('chart-strain', CHART_STRAIN[k]); }}
+    tag.textContent = k===0 ? 'latest data' : (k===1 ? '1 rest day ahead' : k+' rest days ahead');
+    reset.hidden = (k===0);
+    if(dec) dec.disabled = (k<=0);
+    if(inc) inc.disabled = (k>=AS_OF_INJURY.length-1);
+  }}
+  input.addEventListener('change', apply);
+  input.addEventListener('input', apply);
+  reset.addEventListener('click', function(){{ input.value = AS_OF_ANCHOR; apply(); }});
+  if(dec) dec.addEventListener('click', function(){{ stepBy(-1); }});
+  if(inc) inc.addEventListener('click', function(){{ stepBy(1); }});
+  apply();
+}})();
 </script>
 </body>
 </html>
