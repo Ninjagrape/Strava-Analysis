@@ -1,6 +1,6 @@
 ---
 name: run-and-regenerate
-description: How to run the Strava-Analysis pipeline and regenerate exactly the right outputs after a change. Covers all three invocations (python main.py, python strava_compile.py with its 9 CLI flags, python generate_hub.py which takes env vars only), the STRAVA_PROFILE and STRAVA_SEG_DEBUG toggles, expected runtimes, and the "I changed X, so run Y" decision table. Use when unsure which command to run after editing code, when a change is not showing up in the browser, when deciding whether --rebuild or a cache delete is needed, when the pipeline seems slow and you need to attribute the time to a phase, or when running the project for the first time.
+description: How to run the Strava-Analysis pipeline and regenerate exactly the right outputs after a change, including the "I changed X, so run Y" decision table. Use when unsure which command to run after editing code, when a change is not showing up in the browser, when deciding whether --rebuild or a cache delete is needed, when the pipeline seems slow and you need to attribute the time to a phase, or when running the project for the first time.
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 

@@ -1,6 +1,6 @@
 ---
 name: compile-and-streams
-description: Stage 1 of the Strava-Analysis pipeline - strava_compile.py parses a Strava bulk export (activities.csv + .fit.gz files) into the enriched CSV in csv_data/. Use when raw run data is wrong or missing (distance, elevation, HR, cadence, km splits, best efforts, interval reps), when net_elev reads 0 or climbs show as flat / 0% grade, when a reader crashes with "_csv.Error: field larger than field limit", when new runs do not appear after downloading a fresh export, when compile is slow, when changing stream or polyline density constants, or when reasoning about the prior-CSV parse cache and the --rebuild flag.
+description: Stage 1 of the Strava-Analysis pipeline - strava_compile.py parses a Strava bulk export (activities.csv + .fit.gz files) into the enriched CSV in csv_data/. Use when raw run data is wrong or missing (distance, elevation, HR, cadence, km splits, best efforts, interval reps), when net_elev reads 0 or climbs show as flat / 0% grade, when a reader crashes with "_csv.Error: field larger than field limit", when new runs do not appear after downloading a fresh export, when compile is slow, or when changing stream/polyline density constants or reasoning about the prior-CSV parse cache and --rebuild.
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 

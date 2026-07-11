@@ -1,6 +1,6 @@
 ---
 name: project-map
-description: Orientation map for the Strava-Analysis repo. Explains the two-stage pipeline (strava_compile.py builds an enriched CSV from a Strava export, generate_hub.py renders dashboards/TrainingHub.html), which module owns what, where inputs/caches/outputs live, and project jargon (effort, corridor, chain, loop, anchor, medoid, geo_key, params token). Use when starting any task in this repo with no prior context, when unsure which file owns a behaviour, when a term like "corridor" or "geo_key" is unclear, when deciding which sibling skill to load, or when a symptom cannot yet be attributed to a stage (compile vs hub vs segments).
+description: Orientation map for the Strava-Analysis repo, its two-stage pipeline, module ownership, and project jargon. Use when starting any task in this repo with no prior context, when unsure which file owns a behaviour, when a term like "corridor" or "geo_key" is unclear, when deciding which sibling skill to load, or when a symptom cannot yet be attributed to a stage (compile vs hub vs segments).
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 

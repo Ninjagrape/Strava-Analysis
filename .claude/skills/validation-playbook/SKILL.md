@@ -1,6 +1,6 @@
 ---
 name: validation-playbook
-description: Manual validation playbook for the Strava-Analysis repo, which has no automated tests. Encodes the departing engineer's regenerate-compare-eyeball procedure that proves a change broke nothing. Use when verifying, checking, or testing a change before declaring it done, when running regression checks after editing segment detection, compile/streams, hub UI, or analytics code, when confirming two builds are deterministic or byte-identical, or when deciding which validation steps a given change type requires. Covers durable invariants (deterministic segment sets, stream elevation density ~1.0, clean pipeline exit), snapshot baselines with re-derivation snippets (segment count, Colonnade loop efforts, CSV shape, runtimes, HTML size), per-change-type done checklists, byte-diffing TrainingHub.html, and comparing against Strava's website as the external oracle.
+description: Manual validation playbook for the Strava-Analysis repo, which has no automated tests. Encodes the departing engineer's regenerate-compare-eyeball procedure that proves a change broke nothing. Use when verifying, checking, or testing a change before declaring it done, when running regression checks after editing segment detection, compile/streams, hub UI, or analytics code, when confirming two builds are deterministic or byte-identical, or when deciding which validation steps a given change type requires.
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 
@@ -59,7 +59,8 @@ All measured 2026-07-02 on 79 runs. Re-derive before relying on any of them.
 | Colonnade loop | `The Colonnade loop (Waverton)`, type loop, 392 m, **29** efforts | snippet A below |
 | Stream elevation density | exactly 1.0 on the latest run | snippet B below |
 | Pipeline runtime | ~4.5 s total (compile ~2.8 s, hub ~1.7 s) | `python main.py --profile`, read the `[time]` lines |
-| Hub HTML size | ~9.0 MB | `ls -l dashboards/TrainingHub.html` (or the `[profile] HTML size` line) |
+| Hub HTML size | ~11.5 MB (as of 2026-07-11, 85 runs; was ~9.0 MB on 2026-07-02 at 79 runs — the heatmap revamp that day also re-based this number: heat points now serialise at 5 dp, so size moved for reasons beyond run growth) | `ls -l dashboards/TrainingHub.html` (or the `[profile] HTML size` line) |
+| Heatmap clusters / points | 1 cluster, 39,264 points (as of 2026-07-11, 85 runs; heatmap phase ~0.14 s). Cluster count grows only when runs exist > `HEAT_CLUSTER_KM` (75 km) apart; a new remote cluster also adds one ~1.1 s Nominatim call on its first online build | `STRAVA_PROFILE=1 python generate_hub.py`, read the `[profile] heatmap` line |
 
 **Snippet A, segment count + Colonnade (run from repo root, bash):**
 
@@ -140,7 +141,7 @@ for c in ("best_5k_s", "best_10k_s"):
 PY
 ```
 2. After the change, rerun the same dump and diff. Series must be unchanged except where your formula change intentionally moves them, and moved values must stay plausible (invariant c).
-3. Remember `minetti_cost`/`ga_time` are duplicated in BOTH lib files, a fix applied to one must be applied to the other, and both dumps must agree.
+3. `minetti_cost`/`ga_time`/`COST_FLAT` live once in `lib/grade.py` (shared by both lib modules since 2026-07-08); a change there must move both dumps identically.
 
 **5. Pure refactor (no behaviour change intended)**
 1. Build the artifact BEFORE the refactor and record its hash (PowerShell: `Get-FileHash dashboards\TrainingHub.html`).

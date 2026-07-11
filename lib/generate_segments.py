@@ -1773,17 +1773,22 @@ def _key_centroid(key):
     return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
 
 
-def _reverse_geocode(lat, lon, zoom=18, memo=None):
+def _reverse_geocode(lat, lon, zoom=18, memo=None, lang=None):
     """Reverse-geocode one point. `memo` (a per-build dict) collapses points that round to the
     same ~11 m spot so overlapping segments don't re-query the same location, and the politeness
-    sleep fires only on a real network call, not on a memo hit."""
-    mk = (round(lat, GEO_MEMO_DP), round(lon, GEO_MEMO_DP)) if memo is not None else None
+    sleep fires only on a real network call, not on a memo hit. `lang` sets accept-language so
+    callers wanting Latin-script labels (the hub's hotspot names) aren't at the mercy of the
+    place's local language; segment naming leaves it unset, keeping its results unchanged."""
+    mk = (round(lat, GEO_MEMO_DP), round(lon, GEO_MEMO_DP), lang) if memo is not None else None
     if mk is not None and mk in memo:
         return memo[mk]
-    params = urllib.parse.urlencode({
+    query = {
         "format": "jsonv2", "lat": f"{lat:.6f}", "lon": f"{lon:.6f}",
         "zoom": zoom, "addressdetails": 1,
-    })
+    }
+    if lang:
+        query["accept-language"] = lang
+    params = urllib.parse.urlencode(query)
     req = urllib.request.Request(f"{NOMINATIM_URL}?{params}",
                                  headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=10) as resp:

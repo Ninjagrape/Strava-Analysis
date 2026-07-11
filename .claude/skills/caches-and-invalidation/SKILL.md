@@ -1,6 +1,6 @@
 ---
 name: caches-and-invalidation
-description: Cache inventory and invalidation rules for the Strava-Analysis repo. Use when output did not change after a code or data edit, when deciding which cache file to delete (or whether deleting is safe), when segments look stale or a rebuild will not trigger, when a cache JSON is corrupt or hand-edited, or when changing constants and unsure what to invalidate. Covers all five caches - cache/segments_cache.json (keyed on _runs_signature), segment_geocode_cache.json, segment_match_cache.json, segment_stars.json, and the enriched csv_data CSV which is itself the .fit parse cache - plus the master change-type to required-action table and _prune_cache behaviour.
+description: Cache inventory and invalidation rules for the Strava-Analysis repo. Use when output did not change after a code or data edit, when deciding which cache file to delete (or whether deleting is safe), when segments look stale or a rebuild will not trigger, when a cache JSON is corrupt or hand-edited, or when changing constants and unsure what to invalidate.
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 
@@ -22,7 +22,7 @@ Route by symptom instead:
 
 ## Mental model
 
-There are five caches. Four are JSON files under `cache/` owned by `lib/generate_segments.py`; the fifth is the enriched CSV itself, owned by `strava_compile.py`. None of them hash source code, every one can silently serve stale results after a code edit.
+There are six caches. Five are JSON files under `cache/`; four are owned by `lib/generate_segments.py` and one (`heatmap_geocode_cache.json`, new 2026-07-11) is owned by `generate_hub.py` itself. The sixth is the enriched CSV, owned by `strava_compile.py`. None of them hash source code, every one can silently serve stale results after a code edit.
 
 ## Key files and functions
 
@@ -34,7 +34,8 @@ Path constants (as of 2026-07; grep: `grep -n "CACHE_DIR\|SEG_CACHE\|GEO_CACHE\|
 | 2 | `cache/segment_geocode_cache.json` (`GEO_CACHE`) | `_geo_key` per segment (3 "lat,lon" points at 4 dp ≈ 11 m, joined by `\|`) | never automatically; only pruning and deletion | value = name string; tolerant reuse within `NAME_REUSE_M = 40.0` m |
 | 3 | `cache/segment_match_cache.json` (`MATCH_CACHE`) | `_geo_key` | never automatically; only pruning and deletion | value = snapped `[lat,lon]` list, or `[]` = cached snap FAILURE, reused too |
 | 4 | `cache/segment_stars.json` (`STARS_CACHE`) | list of user-starred geo_keys | n/a, read fresh every build by `_apply_stars`, even on a segments-cache hit | may be absent until something is starred (absent as of 2026-07-02) |
-| 5 | `csv_data/YYYY-MM-DD_strava.csv` | activity id (`Filename` column) via `load_prior_fit_cache` in `strava_compile.py` | `--rebuild` only | the enriched CSV IS the .fit parse cache, and as of 2026-07-08 it is LIVE: `strava_compile.py` now raises `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))` at module top, so `load_prior_fit_cache` reads the prior CSV successfully and reuses its rows verbatim (a normal compile reports "Reused 79 cached, parsed 0 new"). `--rebuild` is genuinely mandatory after parse-logic or stream/polyline-density changes, old rows otherwise keep old values silently. Full story: `.claude/skills/compile-and-streams/SKILL.md`. |
+| 5 | `cache/heatmap_geocode_cache.json` (`HEAT_GEO_CACHE`, new 2026-07-11) | `"lat,lon"` string at 4 dp (~11 m) | never automatically; only deletion | owned by `generate_hub.py`, not `lib/generate_segments.py`; value = hotspot name string (e.g. `"Tokyo"`); tolerant nearest-entry reuse within `HEAT_NAME_REUSE_KM = 25.0` km (mirrors `NAME_REUSE_M`, see external-apis). Geocode failures are NOT cached (next online build heals, same pattern as segment naming). Costs ~1.1 s per never-before-seen hotspot on the first online build only. With a single cluster (current real-data state, one hotspot = "Home", never geocoded) this file is never created. Safe to delete any time; worst case is a handful of re-geocodes on the next build. |
+| 6 | `csv_data/YYYY-MM-DD_strava.csv` | activity id (`Filename` column) via `load_prior_fit_cache` in `strava_compile.py` | `--rebuild` only | the enriched CSV IS the .fit parse cache, and as of 2026-07-08 it is LIVE: `strava_compile.py` now raises `csv.field_size_limit(min(sys.maxsize, 2**31 - 1))` at module top, so `load_prior_fit_cache` reads the prior CSV successfully and reuses its rows verbatim (a normal compile reports "Reused 79 cached, parsed 0 new"). `--rebuild` is genuinely mandatory after parse-logic or stream/polyline-density changes, old rows otherwise keep old values silently. Full story: `.claude/skills/compile-and-streams/SKILL.md`. |
 
 **What `_runs_signature` hashes** (verbatim body in `lib/generate_segments.py`, grep: `grep -n "_runs_signature" lib/generate_segments.py`): per run, sorted by date, the string `date_iso|dist_km|len(gps_polyline)` plus the polyline's first and last points; then one "params token" string interpolating detection constants, version tokens (`refine2`, `salvageclimb1`, ...), and `load_config().segment_anchors`. It does **NOT** hash `dist_stream` contents, elevation, or any source code. This is THE stale-cache trap: detection reads `dist_stream` (`_geo_track`), but the signature only sees `gps_polyline` length and endpoints.
 
@@ -53,6 +54,7 @@ Path constants (as of 2026-07; grep: `grep -n "CACHE_DIR\|SEG_CACHE\|GEO_CACHE\|
 | Added new runs (fresh Strava export) | Nothing. Compile reuses cached rows for existing activity ids and parses only the new .fit files (parse cache is live, see the inventory), and the new run rows change the signature automatically. |
 | `segment_anchors` in `cache/config.json` | Nothing. Verified: the params token interpolates `load_config().segment_anchors`, so the signature changes and a rebuild follows automatically. |
 | Starred/unstarred a segment | Nothing. `_apply_stars` reads `segment_stars.json` fresh on every build, including cache hits. |
+| Heatmap clustering/naming logic (`_cluster_runs`, `_hotspot_name`, `HEAT_CLUSTER_KM`, `HEAT_NAME_REUSE_KM`, `HEAT_BUCKET_DAYS` in `generate_hub.py`) | Nothing required for correctness: clusters and buckets are recomputed fresh every build (not cached). Delete `cache/heatmap_geocode_cache.json` only if you want stale/wrong hotspot names re-geocoded; it is never invalidated automatically by any code change (verified 2026-07-11, same "no code hash" pattern as the segment geocode cache). |
 
 Wherever a row says "force a segments rebuild" or "delete `cache/segments_cache.json`", the cleaner one-shot equivalent is `STRAVA_SEG_REBUILD=1 python generate_hub.py` (or `python main.py --rebuild-segments`): it re-detects regardless of signature and re-saves the cache, no file deletion or token bump needed. The token bump is still the right move when you want the invalidation to be durable across checkouts (a re-save keeps the old signature, so a later run without the flag on a machine with a stale cache would still hit it). `--rebuild-all` does the CSV re-parse and the segment rebuild together.
 
@@ -73,7 +75,7 @@ Wherever a row says "force a segments rebuild" or "delete `cache/segments_cache.
 
 ### 3. Corrupt or hand-edited cache file
 
-`_load_json` returns `None` on `FileNotFoundError` or `JSONDecodeError`, which every caller treats as a cold cache, so any `cache/segment*.json` (except `segment_stars.json`, which is user data) is safe to delete or truncate; it regenerates on the next `python generate_hub.py`. A corrupt `segments_cache.json` just means one detection re-run. A corrupt geocode/match cache means a network rebuild (see cost above). `_save_json` degrades gracefully too: a write failure prints `Segments: could not write ...` and the build still returns.
+`_load_json` returns `None` on `FileNotFoundError` or `JSONDecodeError`, which every caller treats as a cold cache, so any `cache/segment*.json` (except `segment_stars.json`, which is user data) is safe to delete or truncate; it regenerates on the next `python generate_hub.py`. A corrupt `segments_cache.json` just means one detection re-run. A corrupt geocode/match cache means a network rebuild (see cost above). `_save_json` degrades gracefully too: a write failure prints `Segments: could not write ...` and the build still returns. `cache/heatmap_geocode_cache.json` follows the same `_load_json`/`_save_json` pattern (reused, not reimplemented): a corrupt or missing file just means the next build's hotspots re-geocode (~1.1 s each) instead of hitting cache.
 
 ## Verification
 

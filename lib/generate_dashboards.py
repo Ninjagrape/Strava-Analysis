@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import Race, load_config
+from localtime import parse_date
 
 # Enriched-CSV stream fields (fit_distance_stream) can exceed the default
 # 128 KB per-field limit at higher sampling density.
@@ -59,12 +60,13 @@ def fmt_time(s: float) -> str:
     return f"{m}:{sec:02d}"
 
 
-def fmt_date(date_str: str) -> str:
-    try:
-        dt = datetime.strptime(date_str, "%b %d, %Y, %I:%M:%S %p")
-        return dt.strftime("%b %-d")
-    except ValueError:
-        return date_str[:6]
+def fmt_date(row: dict) -> str:
+    # Localize to the run's own timezone so a UTC-morning run keeps its local
+    # calendar day (Strava records UTC); mirrors the run-date fix in analytics.
+    dt = parse_date(row)
+    if dt is None:
+        return (row.get("Activity Date", "") or "")[:12]
+    return f"{dt.day} {dt:%b %Y}"
 
 
 def fmt_pace_from_s_per_km(s_per_km: float) -> str:
@@ -211,7 +213,7 @@ def top3_for_band(
             "ga_pace":     fmt_pace(ga_s, target_m),
             "time_str":    fmt_time(s),
             "activity":    r.get("Activity Name", "").strip(),
-            "date":        fmt_date(r.get("Activity Date", "")),
+            "date":        fmt_date(r),
             "dist_km":     dist_km,
             "gain":        gain,
             "is_interval": is_interval(r),

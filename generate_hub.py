@@ -35,7 +35,10 @@ from generate_analytics import (
     robust_threshold_mps,
     MAX_AS_OF_DAYS, extend_daily, _tsb_class,
 )
-from generate_segments import build_segments, body_segments, SEGMENTS_CSS
+from generate_segments import (
+    build_segments, body_segments, SEGMENTS_CSS,
+    _reverse_geocode, _load_json, _save_json, CACHE_DIR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +58,45 @@ BEST_EFFORT_DEFS = [
 ]
 
 
+def _best_effort_span(dist_stream: list[dict], target_m: float) -> tuple[float, float] | None:
+    """Recover the start/end distance (km) of a run's fastest window for target_m.
+
+    Mirrors the sliding window in strava_compile._best_efforts, but runs over the
+    persisted distance stream (each point carries "d" in km and "t" in elapsed
+    seconds) so the effort's location can be highlighted on the hub map and charts
+    without storing it at compile time. Returns (start_km, end_km) for the min-time
+    window covering at least target_m, or None if the stream can't cover it.
+    """
+    n = len(dist_stream)
+    if n < 2:
+        return None
+    target_km = target_m / 1000.0
+    best_t: float | None = None
+    best_span: tuple[float, float] | None = None
+    left = 0
+    for right in range(1, n):
+        while left < right:
+            span_km = dist_stream[right].get("d", 0) - dist_stream[left].get("d", 0)
+            if span_km >= target_km:
+                span_t = dist_stream[right].get("t", 0) - dist_stream[left].get("t", 0)
+                if span_t > 0 and (best_t is None or span_t < best_t):
+                    best_t = span_t
+                    best_span = (dist_stream[left].get("d", 0), dist_stream[right].get("d", 0))
+                left += 1
+            else:
+                break
+    return best_span
+
+
 # ---------------------------------------------------------------------------
 # Heatmap helpers
 # ---------------------------------------------------------------------------
+
+HEAT_CLUSTER_KM    = 75.0   # single-link centroid distance merging runs into one hotspot
+HEAT_NAME_REUSE_KM = 25.0   # reuse a cached hotspot name whose centroid is within this
+HEAT_BUCKET_DAYS   = (90, 365)  # time-filter bucket edges, anchored to latest run date
+HEAT_GEO_CACHE     = CACHE_DIR / "heatmap_geocode_cache.json"
+
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
@@ -91,47 +130,193 @@ def _interpolate_polyline(poly: list, step_m: float = 12.0) -> list:
     return result
 
 
-def _heatmap_points(runs: list[dict], max_dist_km: float = 150.0) -> list:
-    """Build heatmap points where each run contributes at most one point per ~100 m grid cell.
-    This makes density proportional to distinct-run frequency, not raw GPS point count,
-    so oval laps don't inflate an area to match a frequently-run local route."""
-    centroids = []
-    for r in runs:
-        poly = r.get("gps_polyline", [])
-        if len(poly) >= 5:
-            lat_c = sum(p[0] for p in poly) / len(poly)
-            lon_c = sum(p[1] for p in poly) / len(poly)
-            centroids.append((lat_c, lon_c))
+def _run_centroid(poly: list) -> tuple[float, float] | None:
+    """Mean (lat, lon) of a run's polyline, or None below the heatmap eligibility floor
+    (today's rule: need at least 5 points to trust a centroid)."""
+    if len(poly) < 5:
+        return None
+    return (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
 
-    if not centroids:
+
+def _cluster_runs(runs: list[dict]) -> list[list[dict]]:
+    """Single-link union-find over run centroids at HEAT_CLUSTER_KM. Connectivity depends only
+    on which centroid pairs fall within the threshold, not on iteration order, so the resulting
+    groups are deterministic across builds. Returns groups ordered home-first: most runs, ties
+    broken by total km then by smallest rounded centroid (see design decision 2)."""
+    members = []
+    for r in runs:
+        c = _run_centroid(r.get("gps_polyline", []))
+        if c is not None:
+            members.append({"run": r, "lat": c[0], "lon": c[1]})
+
+    n = len(members)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _haversine_km(members[i]["lat"], members[i]["lon"],
+                              members[j]["lat"], members[j]["lon"]) <= HEAT_CLUSTER_KM:
+                union(i, j)
+
+    groups: dict[int, list[dict]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(members[i])
+
+    def sort_key(group: list[dict]) -> tuple:
+        total_km = sum(m["run"]["dist_km"] for m in group)
+        cen_lat = round(sum(m["lat"] for m in group) / len(group), 4)
+        cen_lon = round(sum(m["lon"] for m in group) / len(group), 4)
+        return (-len(group), -total_km, cen_lat, cen_lon)
+
+    return sorted(groups.values(), key=sort_key)
+
+
+_COMPASS_8 = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def _bearing_label(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
+    """8-way compass direction of the initial great-circle bearing from point 1 to point 2."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlon = math.radians(lon2 - lon1)
+    x = math.sin(dlon) * math.cos(phi2)
+    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+    brg = math.degrees(math.atan2(x, y)) % 360
+    return _COMPASS_8[int((brg + 22.5) // 45) % 8]
+
+
+def _hotspot_name(lat: float, lon: float, cache: dict) -> str | None:
+    """Name a hotspot centroid: reuse a cached name within HEAT_NAME_REUSE_KM (drift-tolerant,
+    mirrors generate_segments' NAME_REUSE_M pattern), else query Nominatim at metro zoom in
+    English (zoom=8 names the recognisable region — "Tokyo", not its ward; lang="en" avoids
+    local-script labels the chips can't be skimmed in).
+    _reverse_geocode raises on network failure, so a miss returns None rather than crashing the
+    build; the caller falls back to a bearing label and nothing is cached for the miss, so the
+    next online build heals it. New names are written into `cache` (caller persists it)."""
+    best_name, best_km = None, HEAT_NAME_REUSE_KM
+    for key, name in cache.items():
+        try:
+            clat, clon = (float(x) for x in key.split(","))
+        except ValueError:
+            continue
+        d = _haversine_km(lat, lon, clat, clon)
+        if d <= best_km:
+            best_name, best_km = name, d
+    if best_name is not None:
+        return best_name
+
+    try:
+        data = _reverse_geocode(lat, lon, zoom=8, lang="en")
+    except Exception:
+        return None
+    addr = data.get("address", {}) or {}
+    for field in ("city", "town", "village", "municipality", "province",
+                  "county", "state_district", "state", "country"):
+        name = addr.get(field)
+        if name:
+            cache[f"{lat:.4f},{lon:.4f}"] = name
+            return name
+    return None
+
+
+def _heatmap_clusters(runs: list[dict]) -> list[dict]:
+    """Cluster every eligible run into named hotspots for the Overview heatmap — no run is
+    ever dropped (unlike the old max_dist_km cutoff). Cluster 0 is always "Home" (the largest
+    cluster); others get a geocoded name or a bearing-from-home fallback. Each cluster carries
+    three disjoint point buckets (b90/b365/bold) anchored to the latest eligible run date, so
+    the JS time filter needs no per-point dates and stays deterministic (no wall clock)."""
+    groups = _cluster_runs(runs)
+    if not groups:
         return []
 
-    lats = sorted(c[0] for c in centroids)
-    lons = sorted(c[1] for c in centroids)
-    med_lat = lats[len(lats) // 2]
-    med_lon = lons[len(lons) // 2]
+    anchor = max(
+        datetime.strptime(m["run"]["date_iso"], "%Y-%m-%d")
+        for group in groups for m in group
+    )
+    home_lat = sum(m["lat"] for m in groups[0]) / len(groups[0])
+    home_lon = sum(m["lon"] for m in groups[0]) / len(groups[0])
 
-    points = []
-    for r in runs:
-        poly = r.get("gps_polyline", [])
-        if len(poly) < 5:
-            continue
-        lat_c = sum(p[0] for p in poly) / len(poly)
-        lon_c = sum(p[1] for p in poly) / len(poly)
-        if _haversine_km(med_lat, med_lon, lat_c, lon_c) > max_dist_km:
-            continue
-        # Interpolate to fill gaps (250-pt simplification leaves ~20 m spacing).
-        dense = _interpolate_polyline(poly, step_m=12.0)
-        # Deduplicate: each ~11 m grid cell (4 decimal places) counts once per run.
-        # Fine enough for smooth rendering; coarse enough to collapse repeated laps.
-        seen: set = set()
-        for p in dense:
-            key = (round(p[0], 4), round(p[1], 4))
-            if key not in seen:
-                seen.add(key)
-                points.append(p)
+    cache = _load_json(HEAT_GEO_CACHE) or {}
+    dirty = False
 
-    return points
+    clusters = []
+    for gi, group in enumerate(groups):
+        b90: list = []
+        b365: list = []
+        bold: list = []
+        run_dates = []
+        for m in group:
+            r = m["run"]
+            run_dates.append(r["date_iso"])
+            days_ago = (anchor - datetime.strptime(r["date_iso"], "%Y-%m-%d")).days
+            bucket = b90 if days_ago <= HEAT_BUCKET_DAYS[0] \
+                else b365 if days_ago <= HEAT_BUCKET_DAYS[1] else bold
+            # Interpolate to fill gaps (250-pt simplification leaves ~20 m spacing), then
+            # deduplicate per run: each ~11 m grid cell (4 dp) counts once, same as before.
+            dense = _interpolate_polyline(r.get("gps_polyline", []), step_m=12.0)
+            seen: set = set()
+            for p in dense:
+                key = (round(p[0], 4), round(p[1], 4))
+                if key not in seen:
+                    seen.add(key)
+                    bucket.append([round(p[0], 5), round(p[1], 5)])
+
+        cen_lat = round(sum(m["lat"] for m in group) / len(group), 5)
+        cen_lon = round(sum(m["lon"] for m in group) / len(group), 5)
+        all_pts = b90 + b365 + bold
+        bounds = [
+            [round(min(p[0] for p in all_pts), 5), round(min(p[1] for p in all_pts), 5)],
+            [round(max(p[0] for p in all_pts), 5), round(max(p[1] for p in all_pts), 5)],
+        ]
+
+        min_dt = datetime.strptime(min(run_dates), "%Y-%m-%d")
+        max_dt = datetime.strptime(max(run_dates), "%Y-%m-%d")
+        if (min_dt.year, min_dt.month) == (max_dt.year, max_dt.month):
+            when = min_dt.strftime("%b %Y")
+        else:
+            when = f"{min_dt.strftime('%b %Y')} – {max_dt.strftime('%b %Y')}"
+
+        is_home = gi == 0
+        if is_home:
+            name = "Home"
+        else:
+            before = len(cache)
+            name = _hotspot_name(cen_lat, cen_lon, cache)
+            if len(cache) > before:
+                dirty = True
+            if name is None:
+                dist = _haversine_km(home_lat, home_lon, cen_lat, cen_lon)
+                compass = _bearing_label(home_lat, home_lon, cen_lat, cen_lon)
+                name = f"{round(dist):,} km {compass}"
+
+        clusters.append({
+            "name":   name,
+            "home":   1 if is_home else 0,
+            "lat":    cen_lat,
+            "lon":    cen_lon,
+            "bounds": bounds,
+            "runs":   len(group),
+            "km":     round(sum(m["run"]["dist_km"] for m in group), 1),
+            "when":   when,
+            "b90":    b90,
+            "b365":   b365,
+            "bold":   bold,
+        })
+
+    if dirty:
+        _save_json(HEAT_GEO_CACHE, cache)
+
+    return clusters
 
 
 # ---------------------------------------------------------------------------
@@ -617,11 +802,18 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         for label, col, dist_be in BEST_EFFORT_DEFS:
             s = num(row, col)
             if s and s > 0:
-                best_efforts.append({
+                effort = {
                     "label": label,
                     "time":  fmt_time(s),
                     "pace":  fmt_pace(s, dist_be),
-                })
+                }
+                # Locate the effort within this run so the hub can highlight it on
+                # the map and charts; omitted when the stream can't cover the target.
+                span = _best_effort_span(dist_stream, dist_be)
+                if span:
+                    effort["start_km"] = round(span[0], 3)
+                    effort["end_km"] = round(span[1], 3)
+                best_efforts.append(effort)
 
         runs.append({
             "id":          len(runs),
@@ -941,6 +1133,20 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .ov-rec-advice{font-size:12px;color:#bbb;line-height:1.55;margin:0 0 8px}
 .ov-rec-foot{font-size:10px;color:#555;margin:0;line-height:1.5}
 
+/* Heatmap toolbar: hotspot chips + time-range filter above the map */
+.heat-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.heat-chips{display:flex;flex-wrap:wrap;gap:6px}
+.heat-chip{background:#222;border:1px solid #3a3a3a;color:#bbb;font-size:11px;
+  padding:3px 10px;border-radius:12px;cursor:pointer;transition:color .1s,border-color .1s}
+.heat-chip:hover{color:#eee;border-color:#5cb85c}
+.heat-chip.home{border-color:#5cb85c;color:#5cb85c}
+.heat-range{display:flex;gap:4px}
+/* Directional markers pinned to the map viewport edge, pointing at off-screen hotspots */
+.heat-edge{position:absolute;z-index:900;display:flex;align-items:center;gap:4px;
+  background:#1b2a1b;border:1px solid #5cb85c;color:#cfe8cf;font-size:10px;
+  padding:2px 7px;border-radius:10px;cursor:pointer;transform:translate(-50%,-50%);white-space:nowrap}
+.heat-edge .he-arrow{display:inline-block;font-size:9px;line-height:1}
+
 /* Runs panel */
 #panel-runs{height:calc(100vh - 44px);overflow:hidden}
 .runs-layout{display:flex;height:100%}
@@ -1033,6 +1239,9 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .rd-table td{padding:6px 8px;border-bottom:1px solid #1e1e1e;color:#bbb}
 .rd-table td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}
 .rd-table tr:last-child td{border-bottom:none}
+.be-row{cursor:pointer}
+.be-row:hover td{background:rgba(255,213,74,0.12)}
+.be-row:hover td:first-child{box-shadow:inset 3px 0 0 #ffd54a}
 .pace-cell{color:#eee;font-weight:500}
 .best-km{color:#5cb85c !important}
 .leaflet-container,.leaflet-container *,.leaflet-container *::before,.leaflet-container *::after{box-sizing:content-box}
@@ -1093,12 +1302,17 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 
 HUB_JS = r"""
 var overviewMap = null;
+var overviewHeat = null;
+var heatFilter = 'all';
+var heatEdgeEls = [];
 var currentRunMap = null;
 var selectedRunId = null;
 // The expanded-analysis overlay owns the only map the chart cursor links to.
 var overlayMap = null;
 var overlayRunId = null;
 var activeCursorMarker = null;   // moving dot that tracks the over-distance chart cursor
+var effortHighlightLine = null;  // gold route overlay for the hovered best effort
+var activeEffortSpan = null;     // {startKm, endKm} kept so a metric switch re-bands the chart
 
 function initRunMap(r) {
   if (currentRunMap) { currentRunMap.remove(); currentRunMap = null; }
@@ -1141,7 +1355,7 @@ function openRunOverlay(runId) {
       m.label + '</button>';
   }).join('');
   document.getElementById('ro-splits').innerHTML =
-    renderKmSplits(r) + renderBestEfforts(r.best_efforts) + renderRunSegments(r);
+    renderKmSplits(r) + renderBestEfforts(r.best_efforts, {interactive: true}) + renderRunSegments(r);
 
   // Start each overlay at the full-run view rather than inheriting the last
   // run's zoom window (the holder is reused across runs).
@@ -1182,6 +1396,8 @@ function closeRunOverlay() {
   document.getElementById('run-overlay').classList.remove('open');
   if (overlayMap) { overlayMap.remove(); overlayMap = null; }
   activeCursorMarker = null;
+  effortHighlightLine = null;
+  activeEffortSpan = null;
   overlayRunId = null;
 }
 
@@ -1202,6 +1418,68 @@ function moveRunCursor(lat, lon) {
 
 function hideRunCursor() {
   if (activeCursorMarker) activeCursorMarker.setStyle({opacity: 0, fillOpacity: 0});
+}
+
+// ── Best-effort span highlighting ───────────────────────────────────────────
+// Hovering a best-effort row shows where in the run that effort was run: a gold
+// line over the route on the overlay map, and a gold band over the matching
+// distance range on whichever metric chart is showing.
+var EFFORT_HL_COLOR = '#ffd54a';
+
+function highlightEffortSpan(rowEl) {
+  var startKm = parseFloat(rowEl.getAttribute('data-be-start'));
+  var endKm = parseFloat(rowEl.getAttribute('data-be-end'));
+  if (isNaN(startKm) || isNaN(endKm)) return;
+  activeEffortSpan = {startKm: startKm, endKm: endKm};
+
+  // Map: draw the effort's stretch straight from the stream's per-point lat/lon.
+  if (overlayMap && overlayRunId !== null) {
+    var r = RUNS.find(function(x) { return x.id === overlayRunId; });
+    if (r && r.dist_stream) {
+      var pts = r.dist_stream.filter(function(p) {
+        return p.lat != null && p.lon != null && p.d >= startKm && p.d <= endKm;
+      }).map(function(p) { return [p.lat, p.lon]; });
+      if (effortHighlightLine) { overlayMap.removeLayer(effortHighlightLine); effortHighlightLine = null; }
+      if (pts.length > 1) {
+        effortHighlightLine = L.polyline(pts, {color: EFFORT_HL_COLOR, weight: 6, opacity: 0.95}).addTo(overlayMap);
+        effortHighlightLine.bringToFront();
+      }
+    }
+  }
+
+  applyEffortBand();
+}
+
+// Draw (or redraw) the gold band on the overlay chart for the active span. The
+// clipPath on the plot group clips it to the axes, so a span partly outside the
+// current zoom window is trimmed automatically.
+function applyEffortBand() {
+  var holder = document.getElementById('ro-chart');
+  if (!holder) return;
+  var prior = document.getElementById('ro-effort-band');
+  if (prior) prior.parentNode.removeChild(prior);
+  if (!activeEffortSpan) return;
+  var st = holder._distState;
+  if (!st) return;
+  var g = holder.querySelector('svg g[clip-path]');
+  if (!g) return;
+  function px(d) { return st.padL + (d - st.xmin) / st.xspan * (st.W - st.padL - st.padR); }
+  var x1 = px(activeEffortSpan.startKm), x2 = px(activeEffortSpan.endKm);
+  if (x2 < x1) { var t = x1; x1 = x2; x2 = t; }
+  var y = st.padT, h = st.H - st.padT - st.padB, w = x2 - x1;
+  if (w <= 0) return;
+  var rect = '<rect id="ro-effort-band" x="' + x1.toFixed(1) + '" y="' + y +
+    '" width="' + w.toFixed(1) + '" height="' + h.toFixed(1) +
+    '" fill="' + EFFORT_HL_COLOR + '" opacity="0.18" pointer-events="none"/>';
+  g.insertAdjacentHTML('afterbegin', rect);
+}
+
+function clearEffortSpan() {
+  activeEffortSpan = null;
+  if (effortHighlightLine && overlayMap) { overlayMap.removeLayer(effortHighlightLine); }
+  effortHighlightLine = null;
+  var band = document.getElementById('ro-effort-band');
+  if (band) band.parentNode.removeChild(band);
 }
 
 // Format a pause duration in seconds as m:ss (or h:mm:ss for long stops).
@@ -1286,7 +1564,7 @@ function selectTab(id, updateHash) {
   btn.classList.add('active');
   if (updateHash !== false) location.hash = id;
   if (id === 'overview' && overviewMap) {
-    setTimeout(function() { overviewMap.invalidateSize(); }, 50);
+    setTimeout(function() { overviewMap.invalidateSize(); updateHeatEdges(); }, 50);
   }
   if (id === 'runs' && selectedRunId !== null) {
     var r = RUNS.find(function(x) { return x.id === selectedRunId; });
@@ -1929,8 +2207,12 @@ function fmtSegTime(s) {
 }
 
 function shortDate(iso) {
-  var d = new Date(iso);
-  return d.toLocaleDateString('en-AU', {month: 'short', year: '2-digit'});
+  // iso is YYYY-MM-DD (already localized upstream). Parse the parts directly so
+  // new Date()'s UTC interpretation can't shift the day, and prefix the year with
+  // an apostrophe ("Jul '26") so it can't be misread as a day-of-month.
+  var mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var p = String(iso).split('-');
+  return mon[parseInt(p[1], 10) - 1] + " '" + p[0].slice(2);
 }
 
 var ZONE_COLORS = ['#3a7a3a', '#5cb85c', '#e0a020', '#e07020', '#d9534f'];
@@ -2373,6 +2655,10 @@ function drawDistMetric(runId, metricKey, opts) {
     holder._zoom = null;
     drawDistMetric(runId, metricKey, {holderId: holderId, interactive: true});
   };
+
+  // Re-apply the best-effort band after a redraw (metric switch, zoom, resize) so
+  // a hovered effort stays highlighted on the freshly drawn chart.
+  if (holderId === 'ro-chart') applyEffortBand();
 }
 
 function onDistWheel(e, holder) {
@@ -2649,10 +2935,16 @@ function renderPaceZones(zones) {
 
 // ── Best efforts ──────────────────────────────────────────────────────────
 
-function renderBestEfforts(efforts) {
+function renderBestEfforts(efforts, opts) {
   if (!efforts || !efforts.length) return '';
+  var interactive = opts && opts.interactive;
   var rows = efforts.map(function(e) {
-    return '<tr><td>' + e.label + '</td><td>' + e.time + '</td><td class="pace-cell">' + e.pace + '</td></tr>';
+    var attrs = '';
+    if (interactive && e.start_km != null && e.end_km != null) {
+      attrs = ' class="be-row" data-be-start="' + e.start_km + '" data-be-end="' + e.end_km +
+        '" onmouseenter="highlightEffortSpan(this)" onmouseleave="clearEffortSpan()"';
+    }
+    return '<tr' + attrs + '><td>' + e.label + '</td><td>' + e.time + '</td><td class="pace-cell">' + e.pace + '</td></tr>';
   }).join('');
   return section('Best efforts in this run',
     '<table class="rd-table">' +
@@ -2705,8 +2997,21 @@ function section(title, body) {
 
 // ── Overview heatmap ──────────────────────────────────────────────────────
 
+// Union the per-cluster time buckets: 90d is always included, 1y adds b365 on
+// top of it, and All adds bold on top of that (three disjoint buckets, never
+// duplicated — see HEAT_BUCKET_DAYS in generate_hub.py).
+function heatPointsFor(filter) {
+  var pts = [];
+  HEATMAP_CLUSTERS.forEach(function(c) {
+    pts = pts.concat(c.b90);
+    if (filter === '365' || filter === 'all') pts = pts.concat(c.b365);
+    if (filter === 'all') pts = pts.concat(c.bold);
+  });
+  return pts;
+}
+
 function initOverviewMap() {
-  if (!HEATMAP_POINTS || !HEATMAP_POINTS.length || typeof L === 'undefined') return;
+  if (!HEATMAP_CLUSTERS || !HEATMAP_CLUSTERS.length || typeof L === 'undefined') return;
   try {
     var el = document.getElementById('overview-heatmap');
     if (!el) return;
@@ -2716,9 +3021,10 @@ function initOverviewMap() {
       subdomains: 'abcd', maxZoom: 19
     }).addTo(overviewMap);
     // Set a view first so getZoom()/getCenter() are valid for tuneHeatRadius below.
-    overviewMap.fitBounds(L.latLngBounds(HEATMAP_POINTS), {padding: [20, 20]});
+    // Opens on the home cluster only — remote hotspots are reached via chips/edges.
+    overviewMap.fitBounds(L.latLngBounds(HEATMAP_CLUSTERS[0].bounds), {padding: [20, 20]});
     if (typeof L.heatLayer !== 'undefined') {
-      var heat = L.heatLayer(HEATMAP_POINTS, {
+      overviewHeat = L.heatLayer(heatPointsFor(heatFilter), {
         radius: 7, blur: 8, maxZoom: 18, minOpacity: 0.2,
         gradient: {0.0: '#1a3a1a', 0.3: '#3a7a3a', 0.6: '#5cb85c', 0.85: '#e0a020', 1.0: '#d9534f'}
       }).addTo(overviewMap);
@@ -2740,12 +3046,89 @@ function initOverviewMap() {
         // down: at BASE_RADIUS max stays 1 (the low-zoom look), and colour now
         // tracks how often a route was actually run rather than the zoom level.
         var max = radius / BASE_RADIUS;
-        heat.setOptions({radius: radius, blur: radius * 1.1, max: max});
+        overviewHeat.setOptions({radius: radius, blur: radius * 1.1, max: max});
       }
       overviewMap.on('zoomend', tuneHeatRadius);
       tuneHeatRadius();
     }
+    buildHeatChips();
+    initHeatEdges();
+    updateHeatEdges();
   } catch(e) { console.warn('Overview heatmap init failed:', e); }
+}
+
+// Chip bar above the map: "Home" plus one clickable chip per remote hotspot,
+// each showing its run count and a native tooltip with runs/km/date range.
+function buildHeatChips() {
+  var box = document.getElementById('heat-chips');
+  if (!box) return;
+  box.innerHTML = HEATMAP_CLUSTERS.map(function(c, i) {
+    var label = c.home ? c.name : c.name + ' · ' + c.runs;
+    var title = c.runs + (c.runs === 1 ? ' run' : ' runs') + ' · ' + c.km + ' km · ' + c.when;
+    return '<button class="heat-chip' + (c.home ? ' home' : '') + '" title="' + title +
+      '" onclick="flyToCluster(' + i + ')">' + label + '</button>';
+  }).join('');
+}
+
+function flyToCluster(i) {
+  var c = HEATMAP_CLUSTERS[i];
+  if (!overviewMap || !c) return;
+  overviewMap.flyToBounds(L.latLngBounds(c.bounds), {padding: [20, 20]});
+}
+
+function setHeatRange(btn) {
+  var g = btn.closest('.heat-range');
+  if (!g) return;
+  var btns = g.querySelectorAll('.rng-btn');
+  for (var i = 0; i < btns.length; i++) { btns[i].classList.toggle('active', btns[i] === btn); }
+  heatFilter = btn.dataset.hwin;
+  if (overviewHeat) overviewHeat.setLatLngs(heatPointsFor(heatFilter));
+}
+
+// Directional edge markers: one per remote hotspot, kept pinned to the map
+// viewport edge (pointing at the hotspot) while it's off-screen, hidden once
+// it scrolls into view. Repositioned on every pan/zoom/resize.
+function initHeatEdges() {
+  var el = document.getElementById('overview-heatmap');
+  if (!el || !overviewMap) return;
+  heatEdgeEls = [];
+  HEATMAP_CLUSTERS.forEach(function(c, i) {
+    if (c.home) return;
+    var title = c.runs + (c.runs === 1 ? ' run' : ' runs') + ' · ' + c.km + ' km · ' + c.when;
+    var div = document.createElement('div');
+    div.className = 'heat-edge';
+    div.title = title;
+    div.onclick = function() { flyToCluster(i); };
+    div.innerHTML = '<span class="he-arrow">➤</span><span>' + c.name + '</span>';
+    el.appendChild(div);
+    heatEdgeEls.push({el: div, c: c});
+  });
+  overviewMap.on('move zoom resize', updateHeatEdges);
+}
+
+function updateHeatEdges() {
+  if (!overviewMap) return;
+  var size = overviewMap.getSize(), cx = size.x / 2, cy = size.y / 2;
+  var center = overviewMap.getCenter();
+  heatEdgeEls.forEach(function(entry) {
+    var el = entry.el, c = entry.c;
+    // Antimeridian wrap: pick the copy of the hotspot's longitude nearest the
+    // current map centre so markers don't fly around the world at the seam.
+    var lon = c.lon + 360 * Math.round((center.lng - c.lon) / 360);
+    var p = overviewMap.latLngToContainerPoint([c.lat, lon]);
+    if (p.x >= 0 && p.x <= size.x && p.y >= 0 && p.y <= size.y) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    var dx = p.x - cx, dy = p.y - cy;
+    var pad = 26;
+    var scale = Math.max(Math.abs(dx) / (cx - pad), Math.abs(dy) / (cy - pad));
+    el.style.left = (cx + dx / scale) + 'px';
+    el.style.top = (cy + dy / scale) + 'px';
+    var arrow = el.querySelector('.he-arrow');
+    if (arrow) arrow.style.transform = 'rotate(' + (Math.atan2(dy, dx) * 180 / Math.PI) + 'deg)';
+  });
 }
 
 // ── Search & init ─────────────────────────────────────────────────────────
@@ -2949,10 +3332,12 @@ def generate(
         print(f"[profile] runs json.dumps: {time.perf_counter() - t0:.2f}s "
               f"({len(runs_json) / 1_048_576:.1f} MB)")
     t0             = time.perf_counter()
-    heat_pts       = _heatmap_points(runs)
-    heatmap_json   = json.dumps(heat_pts)
+    heat_clusters  = _heatmap_clusters(runs)
+    heatmap_json   = json.dumps(heat_clusters, ensure_ascii=False)
     if PROFILE:
-        print(f"[profile] heatmap: {time.perf_counter() - t0:.2f}s ({len(heat_pts)} points)")
+        n_pts = sum(len(c["b90"]) + len(c["b365"]) + len(c["bold"]) for c in heat_clusters)
+        print(f"[profile] heatmap: {time.perf_counter() - t0:.2f}s "
+              f"({len(heat_clusters)} clusters, {n_pts} points)")
 
     # Embed threshold as seconds/km for JS zone colouring (null if unknown)
     if threshold_mps and threshold_mps > 0:
@@ -2966,8 +3351,16 @@ def generate(
     heatmap_html = (
         '<div class="ov-section">\n'
         '  <p class="ov-section-title">All-time heatmap</p>\n'
+        '  <div class="heat-toolbar">\n'
+        '    <div id="heat-chips" class="heat-chips"></div>\n'
+        '    <div class="heat-range">\n'
+        '      <button class="rng-btn" data-hwin="90"  onclick="setHeatRange(this)">90d</button>\n'
+        '      <button class="rng-btn" data-hwin="365" onclick="setHeatRange(this)">1y</button>\n'
+        '      <button class="rng-btn active" data-hwin="all" onclick="setHeatRange(this)">All</button>\n'
+        '    </div>\n'
+        '  </div>\n'
         '  <div id="overview-heatmap" style="height:420px;border-radius:8px;'
-        'border:1px solid #3a3a3a;background:#111;overflow:hidden"></div>\n'
+        'border:1px solid #3a3a3a;background:#111;overflow:hidden;position:relative"></div>\n'
         '</div>'
     )
     # Distance/elevation/time, pace zones and training-log sections, relocated
@@ -3145,7 +3538,7 @@ def generate(
         "const AS_OF_ANCHOR_OV = " + json.dumps(asof_anchor_ov) + ";\n"
         "const SEGMENTS = " + json.dumps(segments, ensure_ascii=False) + ";\n"
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
-        "const HEATMAP_POINTS = " + heatmap_json + ";\n"
+        "const HEATMAP_CLUSTERS = " + heatmap_json + ";\n"
         + HUB_JS +
         "</script>\n"
         "</body>\n"

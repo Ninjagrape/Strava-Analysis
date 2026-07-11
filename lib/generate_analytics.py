@@ -27,14 +27,12 @@ import json
 import math
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 # Enriched-CSV stream fields (fit_distance_stream) can exceed the default
 # 128 KB per-field limit at higher sampling density.
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
-from functools import lru_cache
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from grade import minetti_cost, COST_FLAT, ga_time
 from generate_dashboards import fit_riegel
@@ -48,56 +46,10 @@ def num(row: dict, key: str):
         return None
 
 
-# Strava's bulk-export "Activity Date" (and the FIT start time) are in UTC, so a
-# morning run done in a UTC-ahead timezone otherwise lands on the previous calendar
-# day. We resolve each run's own timezone from its first GPS coordinate, which also
-# stays correct across DST changes and runs done while travelling.
-_tz_finder = None
-
-
-def _get_tz_finder():
-    global _tz_finder
-    if _tz_finder is None:
-        try:
-            from timezonefinder import TimezoneFinder
-            _tz_finder = TimezoneFinder()
-        except ImportError:
-            _tz_finder = False  # sentinel: library unavailable, skip conversion
-    return _tz_finder
-
-
-@lru_cache(maxsize=4096)
-def _zone_for(lat_round: float, lon_round: float):
-    finder = _get_tz_finder()
-    if not finder:
-        return None
-    name = finder.timezone_at(lat=lat_round, lng=lon_round)
-    return ZoneInfo(name) if name else None
-
-
-def _first_coord(row: dict):
-    try:
-        pts = json.loads(row.get("fit_gps_polyline") or "[]")
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if pts and isinstance(pts[0], (list, tuple)) and len(pts[0]) >= 2:
-        return float(pts[0][0]), float(pts[0][1])
-    return None
-
-
-def parse_date(row: dict):
-    try:
-        dt = datetime.strptime(row.get("Activity Date", ""), "%b %d, %Y, %I:%M:%S %p")
-    except ValueError:
-        return None
-    coord = _first_coord(row)
-    if not coord:
-        return dt  # no GPS to localize against, leave as recorded (UTC)
-    zone = _zone_for(round(coord[0], 2), round(coord[1], 2))
-    if zone is None:
-        return dt
-    local = dt.replace(tzinfo=timezone.utc).astimezone(zone)
-    return local.replace(tzinfo=None)
+# Activity dates are localized from each run's first GPS coordinate; see
+# localtime.parse_date. Re-exported here so existing callers keep importing it
+# from generate_analytics.
+from localtime import parse_date  # noqa: E402
 
 
 def fmt_time(s: float) -> str:

@@ -1,6 +1,6 @@
 ---
 name: segment-detection
-description: Debugging and extending the Strava-Analysis segment-detection engine (lib/generate_segments.py). Use when segments are wrong, missing, duplicated, or misnamed; when effort counts changed unexpectedly; when a climb is misclassified or shows 0% grade / flat; when a loop is drawn through buildings; when results do not change after a code edit (stale segments_cache.json); or when changing detection logic or tunables (CELL_M, MATCH_COVER, MIN_RUNS, climb and loop thresholds). Covers the full build_segments() pipeline - geo-tracks and 25 m cell sequences, corridor mining, effort-matching gates, climb classification, extension and salvage, loop detection and dedupe, anchored loops, and cache invalidation via the _runs_signature params token.
+description: Debugging and extending the Strava-Analysis segment-detection engine (lib/generate_segments.py). Use when segments are wrong, missing, duplicated, or misnamed; when effort counts changed unexpectedly; when a climb is misclassified or shows 0% grade / flat; when a loop is drawn through buildings; when results do not change after a code edit (stale segments_cache.json); or when changing detection logic or tunables (CELL_M, MATCH_COVER, MIN_RUNS, climb and loop thresholds).
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 

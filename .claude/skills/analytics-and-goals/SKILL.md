@@ -1,6 +1,6 @@
 ---
 name: analytics-and-goals
-description: Debugging and extending the Strava-Analysis training-analytics numbers. Use when CTL/ATL/TSB, ACWR, monotony/strain, critical speed, VDOT, pace-zone distribution, Riegel predictions, training targets, goal gaps, or best-effort tables look wrong (spikes, zeros, missing months, implausible paces); when adding a new analytics metric; when the Analytics, Best Efforts, Goals, or Overview panels disagree with each other; or when a CSV reader dies with "field larger than field limit". Covers lib/generate_analytics.py (longitudinal fitness math) and lib/generate_dashboards.py (per-distance performance math), the shared minetti_cost/ga_time grade adjustment now living in lib/grade.py, the three distinct "threshold" definitions, and how the hub's best-5K threshold feeds run classification.
+description: Debugging and extending the Strava-Analysis training-analytics numbers. Use when CTL/ATL/TSB, ACWR, monotony/strain, critical speed, VDOT, pace-zone distribution, Riegel predictions, training targets, goal gaps, or best-effort tables look wrong (spikes, zeros, missing months, implausible paces); when adding a new analytics metric; when the Analytics, Best Efforts, Goals, or Overview panels disagree with each other; or when a CSV reader dies with "field larger than field limit".
 ---
 > Values in this skill are snapshots (as of 2026-07), re-verify with the grep recipes before relying on them.
 
