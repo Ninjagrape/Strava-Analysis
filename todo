@@ -1,10 +1,9 @@
 ## General
 [] Anticipate runs may or may not have HR data
 
-[] Revamp global heatmap to anticipate global running. List hotspots as hyperlinks. Avoid outliers and focus on most common centroid of runs
+[o] Revamp global heatmap to anticipate global running. List hotspots as hyperlinks. Avoid outliers and focus on most common centroid of runs
 
 ## Runs
-[o] Hovering over the best efforts on run tab should highlight the relevant segment for that best effort
 
 ## Analytics
 [] Toggle which simple plots are shown (Fm23 style)

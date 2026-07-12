@@ -11,6 +11,7 @@ cache/
 export_*/
 
 # Python
+.vscode/
 __pycache__/
 *.py[cod]
 *.pyo

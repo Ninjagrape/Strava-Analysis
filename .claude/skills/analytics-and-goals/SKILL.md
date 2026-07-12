@@ -54,7 +54,7 @@ As of 2026-07-10 the Analytics panel is split into themed sub-tabs (Injury risk 
 | Riegel | `riegel`, `fit_riegel` | dashboards | `t1·(d2/d1)^1.06`; fitted `T = a·D^b` via log-log OLS | b clamped [1.0, 1.15], fallback 1.06 | b 1.0–1.15 by construction |
 | Training targets | `derive_training_target` | dashboards | ≥1500 m: fitted-curve pace ×0.97–1.0; reps: % of predicted 5K pace | 1 km ×0.96–0.98, 800 m ×0.93–0.96, 400 m ×0.88–0.93 | targets faster than 5K pace for reps |
 | Race prediction | `_predict_race_time` | dashboards | Riegel from GA best-10K anchor; falls back to fitted curve | anchor = fastest GA 10K |, |
-| Run classification | `_classify_run` | generate_hub.py | zone-share gates then distance gates | `RACE_Z5_SHARE 0.40`, `THRESHOLD_Z4_SHARE 0.30`, `TEMPO_Z34_SHARE 0.35`, `RECOVERY_Z1_SHARE 0.70`, `LONG_RUN_MIN_KM 10.0` | one label per run |
+| Run classification | `_classify_run` | generate_hub.py | zone-share gates then distance gates | `RACE_Z5_SHARE 0.40`, `THRESHOLD_Z4_SHARE 0.30`, `THRESHOLD_Z45_SHARE 0.50`, `TEMPO_Z34_SHARE 0.35`, `RECOVERY_Z1_SHARE 0.70`, `LONG_RUN_MIN_KM 10.0` | one label per run |
 
 Input columns (all metrics): `Distance` (metres, despite some `dist_km`-named variables), `Moving Time`, `Elapsed Time`, `Elevation Gain`, `Activity Date` (UTC), `best_*_s`, `fit_avg_cadence`, `fit_gps_polyline` (for timezone lookup only).
 

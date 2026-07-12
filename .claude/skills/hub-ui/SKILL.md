@@ -75,7 +75,7 @@ Three coexisting patterns, by role: plain/raw non-f triple-quoted strings for CS
 1. **misc**, `dist_km < MISC_MAX_KM` (1.0 km).
 2. **intervals**, `run["is_interval"]` (set by `is_interval(row)` from lib/generate_dashboards).
 3. **race**, zone-5 share of zoned time >= `RACE_Z5_SHARE` (0.40). Zone checks 3-5 only run when total zoned time > 0.
-4. **threshold**, zone-4 share >= `THRESHOLD_Z4_SHARE` (0.30).
+4. **threshold**, zone-4 share >= `THRESHOLD_Z4_SHARE` (0.30) OR zones 4+5 combined share >= `THRESHOLD_Z45_SHARE` (0.50) (time at/above threshold speed; race is checked first, so this catches sustained hard efforts whose fast/downhill kms spill into Z5).
 5. **tempo**, zones 3+4 share >= `TEMPO_Z34_SHARE` (0.35).
 6. **long**, `dist_km >= LONG_RUN_MIN_KM` (10.0) AND >= the runner's own p75 (`LONG_RUN_PERCENTILE` 0.75) AND >= `LONG_RUN_MIN_RATIO` (1.30) x median.
 7. **recovery**, zone-1 share >= `RECOVERY_Z1_SHARE` (0.70).

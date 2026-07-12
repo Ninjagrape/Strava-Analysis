@@ -412,6 +412,7 @@ LONG_RUN_MIN_RATIO  = 1.30   # ...and at least this multiple of the median run d
 LONG_RUN_MIN_KM     = 10.0   # ...and never below this absolute floor
 RACE_Z5_SHARE       = 0.40   # >= this share of zoned time in zone 5 (frac>=1.03) = race
 THRESHOLD_Z4_SHARE  = 0.30   # >= this share in zone 4 (0.93-1.03) = threshold session
+THRESHOLD_Z45_SHARE = 0.50   # >= this combined share in zones 4-5 (at/above threshold speed) = threshold session
 TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
 RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.77) = recovery
 
@@ -443,7 +444,12 @@ def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
         z1, _z2, z3, z4, z5 = (z / total for z in zones)
         if z5 >= RACE_Z5_SHARE:
             return "race"
-        if z4 >= THRESHOLD_Z4_SHARE:
+        # Time faster than threshold (Z5) is threshold-or-harder work, not a
+        # disqualifier: a sustained effort that runs the hard part slightly fast
+        # or downhill spills Z4 time into Z5. So a run spending a majority of its
+        # time at or above threshold speed (and not race-dominated, checked above)
+        # is a threshold session even when the narrow Z4 slice alone falls short.
+        if z4 >= THRESHOLD_Z4_SHARE or (z4 + z5) >= THRESHOLD_Z45_SHARE:
             return "threshold"
         if (z3 + z4) >= TEMPO_Z34_SHARE:
             return "tempo"
