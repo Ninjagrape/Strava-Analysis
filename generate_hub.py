@@ -93,9 +93,20 @@ def _best_effort_span(dist_stream: list[dict], target_m: float) -> tuple[float, 
 # ---------------------------------------------------------------------------
 
 HEAT_CLUSTER_KM    = 30.0   # single-link centroid distance merging runs into one hotspot
-HEAT_NAME_REUSE_KM = 25.0   # reuse a cached hotspot name whose centroid is within this
+HEAT_NAME_REUSE_KM = 8.0    # reuse a cached hotspot name whose centroid is within this
+                            # (tight: suburb-level names must not bleed across neighbours)
 HEAT_BUCKET_DAYS   = (90, 365)  # time-filter bucket edges, anchored to latest run date
 HEAT_GEO_CACHE     = CACHE_DIR / "heatmap_geocode_cache.json"
+
+# Address-field preference for hotspot labels. Domestic clusters expose the
+# recognisable local place (suburb/town) because you know the area; foreign
+# clusters skip it (a suburb name where you don't live means nothing) and anchor
+# on the city, then region. A single zoom=12 lookup populates both — at that zoom
+# Nominatim returns suburb + city + state, so the order alone picks the right one.
+HEAT_FIELDS_DOMESTIC = ("suburb", "town", "village", "hamlet", "neighbourhood",
+                        "municipality", "city", "county", "state_district", "state", "country")
+HEAT_FIELDS_FOREIGN  = ("city", "town", "municipality", "county",
+                        "state_district", "state", "country")
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -195,11 +206,29 @@ def _bearing_label(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
     return _COMPASS_8[int((brg + 22.5) // 45) % 8]
 
 
-def _hotspot_name(lat: float, lon: float, cache: dict) -> str | None:
+def _home_country(lat: float, lon: float, cache: dict) -> str | None:
+    """Country the home cluster sits in, used to decide how specific remote names get. Cached
+    once under the reserved "home_country" key (skipped by _hotspot_name's coordinate parse).
+    Returns None on network failure, which makes every cluster take the foreign (coarser) order,
+    the safe default when we can't tell home from away."""
+    if "home_country" in cache:
+        return cache["home_country"] or None
+    try:
+        data = _reverse_geocode(lat, lon, zoom=12, lang="en")
+    except Exception:
+        return None
+    country = (data.get("address", {}) or {}).get("country")
+    if country:
+        cache["home_country"] = country
+    return country
+
+
+def _hotspot_name(lat: float, lon: float, home_country: str | None, cache: dict) -> str | None:
     """Name a hotspot centroid: reuse a cached name within HEAT_NAME_REUSE_KM (drift-tolerant,
-    mirrors generate_segments' NAME_REUSE_M pattern), else query Nominatim at metro zoom in
-    English (zoom=8 names the recognisable region — "Tokyo", not its ward; lang="en" avoids
-    local-script labels the chips can't be skimmed in).
+    mirrors generate_segments' NAME_REUSE_M pattern), else query Nominatim at zoom=12 in English
+    (lang="en" avoids local-script labels the chips can't be skimmed in). The address-field
+    order depends on whether the cluster shares home's country: domestic clusters take the
+    suburb ("Copacabana"), foreign clusters skip it for the city ("Kyoto") — see HEAT_FIELDS_*.
     _reverse_geocode raises on network failure, so a miss returns None rather than crashing the
     build; the caller falls back to a bearing label and nothing is cached for the miss, so the
     next online build heals it. New names are written into `cache` (caller persists it)."""
@@ -216,12 +245,14 @@ def _hotspot_name(lat: float, lon: float, cache: dict) -> str | None:
         return best_name
 
     try:
-        data = _reverse_geocode(lat, lon, zoom=8, lang="en")
+        data = _reverse_geocode(lat, lon, zoom=12, lang="en")
     except Exception:
         return None
     addr = data.get("address", {}) or {}
-    for field in ("city", "town", "village", "municipality", "province",
-                  "county", "state_district", "state", "country"):
+    country = addr.get("country")
+    fields = HEAT_FIELDS_DOMESTIC if (home_country and country == home_country) \
+        else HEAT_FIELDS_FOREIGN
+    for field in fields:
         name = addr.get(field)
         if name:
             cache[f"{lat:.4f},{lon:.4f}"] = name
@@ -248,6 +279,13 @@ def _heatmap_clusters(runs: list[dict]) -> list[dict]:
 
     cache = _load_json(HEAT_GEO_CACHE) or {}
     dirty = False
+
+    # Only pay for the home-country lookup when there is at least one remote cluster to name.
+    home_country = None
+    if len(groups) > 1:
+        before_home = len(cache)
+        home_country = _home_country(home_lat, home_lon, cache)
+        dirty = len(cache) > before_home
 
     clusters = []
     for gi, group in enumerate(groups):
@@ -291,7 +329,7 @@ def _heatmap_clusters(runs: list[dict]) -> list[dict]:
             name = "Home"
         else:
             before = len(cache)
-            name = _hotspot_name(cen_lat, cen_lon, cache)
+            name = _hotspot_name(cen_lat, cen_lon, home_country, cache)
             if len(cache) > before:
                 dirty = True
             if name is None:
@@ -3065,12 +3103,12 @@ function initOverviewMap() {
 }
 
 // Chip bar above the map: "Home" plus one clickable chip per remote hotspot,
-// each showing its run count and a native tooltip with runs/km/date range.
+// each showing its total distance and a native tooltip with runs/km/date range.
 function buildHeatChips() {
   var box = document.getElementById('heat-chips');
   if (!box) return;
   box.innerHTML = HEATMAP_CLUSTERS.map(function(c, i) {
-    var label = c.home ? c.name : c.name + ' · ' + c.runs;
+    var label = c.home ? c.name : c.name + ' · ' + c.km + ' km';
     var title = c.runs + (c.runs === 1 ? ' run' : ' runs') + ' · ' + c.km + ' km · ' + c.when;
     return '<button class="heat-chip' + (c.home ? ' home' : '') + '" title="' + title +
       '" onclick="flyToCluster(' + i + ')">' + label + '</button>';
