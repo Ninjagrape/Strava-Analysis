@@ -610,6 +610,9 @@ svg{display:block;width:100%;height:auto;}
 .ptot-tip-d{font-size:9px;color:#888;margin-bottom:1px;}
 .legend{font-size:10px;color:#666;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
 .legend span{display:inline-flex;align-items:center;gap:4px;}
+.legend .cmp-leg{cursor:pointer;user-select:none;}
+.legend .cmp-leg:hover{color:#ccc;}
+.legend .cmp-leg.off{opacity:.4;text-decoration:line-through;}
 .swatch{width:10px;height:10px;border-radius:2px;display:inline-block;}
 .cmp-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
 .cmp-axis{font-size:10px;color:#888;display:inline-flex;align-items:center;gap:5px;}
@@ -936,12 +939,17 @@ def pace_progression_section(runs: list[dict] | None) -> str:
     ordered = [t for t in _PACE_PROG_ORDER if t in eligible]
     default = "tempo" if "tempo" in eligible else max(eligible, key=lambda t: len(eligible[t]))
 
-    def _render(type_key):
+    # Two independent selectors: run type (outer) and time window (CAL_RANGES:
+    # 3M/6M/1Y/All). Every (type, range) chart is pre-rendered; a small ppSet()
+    # controller shows the one matching both active buttons. Stats are per-type
+    # (recency-weighted "current" pace, window-independent), so they switch with
+    # type only. Default range is "All", so the initial view matches the old one.
+    def _stats_block(type_key):
         data = eligible[type_key]
         color = RUN_TYPE_COLOR.get(type_key, "#888")
         tvals = [t for t in _rolling_trend([x[0] for x in data], [x[1] for x in data]) if t is not None]
         cur = f"{fmt_pace_from_s_per_km(tvals[-1])}/km" if tvals else "—"
-        stats = (
+        return (
             f'<div class="stat-row">'
             f'<div class="stat"><p class="stat-label">Current {type_key} pace</p>'
             f'<p class="stat-value" style="color:{color}">{cur}</p>'
@@ -950,15 +958,43 @@ def pace_progression_section(runs: list[dict] | None) -> str:
             f'<p class="stat-value">{len(data)}</p>'
             f'<p class="stat-sub">classified {type_key}</p></div>'
             f'</div>')
-        return stats + _pace_prog_chart(data, color)
 
-    chart = _ranged([(t.capitalize(), t) for t in ordered], default.capitalize(), _render)
+    def _chart_for(type_key, win):
+        data = eligible[type_key]
+        if win is not None:
+            cutoff = data[-1][0] - timedelta(days=win)
+            data = [t for t in data if t[0] >= cutoff]
+        return _pace_prog_chart(data, RUN_TYPE_COLOR.get(type_key, "#888"))
+
+    def _hidden(active):
+        return "" if active else ' style="display:none"'
+
+    type_btns = "".join(
+        f'<button class="rng-btn{" active" if t == default else ""}" data-pp-type="{t}" '
+        f'onclick="ppSet(this)">{t.capitalize()}</button>' for t in ordered)
+    range_btns = "".join(
+        f'<button class="rng-btn{" active" if lbl == "All" else ""}" data-pp-range="{lbl}" '
+        f'onclick="ppSet(this)">{lbl}</button>' for lbl, _ in CAL_RANGES)
+    stats_blocks = "".join(
+        f'<div class="pp-stats" data-pp-type="{t}"{_hidden(t == default)}>{_stats_block(t)}</div>'
+        for t in ordered)
+    chart_blocks = "".join(
+        f'<div class="pp-chart" data-pp-type="{t}" data-pp-range="{lbl}"'
+        f'{_hidden(t == default and lbl == "All")}>{_chart_for(t, win)}</div>'
+        for t in ordered for lbl, win in CAL_RANGES)
+    chart = (
+        f'<div class="pp-group">'
+        f'<div class="rng-tabs">{type_btns}</div>'
+        f'{stats_blocks}'
+        f'<div class="rng-tabs">{range_btns}</div>'
+        f'{chart_blocks}'
+        f'</div>')
     return f"""
 <div class="section">
   <p class="section-title">Pace progression</p>
   <div class="card">
     {chart}
-    <p class="note">Dots are individual runs at grade-adjusted pace; the line is a recency-weighted average, so recent runs count most. Hover a dot for the run, its GA pace, and its actual pace. GA pace reads faster than the raw pace shown in the Runs tab on hilly runs (elevation is discounted), so a hilly long run can dip below 6:00/km here while its Runs-tab pace stays slower. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
+    <p class="note">Dots are individual runs at grade-adjusted pace; the line is a recency-weighted average, so recent runs count most. Use the range buttons to zoom the time window. Hover a dot for the run, its GA pace, and its actual pace. GA pace reads faster than the raw pace shown in the Runs tab on hilly runs (elevation is discounted), so a hilly long run can dip below 6:00/km here while its Runs-tab pace stays slower. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
   </div>
 </div>"""
 
@@ -1215,10 +1251,16 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
       </div>
       <label class="cmp-axis" id="cmp-x-wrap">x <select class="cmp-sel" id="cmp-x" onchange="cmpSet('x',this.value)"></select></label>
       <label class="cmp-axis" id="cmp-y-wrap">y <select class="cmp-sel" id="cmp-y" onchange="cmpSet('y',this.value)"></select></label>
+      <div class="rng-tabs" id="cmp-range" style="display:none">
+        <button class="rng-btn" data-range="90" onclick="cmpSet('range',90)">3M</button>
+        <button class="rng-btn" data-range="180" onclick="cmpSet('range',180)">6M</button>
+        <button class="rng-btn" data-range="365" onclick="cmpSet('range',365)">1Y</button>
+        <button class="rng-btn active" data-range="0" onclick="cmpSet('range',0)">All</button>
+      </div>
     </div>
     <div id="cmp-chart" class="ptot-chart"></div>
     <div class="legend" id="cmp-legend"></div>
-    <p class="note">Pick any two metrics to plot against each other, watch one metric over time, or see its distribution. Points are coloured by run type. Runs missing the selected metric are skipped (heart rate is empty until an HR monitor is used). Pace is min/km, so lower sits toward the bottom.</p>
+    <p class="note">Pick any two metrics to plot against each other, watch one metric over time, or see its distribution. Points are coloured by run type; click a run type in the legend to toggle it off or on. In "Over time" mode the range buttons crop to the last 3M/6M/1Y. Runs missing the selected metric are skipped (heart rate is empty until an HR monitor is used). Pace is min/km, so lower sits toward the bottom.</p>
   </div>
 </div>
 </div>
@@ -1244,6 +1286,24 @@ function setRange(btn){{
   var charts = g.querySelectorAll('.rng-chart');
   for(var j=0;j<charts.length;j++){{
     charts[j].style.display = (charts[j].getAttribute('data-range')===range) ? '' : 'none';
+  }}
+}}
+// Pace-progression: two independent selectors (run type + time window). Every
+// (type, range) chart is pre-rendered; show the one matching both active buttons.
+function ppSet(btn){{
+  var g = btn.closest('.pp-group');
+  if(!g) return;
+  var row = btn.parentNode, rowBtns = row.querySelectorAll('.rng-btn');
+  for(var i=0;i<rowBtns.length;i++){{ rowBtns[i].classList.toggle('active', rowBtns[i]===btn); }}
+  var tb = g.querySelector('.rng-btn[data-pp-type].active');
+  var rb = g.querySelector('.rng-btn[data-pp-range].active');
+  if(!tb||!rb) return;
+  var type = tb.getAttribute('data-pp-type'), range = rb.getAttribute('data-pp-range');
+  var stats = g.querySelectorAll('.pp-stats');
+  for(var i=0;i<stats.length;i++){{ stats[i].style.display = (stats[i].getAttribute('data-pp-type')===type) ? '' : 'none'; }}
+  var charts = g.querySelectorAll('.pp-chart');
+  for(var i=0;i<charts.length;i++){{
+    charts[i].style.display = (charts[i].getAttribute('data-pp-type')===type && charts[i].getAttribute('data-pp-range')===range) ? '' : 'none';
   }}
 }}
 
@@ -1323,7 +1383,10 @@ var CHART_STRAIN = {asof_strain_charts_json};
 // hub document, so init is deferred to DOMContentLoaded). Absent when this module
 // is rendered standalone; cmpDraw() no-ops if RUNS is undefined.
 var CMP_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-var CMP_STATE = {{mode:'scatter', x:'dist_km', y:'pace'}};
+// range: days to keep in "over time" mode (0 = all). hidden: run types toggled off.
+var CMP_STATE = {{mode:'scatter', x:'dist_km', y:'pace', range:0, hidden:{{}}}};
+var CMP_ALL_TYPES = null;   // run types present in RUNS, RUN_TYPES order (built in cmpInit)
+var CMP_MAX_MS = 0;         // latest run date (ms), anchor for the range crop
 var CMP_METRICS = [
   {{key:'dist_km', label:'Distance', unit:'km', fmt:function(v){{ return (Math.round(v*100)/100)+' km'; }}, get:function(r){{ return r.dist_km>0?r.dist_km:null; }}}},
   {{key:'pace', label:'Pace', unit:'min/km', fmt:function(v){{ var s=v*60, m=Math.floor(s/60), ss=Math.round(s-m*60); if(ss===60){{m++;ss=0;}} return m+':'+(ss<10?'0':'')+ss+'/km'; }}, get:function(r){{ return (r.dist_km>0&&r.moving_s>0)?(r.moving_s/r.dist_km/60):null; }}}},
@@ -1349,6 +1412,15 @@ function cmpInit(){{
   if(!xs||!ys) return;
   var opts=CMP_METRICS.map(function(m){{ return '<option value="'+m.key+'">'+m.label+'</option>'; }}).join('');
   xs.innerHTML=opts; ys.innerHTML=opts; xs.value=CMP_STATE.x; ys.value=CMP_STATE.y;
+  if(typeof RUNS!=='undefined' && typeof RUN_TYPES!=='undefined'){{
+    var present={{}};
+    for(var i=0;i<RUNS.length;i++){{
+      present[RUNS[i].run_type||'misc']=1;
+      var ms=Date.parse(RUNS[i].date_iso); if(!isNaN(ms)&&ms>CMP_MAX_MS) CMP_MAX_MS=ms;
+    }}
+    CMP_ALL_TYPES=[];
+    for(var i=0;i<RUN_TYPES.length;i++){{ if(present[RUN_TYPES[i].key]) CMP_ALL_TYPES.push(RUN_TYPES[i].key); }}
+  }}
   cmpSyncControls(); cmpDraw();
 }}
 function cmpSyncControls(){{
@@ -1356,6 +1428,8 @@ function cmpSyncControls(){{
   var xw=document.getElementById('cmp-x-wrap'), yw=document.getElementById('cmp-y-wrap');
   if(xw) xw.style.display=(mode==='scatter')?'':'none';
   if(yw){{ yw.style.display=''; yw.firstChild.nodeValue=(mode==='scatter')?'y ':'metric '; }}
+  var rw=document.getElementById('cmp-range');
+  if(rw) rw.style.display=(mode==='time')?'':'none';
 }}
 function cmpSet(kind,val){{
   CMP_STATE[kind]=val;
@@ -1364,15 +1438,21 @@ function cmpSet(kind,val){{
     for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i].getAttribute('data-mode')===val); }}
     cmpSyncControls();
   }}
+  if(kind==='range'){{
+    var rbtns=document.querySelectorAll('#cmp-range .rng-btn');
+    for(var i=0;i<rbtns.length;i++){{ rbtns[i].classList.toggle('active', +rbtns[i].getAttribute('data-range')===val); }}
+  }}
   cmpDraw();
 }}
-function cmpLegend(pts){{
+function cmpToggleType(k){{ if(CMP_STATE.hidden[k]) delete CMP_STATE.hidden[k]; else CMP_STATE.hidden[k]=1; cmpDraw(); cmpLegend(); }}
+function cmpLegend(){{
   var el=document.getElementById('cmp-legend'); if(!el) return;
-  if(typeof RUN_TYPES==='undefined'){{ el.innerHTML=''; return; }}
-  var present={{}};
-  for(var i=0;i<pts.length;i++){{ present[pts[i].type]=1; }}
+  if(typeof RUN_TYPES==='undefined' || !CMP_ALL_TYPES){{ el.innerHTML=''; return; }}
   var items=[];
-  for(var i=0;i<RUN_TYPES.length;i++){{ var t=RUN_TYPES[i]; if(present[t.key]){{ items.push('<span><span class="swatch" style="background:'+(RUN_TYPE_COLOR[t.key]||'#888')+'"></span>'+t.label+'</span>'); }} }}
+  for(var i=0;i<CMP_ALL_TYPES.length;i++){{
+    var k=CMP_ALL_TYPES[i], lab=(typeof RUN_TYPE_LABEL!=='undefined'&&RUN_TYPE_LABEL[k])||k, off=CMP_STATE.hidden[k];
+    items.push('<span class="cmp-leg'+(off?' off':'')+'" onclick="cmpToggleType(CMP_ALL_TYPES['+i+'])" title="Click to toggle"><span class="swatch" style="background:'+(RUN_TYPE_COLOR[k]||'#888')+'"></span>'+lab+'</span>');
+  }}
   el.innerHTML=items.join('');
 }}
 function cmpDraw(){{
@@ -1384,11 +1464,16 @@ function cmpDrawXY(holder){{
   var mode=CMP_STATE.mode, my=cmpMetric(CMP_STATE.y), mx=(mode==='time')?null:cmpMetric(CMP_STATE.x);
   var pts=[];
   for(var i=0;i<RUNS.length;i++){{
-    var r=RUNS[i], yv=my.get(r); if(yv==null) continue;
+    var r=RUNS[i], ty=r.run_type||'misc';
+    if(CMP_STATE.hidden[ty]) continue;
+    var yv=my.get(r); if(yv==null) continue;
     var xv;
-    if(mode==='time'){{ xv=Date.parse(r.date_iso); if(isNaN(xv)) continue; }}
+    if(mode==='time'){{
+      xv=Date.parse(r.date_iso); if(isNaN(xv)) continue;
+      if(CMP_STATE.range>0 && CMP_MAX_MS>0 && xv < CMP_MAX_MS - CMP_STATE.range*86400000) continue;
+    }}
     else {{ xv=mx.get(r); if(xv==null) continue; }}
-    pts.push({{x:xv, y:yv, type:r.run_type||'misc', run:r}});
+    pts.push({{x:xv, y:yv, type:ty, run:r}});
   }}
   if(pts.length<2){{ holder.innerHTML='<p class="note">Not enough data for this metric.</p>'; cmpLegend([]); return; }}
   var W=720,H=240,padL=52,padR=14,padT=16,padB=30;
@@ -1447,7 +1532,7 @@ function cmpHoverXY(e,holder){{
 }}
 function cmpDrawDist(holder){{
   var m=cmpMetric(CMP_STATE.y), vals=[];
-  for(var i=0;i<RUNS.length;i++){{ var v=m.get(RUNS[i]); if(v!=null) vals.push({{v:v, type:RUNS[i].run_type||'misc'}}); }}
+  for(var i=0;i<RUNS.length;i++){{ var ty=RUNS[i].run_type||'misc'; if(CMP_STATE.hidden[ty]) continue; var v=m.get(RUNS[i]); if(v!=null) vals.push({{v:v, type:ty}}); }}
   if(vals.length<2){{ holder.innerHTML='<p class="note">Not enough data for this metric.</p>'; cmpLegend([]); return; }}
   var vmin=Infinity, vmax=-Infinity;
   for(var i=0;i<vals.length;i++){{ if(vals[i].v<vmin)vmin=vals[i].v; if(vals[i].v>vmax)vmax=vals[i].v; }}

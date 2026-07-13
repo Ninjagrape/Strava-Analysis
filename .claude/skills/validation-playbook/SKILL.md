@@ -60,7 +60,7 @@ All measured 2026-07-02 on 79 runs. Re-derive before relying on any of them.
 | Stream elevation density | exactly 1.0 on the latest run | snippet B below |
 | Pipeline runtime | ~4.5 s total (compile ~2.8 s, hub ~1.7 s) | `python main.py --profile`, read the `[time]` lines |
 | Hub HTML size | ~11.5 MB (as of 2026-07-11, 85 runs; was ~9.0 MB on 2026-07-02 at 79 runs — the heatmap revamp that day also re-based this number: heat points now serialise at 5 dp, so size moved for reasons beyond run growth) | `ls -l dashboards/TrainingHub.html` (or the `[profile] HTML size` line) |
-| Heatmap clusters / points | 1 cluster, 39,264 points (as of 2026-07-11, 85 runs; heatmap phase ~0.14 s). Cluster count grows only when runs exist > `HEAT_CLUSTER_KM` (75 km) apart; a new remote cluster also adds one ~1.1 s Nominatim call on its first online build | `STRAVA_PROFILE=1 python generate_hub.py`, read the `[profile] heatmap` line |
+| Heatmap clusters / points | 1 cluster, 39,264 points (as of 2026-07-11, 85 runs; heatmap phase ~0.14 s). Cluster count grows only when runs exist > `HEAT_CLUSTER_KM` (30 km) apart; a new remote cluster also adds one ~1.1 s Nominatim call on its first online build | `STRAVA_PROFILE=1 python generate_hub.py`, read the `[profile] heatmap` line |
 
 **Snippet A, segment count + Colonnade (run from repo root, bash):**
 

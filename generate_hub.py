@@ -92,7 +92,7 @@ def _best_effort_span(dist_stream: list[dict], target_m: float) -> tuple[float, 
 # Heatmap helpers
 # ---------------------------------------------------------------------------
 
-HEAT_CLUSTER_KM    = 75.0   # single-link centroid distance merging runs into one hotspot
+HEAT_CLUSTER_KM    = 30.0   # single-link centroid distance merging runs into one hotspot
 HEAT_NAME_REUSE_KM = 25.0   # reuse a cached hotspot name whose centroid is within this
 HEAT_BUCKET_DAYS   = (90, 365)  # time-filter bucket edges, anchored to latest run date
 HEAT_GEO_CACHE     = CACHE_DIR / "heatmap_geocode_cache.json"
@@ -3080,7 +3080,10 @@ function buildHeatChips() {
 function flyToCluster(i) {
   var c = HEATMAP_CLUSTERS[i];
   if (!overviewMap || !c) return;
-  overviewMap.flyToBounds(L.latLngBounds(c.bounds), {padding: [20, 20]});
+  // Snap instantly: leaflet.heat@0.2.0 only repositions its canvas at moveend, so
+  // an animated flyTo leaves the heat overlay frozen over the old spot for the whole
+  // flight. fitBounds with animate:false jumps straight there with the heat aligned.
+  overviewMap.fitBounds(L.latLngBounds(c.bounds), {padding: [20, 20], animate: false});
 }
 
 function setHeatRange(btn) {

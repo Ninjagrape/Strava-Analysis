@@ -103,7 +103,7 @@ Overview tab global heatmap, replaced entirely 2026-07-11. It was `_heatmap_poin
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `HEAT_CLUSTER_KM` | 75.0 (as of 2026-07-11) | single-link centroid distance merging run centroids into one hotspot cluster (`_cluster_runs`, union-find, order-independent so builds stay deterministic) |
+| `HEAT_CLUSTER_KM` | 30.0 (as of 2026-07-13) | single-link centroid distance merging run centroids into one hotspot cluster (`_cluster_runs`, union-find, order-independent so builds stay deterministic) |
 | `HEAT_NAME_REUSE_KM` | 25.0 (as of 2026-07-11) | tolerant-reuse radius for `cache/heatmap_geocode_cache.json` entries; mirrors segments' `NAME_REUSE_M` pattern (details: caches-and-invalidation, external-apis) |
 | `HEAT_BUCKET_DAYS` | (90, 365) (as of 2026-07-11) | time-filter bucket edges in days, anchored to the **latest run date**, not wall clock, so repeat builds stay byte-identical |
 
