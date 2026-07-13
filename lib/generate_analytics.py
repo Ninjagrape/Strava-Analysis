@@ -839,15 +839,21 @@ RUN_TYPE_COLOR = {
 # Selector order: hardest/most-specific classifications first.
 _PACE_PROG_ORDER = ["tempo", "threshold", "race", "intervals", "long", "easy", "recovery"]
 _PACE_PROG_MIN_RUNS = 3   # a type needs this many runs to earn a selector button
-_PACE_PROG_ROLL = 5       # rolling-average window (runs), min 2 present to draw the trend
+_PACE_PROG_HALFLIFE_DAYS = 30   # recency half-life (days) for the trend weighting
 
 
-def _rolling_trend(paces: list[float]) -> list[float | None]:
-    """Trailing mean of the last _PACE_PROG_ROLL paces at each index; None until >=2 exist."""
+def _rolling_trend(dates: list, paces: list[float]) -> list[float | None]:
+    """Recency-weighted trailing mean at each index: each earlier run's weight halves every
+    _PACE_PROG_HALFLIFE_DAYS days of age, so a fresh run dominates and months-old runs fade.
+    Always defined once >=1 run exists, so a lone recent attempt yields a realistic value."""
     out = []
     for i in range(len(paces)):
-        window = paces[max(0, i - (_PACE_PROG_ROLL - 1)):i + 1]
-        out.append(sum(window) / len(window) if len(window) >= 2 else None)
+        num = den = 0.0
+        for j in range(i + 1):
+            w = 0.5 ** ((dates[i] - dates[j]).days / _PACE_PROG_HALFLIFE_DAYS)
+            num += w * paces[j]
+            den += w
+        out.append(num / den if den else None)
     return out
 
 
@@ -858,6 +864,7 @@ def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28)
         return "<p class='note'>No data.</p>"
     pad_l = 44  # wider gutter for m:ss/km labels
     paces = [t[1] for t in dated_paces]
+    dates = [t[0] for t in dated_paces]
     vmin, vmax = min(paces), max(paces)
     if vmax == vmin:
         vmax = vmin + 1
@@ -879,7 +886,7 @@ def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28)
         parts.append(f'<line x1="{pad_l}" y1="{gy:.1f}" x2="{w-pad}" y2="{gy:.1f}" stroke="#2a2a2a" stroke-width="1"/>')
         parts.append(f'<text x="{pad_l-6}" y="{gy+3:.1f}" font-size="8" fill="#666" text-anchor="end">{fmt_pace_from_s_per_km(gv)}</text>')
     # trend polyline first, so the dots read on top of it
-    trend = [(dated_paces[i][0], t) for i, t in enumerate(_rolling_trend(paces)) if t is not None]
+    trend = [(dated_paces[i][0], t) for i, t in enumerate(_rolling_trend(dates, paces)) if t is not None]
     if len(trend) >= 2:
         pts = " ".join(f"{x(d):.1f},{y(v):.1f}" for d, v in trend)
         parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>')
@@ -932,13 +939,13 @@ def pace_progression_section(runs: list[dict] | None) -> str:
     def _render(type_key):
         data = eligible[type_key]
         color = RUN_TYPE_COLOR.get(type_key, "#888")
-        trend = [t for t in _rolling_trend([x[1] for x in data]) if t is not None]
-        cur = f"{fmt_pace_from_s_per_km(trend[-1])}/km" if trend else "—"
+        tvals = [t for t in _rolling_trend([x[0] for x in data], [x[1] for x in data]) if t is not None]
+        cur = f"{fmt_pace_from_s_per_km(tvals[-1])}/km" if tvals else "—"
         stats = (
             f'<div class="stat-row">'
             f'<div class="stat"><p class="stat-label">Current {type_key} pace</p>'
             f'<p class="stat-value" style="color:{color}">{cur}</p>'
-            f'<p class="stat-sub">rolling {_PACE_PROG_ROLL}-run average (GA)</p></div>'
+            f'<p class="stat-sub">recency-weighted average (GA)</p></div>'
             f'<div class="stat"><p class="stat-label">Runs</p>'
             f'<p class="stat-value">{len(data)}</p>'
             f'<p class="stat-sub">classified {type_key}</p></div>'
@@ -951,7 +958,7 @@ def pace_progression_section(runs: list[dict] | None) -> str:
   <p class="section-title">Pace progression</p>
   <div class="card">
     {chart}
-    <p class="note">Dots are individual runs at grade-adjusted pace; the line is the rolling {_PACE_PROG_ROLL}-run average. Hover a dot for the run, its GA pace, and its actual pace. GA pace reads faster than the raw pace shown in the Runs tab on hilly runs (elevation is discounted), so a hilly long run can dip below 6:00/km here while its Runs-tab pace stays slower. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
+    <p class="note">Dots are individual runs at grade-adjusted pace; the line is a recency-weighted average, so recent runs count most. Hover a dot for the run, its GA pace, and its actual pace. GA pace reads faster than the raw pace shown in the Runs tab on hilly runs (elevation is discounted), so a hilly long run can dip below 6:00/km here while its Runs-tab pace stays slower. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
   </div>
 </div>"""
 
