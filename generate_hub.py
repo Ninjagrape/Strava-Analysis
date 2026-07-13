@@ -839,6 +839,7 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "descent":     round(num(row, "fit_total_descent_m") or 0),
             "cadence":     round(num(row, "fit_avg_cadence")) if num(row, "fit_avg_cadence") else None,
             "calories":    round(num(row, "fit_total_calories")) if num(row, "fit_total_calories") else None,
+            "avg_hr":      round(num(row, "fit_avg_heart_rate") or num(row, "Average Heart Rate") or 0) or None,
             "is_interval":  is_interval(row),
             "lap_splits":   lap_splits,
             "km_splits":    km_splits,

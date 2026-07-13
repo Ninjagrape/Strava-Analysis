@@ -608,6 +608,10 @@ svg{display:block;width:100%;height:auto;}
 .legend{font-size:10px;color:#666;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
 .legend span{display:inline-flex;align-items:center;gap:4px;}
 .swatch{width:10px;height:10px;border-radius:2px;display:inline-block;}
+.cmp-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;}
+.cmp-axis{font-size:10px;color:#888;display:inline-flex;align-items:center;gap:5px;}
+.cmp-sel{background:#222;border:1px solid #3a3a3a;color:#ddd;font-size:11px;padding:3px 6px;border-radius:6px;cursor:pointer;}
+.cmp-sel:hover{border-color:#4a5a70;}
 .zone-bar{display:flex;height:26px;border-radius:4px;overflow:hidden;margin:8px 0 4px;}
 .zone-seg{display:flex;align-items:center;justify-content:center;font-size:9px;color:#000;font-weight:600;}
 table{width:100%;border-collapse:collapse;}
@@ -1095,6 +1099,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   <button class="sub-tab active" data-sub="injury" onclick="setSubTab(this)">Injury risk</button>
   <button class="sub-tab" data-sub="paces" onclick="setSubTab(this)">Paces</button>
   <button class="sub-tab" data-sub="trends" onclick="setSubTab(this)">Trends</button>
+  <button class="sub-tab" data-sub="compare" onclick="setSubTab(this);cmpDraw()">Compare</button>
 </div>
 
 <div class="sub-panel" data-sub="injury">
@@ -1178,6 +1183,26 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   <div class="card">
     {cad_chart}
     <p class="note">Steps per minute (both feet). Rising cadence at the same pace usually signals improving running economy.</p>
+  </div>
+</div>
+</div>
+
+<div class="sub-panel" data-sub="compare" style="display:none">
+<div class="section">
+  <p class="section-title">Compare stats</p>
+  <div class="card">
+    <div class="cmp-controls">
+      <div class="rng-tabs" id="cmp-mode">
+        <button class="rng-btn active" data-mode="scatter" onclick="cmpSet('mode','scatter')">Scatter</button>
+        <button class="rng-btn" data-mode="time" onclick="cmpSet('mode','time')">Over time</button>
+        <button class="rng-btn" data-mode="dist" onclick="cmpSet('mode','dist')">Distribution</button>
+      </div>
+      <label class="cmp-axis" id="cmp-x-wrap">x <select class="cmp-sel" id="cmp-x" onchange="cmpSet('x',this.value)"></select></label>
+      <label class="cmp-axis" id="cmp-y-wrap">y <select class="cmp-sel" id="cmp-y" onchange="cmpSet('y',this.value)"></select></label>
+    </div>
+    <div id="cmp-chart" class="ptot-chart"></div>
+    <div class="legend" id="cmp-legend"></div>
+    <p class="note">Pick any two metrics to plot against each other, watch one metric over time, or see its distribution. Points are coloured by run type. Runs missing the selected metric are skipped (heart rate is empty until an HR monitor is used). Pace is min/km, so lower sits toward the bottom.</p>
   </div>
 </div>
 </div>
@@ -1274,6 +1299,187 @@ var CHART_STRAIN = {asof_strain_charts_json};
   if(inc) inc.addEventListener('click', function(){{ stepBy(1); }});
   apply();
 }})();
+</script>
+
+<script>
+// ── Compare subtab (Football-Manager-style stat toggle) ──────────────────────
+// Client-side interactive chart over the global RUNS array (defined later in the
+// hub document, so init is deferred to DOMContentLoaded). Absent when this module
+// is rendered standalone; cmpDraw() no-ops if RUNS is undefined.
+var CMP_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var CMP_STATE = {{mode:'scatter', x:'dist_km', y:'pace'}};
+var CMP_METRICS = [
+  {{key:'dist_km', label:'Distance', unit:'km', fmt:function(v){{ return (Math.round(v*100)/100)+' km'; }}, get:function(r){{ return r.dist_km>0?r.dist_km:null; }}}},
+  {{key:'pace', label:'Pace', unit:'min/km', fmt:function(v){{ var s=v*60, m=Math.floor(s/60), ss=Math.round(s-m*60); if(ss===60){{m++;ss=0;}} return m+':'+(ss<10?'0':'')+ss+'/km'; }}, get:function(r){{ return (r.dist_km>0&&r.moving_s>0)?(r.moving_s/r.dist_km/60):null; }}}},
+  {{key:'elev', label:'Elev gain', unit:'m', fmt:function(v){{ return Math.round(v)+' m'; }}, get:function(r){{ return (r.gain!=null)?r.gain:null; }}}},
+  {{key:'elev_per_km', label:'Elev / km', unit:'m/km', fmt:function(v){{ return (Math.round(v*10)/10)+' m/km'; }}, get:function(r){{ return (r.dist_km>0&&r.gain!=null)?(r.gain/r.dist_km):null; }}}},
+  {{key:'time', label:'Moving time', unit:'min', fmt:function(v){{ var m=Math.round(v), h=Math.floor(m/60), mm=m-h*60; return h>0?(h+'h '+(mm<10?'0':'')+mm+'m'):(mm+'m'); }}, get:function(r){{ return r.moving_s>0?(r.moving_s/60):null; }}}},
+  {{key:'cadence', label:'Cadence', unit:'spm', fmt:function(v){{ return Math.round(v)+' spm'; }}, get:function(r){{ return r.cadence!=null?r.cadence:null; }}}},
+  {{key:'calories', label:'Calories', unit:'kcal', fmt:function(v){{ return Math.round(v)+' kcal'; }}, get:function(r){{ return r.calories!=null?r.calories:null; }}}},
+  {{key:'avg_hr', label:'Heart rate', unit:'bpm', fmt:function(v){{ return Math.round(v)+' bpm'; }}, get:function(r){{ return r.avg_hr!=null?r.avg_hr:null; }}}}
+];
+function cmpMetric(k){{ for(var i=0;i<CMP_METRICS.length;i++){{ if(CMP_METRICS[i].key===k) return CMP_METRICS[i]; }} return CMP_METRICS[0]; }}
+function cmpEsc(s){{ return String(s==null?'':s).replace(/[&<>"]/g, function(c){{ return {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c]; }}); }}
+function cmpTick(m,v){{
+  if(m.key==='pace'){{ var s=v*60, mm=Math.floor(s/60), ss=Math.round(s-mm*60); if(ss===60){{mm++;ss=0;}} return mm+':'+(ss<10?'0':'')+ss; }}
+  if(Math.abs(v)>=100) return ''+Math.round(v);
+  if(Math.abs(v)>=10) return ''+(Math.round(v*10)/10);
+  return ''+(Math.round(v*100)/100);
+}}
+function cmpDateLabel(ms){{ var d=new Date(ms); return CMP_MON[d.getMonth()]+" '"+String(d.getFullYear()).slice(2); }}
+
+function cmpInit(){{
+  var xs=document.getElementById('cmp-x'), ys=document.getElementById('cmp-y');
+  if(!xs||!ys) return;
+  var opts=CMP_METRICS.map(function(m){{ return '<option value="'+m.key+'">'+m.label+'</option>'; }}).join('');
+  xs.innerHTML=opts; ys.innerHTML=opts; xs.value=CMP_STATE.x; ys.value=CMP_STATE.y;
+  cmpSyncControls(); cmpDraw();
+}}
+function cmpSyncControls(){{
+  var mode=CMP_STATE.mode;
+  var xw=document.getElementById('cmp-x-wrap'), yw=document.getElementById('cmp-y-wrap');
+  if(xw) xw.style.display=(mode==='scatter')?'':'none';
+  if(yw){{ yw.style.display=''; yw.firstChild.nodeValue=(mode==='scatter')?'y ':'metric '; }}
+}}
+function cmpSet(kind,val){{
+  CMP_STATE[kind]=val;
+  if(kind==='mode'){{
+    var btns=document.querySelectorAll('#cmp-mode .rng-btn');
+    for(var i=0;i<btns.length;i++){{ btns[i].classList.toggle('active', btns[i].getAttribute('data-mode')===val); }}
+    cmpSyncControls();
+  }}
+  cmpDraw();
+}}
+function cmpLegend(pts){{
+  var el=document.getElementById('cmp-legend'); if(!el) return;
+  if(typeof RUN_TYPES==='undefined'){{ el.innerHTML=''; return; }}
+  var present={{}};
+  for(var i=0;i<pts.length;i++){{ present[pts[i].type]=1; }}
+  var items=[];
+  for(var i=0;i<RUN_TYPES.length;i++){{ var t=RUN_TYPES[i]; if(present[t.key]){{ items.push('<span><span class="swatch" style="background:'+(RUN_TYPE_COLOR[t.key]||'#888')+'"></span>'+t.label+'</span>'); }} }}
+  el.innerHTML=items.join('');
+}}
+function cmpDraw(){{
+  var holder=document.getElementById('cmp-chart');
+  if(!holder||typeof RUNS==='undefined') return;
+  if(CMP_STATE.mode==='dist') cmpDrawDist(holder); else cmpDrawXY(holder);
+}}
+function cmpDrawXY(holder){{
+  var mode=CMP_STATE.mode, my=cmpMetric(CMP_STATE.y), mx=(mode==='time')?null:cmpMetric(CMP_STATE.x);
+  var pts=[];
+  for(var i=0;i<RUNS.length;i++){{
+    var r=RUNS[i], yv=my.get(r); if(yv==null) continue;
+    var xv;
+    if(mode==='time'){{ xv=Date.parse(r.date_iso); if(isNaN(xv)) continue; }}
+    else {{ xv=mx.get(r); if(xv==null) continue; }}
+    pts.push({{x:xv, y:yv, type:r.run_type||'misc', run:r}});
+  }}
+  if(pts.length<2){{ holder.innerHTML='<p class="note">Not enough data for this metric.</p>'; cmpLegend([]); return; }}
+  var W=720,H=240,padL=52,padR=14,padT=16,padB=30;
+  var xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+  for(var i=0;i<pts.length;i++){{ var p=pts[i]; if(p.x<xmin)xmin=p.x; if(p.x>xmax)xmax=p.x; if(p.y<ymin)ymin=p.y; if(p.y>ymax)ymax=p.y; }}
+  var xr=(xmax-xmin)||1, yr=(ymax-ymin)||1;
+  ymin-=yr*0.06; ymax+=yr*0.06; yr=(ymax-ymin)||1;
+  if(mode!=='time'){{ xmin-=xr*0.04; xmax+=xr*0.04; xr=(xmax-xmin)||1; }}
+  function px(v){{ return padL+(v-xmin)/xr*(W-padL-padR); }}
+  function py(v){{ return H-padB-(v-ymin)/yr*(H-padT-padB); }}
+  var svg=['<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">'];
+  for(var g=0;g<=3;g++){{
+    var gv=ymin+g/3*yr, gy=py(gv);
+    svg.push('<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+gy.toFixed(1)+'" stroke="#2a2a2a" stroke-width="1"/>');
+    svg.push('<text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="#666" text-anchor="end">'+cmpTick(my,gv)+'</text>');
+  }}
+  for(var g=0;g<=4;g++){{
+    var gv=xmin+g/4*xr, gx=px(gv);
+    var lab=(mode==='time')?cmpDateLabel(gv):cmpTick(mx,gv);
+    svg.push('<text x="'+gx.toFixed(1)+'" y="'+(H-10)+'" font-size="8" fill="#555" text-anchor="middle">'+lab+'</text>');
+  }}
+  svg.push('<text x="'+padL+'" y="10" font-size="8" fill="#888">'+my.label+' ('+my.unit+')</text>');
+  svg.push('<text x="'+((padL+W-padR)/2).toFixed(1)+'" y="'+(H-1)+'" font-size="8" fill="#777" text-anchor="middle">'+((mode==='time')?'Date':(mx.label+' ('+mx.unit+')'))+'</text>');
+  for(var i=0;i<pts.length;i++){{
+    var p=pts[i], c=(RUN_TYPE_COLOR[p.type]||'#888');
+    svg.push('<circle cx="'+px(p.x).toFixed(1)+'" cy="'+py(p.y).toFixed(1)+'" r="3.5" fill="'+c+'" fill-opacity="0.82" stroke="#111" stroke-width="0.5"/>');
+  }}
+  svg.push('</svg>');
+  holder.innerHTML=svg.join('')+'<div class="ptot-tip" id="cmp-tip"></div>';
+  holder._cmp={{pts:pts, W:W, H:H, padL:padL, padR:padR, padT:padT, padB:padB, xmin:xmin, xr:xr, ymin:ymin, yr:yr, mx:mx, my:my, mode:mode}};
+  holder.onmousemove=function(e){{ cmpHoverXY(e,holder); }};
+  holder.onmouseleave=function(){{ var t=document.getElementById('cmp-tip'); if(t) t.style.opacity=0; }};
+  cmpLegend(pts);
+}}
+function cmpHoverXY(e,holder){{
+  var st=holder._cmp; if(!st) return;
+  var svg=holder.querySelector('svg'); if(!svg) return;
+  var sr=svg.getBoundingClientRect();
+  var mx=(e.clientX-sr.left)/sr.width*st.W, my=(e.clientY-sr.top)/sr.height*st.H;
+  function px(v){{ return st.padL+(v-st.xmin)/st.xr*(st.W-st.padL-st.padR); }}
+  function py(v){{ return st.H-st.padB-(v-st.ymin)/st.yr*(st.H-st.padT-st.padB); }}
+  var best=-1, bd=Infinity;
+  for(var i=0;i<st.pts.length;i++){{ var dx=px(st.pts[i].x)-mx, dy=py(st.pts[i].y)-my, d=dx*dx+dy*dy; if(d<bd){{bd=d;best=i;}} }}
+  var tip=document.getElementById('cmp-tip'); if(!tip||best<0) return;
+  if(bd>1000){{ tip.style.opacity=0; return; }}
+  var p=st.pts[best];
+  var head='<div class="ptot-tip-d">'+cmpEsc(p.run.name)+' · '+p.run.date_long+'</div>';
+  var body=(st.mode==='time')
+    ? '<div><b>'+st.my.label+': '+st.my.fmt(p.y)+'</b></div>'
+    : '<div>'+st.mx.label+': '+st.mx.fmt(p.x)+'</div><div><b>'+st.my.label+': '+st.my.fmt(p.y)+'</b></div>';
+  tip.innerHTML=head+body;
+  var hr=holder.getBoundingClientRect(), scaleX=sr.width/st.W, scaleY=sr.height/st.H;
+  tip.style.left=((sr.left-hr.left)+px(p.x)*scaleX)+'px';
+  tip.style.top=((sr.top-hr.top)+py(p.y)*scaleY)+'px';
+  tip.style.opacity=1;
+}}
+function cmpDrawDist(holder){{
+  var m=cmpMetric(CMP_STATE.y), vals=[];
+  for(var i=0;i<RUNS.length;i++){{ var v=m.get(RUNS[i]); if(v!=null) vals.push({{v:v, type:RUNS[i].run_type||'misc'}}); }}
+  if(vals.length<2){{ holder.innerHTML='<p class="note">Not enough data for this metric.</p>'; cmpLegend([]); return; }}
+  var vmin=Infinity, vmax=-Infinity;
+  for(var i=0;i<vals.length;i++){{ if(vals[i].v<vmin)vmin=vals[i].v; if(vals[i].v>vmax)vmax=vals[i].v; }}
+  if(vmax<=vmin) vmax=vmin+1;
+  var nb=Math.min(12, Math.max(5, Math.round(Math.sqrt(vals.length)))), bw=(vmax-vmin)/nb;
+  var bins=[]; for(var b=0;b<nb;b++) bins.push({{total:0, types:{{}}}});
+  for(var i=0;i<vals.length;i++){{ var bi=Math.floor((vals[i].v-vmin)/bw); if(bi>=nb)bi=nb-1; if(bi<0)bi=0; bins[bi].total++; bins[bi].types[vals[i].type]=(bins[bi].types[vals[i].type]||0)+1; }}
+  var cmax=0; for(var b=0;b<nb;b++){{ if(bins[b].total>cmax)cmax=bins[b].total; }} if(cmax<=0)cmax=1;
+  var W=720,H=240,padL=32,padR=14,padT=16,padB=30, gw=(W-padL-padR)/nb;
+  function py(c){{ return H-padB-(c/cmax)*(H-padT-padB); }}
+  var svg=['<svg viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block">'];
+  for(var g=0;g<=3;g++){{ var gc=cmax*g/3, gy=py(gc); svg.push('<line x1="'+padL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+gy.toFixed(1)+'" stroke="#2a2a2a" stroke-width="1"/><text x="'+(padL-6)+'" y="'+(gy+3).toFixed(1)+'" font-size="8" fill="#666" text-anchor="end">'+Math.round(gc)+'</text>'); }}
+  var step=Math.max(1, Math.round(nb/6));
+  for(var b=0;b<nb;b++){{
+    var bx=padL+b*gw+gw*0.12, w=gw*0.76, yb=H-padB;
+    for(var ti=0;ti<RUN_TYPES.length;ti++){{
+      var tk=RUN_TYPES[ti].key, cnt=bins[b].types[tk]||0; if(!cnt) continue;
+      var sh=(cnt/cmax)*(H-padT-padB), sy=yb-sh;
+      svg.push('<rect x="'+bx.toFixed(1)+'" y="'+sy.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+sh.toFixed(1)+'" fill="'+(RUN_TYPE_COLOR[tk]||'#888')+'" fill-opacity="0.85"/>');
+      yb=sy;
+    }}
+    if(b%step===0) svg.push('<text x="'+(padL+b*gw+gw/2).toFixed(1)+'" y="'+(H-10)+'" font-size="8" fill="#555" text-anchor="middle">'+cmpTick(m, vmin+b*bw)+'</text>');
+  }}
+  svg.push('<text x="'+padL+'" y="10" font-size="8" fill="#888">runs</text>');
+  svg.push('<text x="'+((padL+W-padR)/2).toFixed(1)+'" y="'+(H-1)+'" font-size="8" fill="#777" text-anchor="middle">'+m.label+' ('+m.unit+')</text>');
+  svg.push('</svg>');
+  holder.innerHTML=svg.join('')+'<div class="ptot-tip" id="cmp-tip"></div>';
+  holder._cmpd={{bins:bins, nb:nb, vmin:vmin, bw:bw, W:W, padL:padL, padR:padR, gw:gw, m:m}};
+  holder.onmousemove=function(e){{ cmpHoverDist(e,holder); }};
+  holder.onmouseleave=function(){{ var t=document.getElementById('cmp-tip'); if(t) t.style.opacity=0; }};
+  cmpLegend(vals);
+}}
+function cmpHoverDist(e,holder){{
+  var st=holder._cmpd; if(!st) return;
+  var svg=holder.querySelector('svg'); if(!svg) return;
+  var sr=svg.getBoundingClientRect();
+  var mx=(e.clientX-sr.left)/sr.width*st.W;
+  var b=Math.floor((mx-st.padL)/st.gw);
+  var tip=document.getElementById('cmp-tip'); if(!tip) return;
+  if(b<0||b>=st.nb){{ tip.style.opacity=0; return; }}
+  var lo=st.vmin+b*st.bw, hi=lo+st.bw, cnt=st.bins[b].total;
+  tip.innerHTML='<div class="ptot-tip-d">'+st.m.fmt(lo)+' – '+st.m.fmt(hi)+'</div><div><b>'+cnt+' run'+(cnt===1?'':'s')+'</b></div>';
+  var hr=holder.getBoundingClientRect(), scaleX=sr.width/st.W, cx=st.padL+(b+0.5)*st.gw;
+  tip.style.left=((sr.left-hr.left)+cx*scaleX)+'px';
+  tip.style.top=((sr.top-hr.top)+22)+'px';
+  tip.style.opacity=1;
+}}
+if(document.readyState==='loading'){{ document.addEventListener('DOMContentLoaded', cmpInit); }} else {{ cmpInit(); }}
 </script>
 </body>
 </html>

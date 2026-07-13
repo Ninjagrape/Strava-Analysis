@@ -1,17 +1,6 @@
 ## General
 [] Anticipate runs may or may not have HR data
 
-[o] Revamp global heatmap to anticipate global running. List hotspots as hyperlinks. Avoid outliers and focus on most common centroid of runs
-
-## Runs
-
-## Analytics
-[] Toggle which simple plots are shown (Fm23 style)
-
-## Simple plots
-[] Distribution of pace and distance and elevation
-[] Pace vs Distance scatter graph, dist v elevation scatter
-
 ## Analysis improvements
 [] Predicted speeds graph with confidence interval
 
