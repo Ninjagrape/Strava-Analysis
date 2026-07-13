@@ -23,6 +23,7 @@ Writes analytics_dashboard.html next to the script.
 """
 
 import csv
+import html
 import json
 import math
 import sys
@@ -603,6 +604,8 @@ svg{display:block;width:100%;height:auto;}
 .ptot-head .rng-tabs{margin-bottom:0;}
 .ptot-total{font-size:12px;font-weight:600;color:#ccc;margin:0;}
 .ptot-chart{position:relative;}
+.pp-holder{position:relative;}
+.pp-dot{cursor:crosshair;}
 .ptot-tip{position:absolute;transform:translate(-50%,-115%);background:#111;border:1px solid #3a3a3a;border-radius:6px;padding:4px 8px;font-size:11px;color:#eee;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .08s;z-index:5;}
 .ptot-tip-d{font-size:9px;color:#888;margin-bottom:1px;}
 .legend{font-size:10px;color:#666;margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;}
@@ -854,7 +857,7 @@ def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28)
     if not dated_paces:
         return "<p class='note'>No data.</p>"
     pad_l = 44  # wider gutter for m:ss/km labels
-    paces = [p for _, p in dated_paces]
+    paces = [t[1] for t in dated_paces]
     vmin, vmax = min(paces), max(paces)
     if vmax == vmin:
         vmax = vmin + 1
@@ -868,7 +871,8 @@ def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28)
     def y(v):  # inverted: fastest pace (vmin) at the top
         return pad + (v - vmin) / span * (h - 2 * pad)
 
-    parts = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
+    parts = ['<div class="pp-holder" onmousemove="ppHover(event,this)" onmouseleave="ppLeave(this)">',
+             f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">']
     for g in range(3):
         gv = vmin + g / 2 * span
         gy = y(gv)
@@ -879,15 +883,19 @@ def _pace_prog_chart(dated_paces: list[tuple], color: str, w=720, h=170, pad=28)
     if len(trend) >= 2:
         pts = " ".join(f"{x(d):.1f},{y(v):.1f}" for d, v in trend)
         parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2"/>')
-    for d, p in dated_paces:
-        parts.append(f'<circle cx="{x(d):.1f}" cy="{y(p):.1f}" r="3" fill="{color}" opacity="0.7"/>')
+    for d, p, name, dlong, act, gain in dated_paces:
+        head = html.escape(f"{name} · {dlong}", quote=True)
+        parts.append(
+            f'<circle class="pp-dot" cx="{x(d):.1f}" cy="{y(p):.1f}" r="3" fill="{color}" opacity="0.7" '
+            f'data-d="{head}" data-v="{fmt_pace_from_s_per_km(p)}" '
+            f'data-a="{fmt_pace_from_s_per_km(act)}" data-g="{round(gain)}"/>')
     # sparse x-axis date labels (~6, muted, like _bar_chart). Evenly spaced along the
     # date axis rather than per data point, so clustered runs can't overprint each other.
     n_labels = min(6, max(2, len(dated_paces)))
     for k in range(n_labels):
         d = d0 + timedelta(days=round(k / (n_labels - 1) * dspan))
         parts.append(f'<text x="{x(d):.1f}" y="{h-8:.1f}" font-size="8" fill="#555" text-anchor="middle">{d.day}/{d.month}</text>')
-    parts.append("</svg>")
+    parts.append('</svg><div class="ptot-tip"></div></div>')
     return "".join(parts)
 
 
@@ -912,7 +920,8 @@ def pace_progression_section(runs: list[dict] | None) -> str:
         except (KeyError, ValueError, TypeError):
             continue
         pace = ga_time(moving_s, gain, dist_km) / dist_km  # s/km GA
-        by_type[rt].append((d, pace))
+        act = moving_s / dist_km  # s/km actual (what the Runs tab shows)
+        by_type[rt].append((d, pace, r.get("name") or "Run", r.get("date_long") or "", act, gain))
 
     eligible = {t: sorted(v) for t, v in by_type.items() if len(v) >= _PACE_PROG_MIN_RUNS}
     if not eligible:
@@ -923,7 +932,7 @@ def pace_progression_section(runs: list[dict] | None) -> str:
     def _render(type_key):
         data = eligible[type_key]
         color = RUN_TYPE_COLOR.get(type_key, "#888")
-        trend = [t for t in _rolling_trend([p for _, p in data]) if t is not None]
+        trend = [t for t in _rolling_trend([x[1] for x in data]) if t is not None]
         cur = f"{fmt_pace_from_s_per_km(trend[-1])}/km" if trend else "—"
         stats = (
             f'<div class="stat-row">'
@@ -942,7 +951,7 @@ def pace_progression_section(runs: list[dict] | None) -> str:
   <p class="section-title">Pace progression</p>
   <div class="card">
     {chart}
-    <p class="note">Dots are individual runs at grade-adjusted pace; the line is the rolling {_PACE_PROG_ROLL}-run average. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
+    <p class="note">Dots are individual runs at grade-adjusted pace; the line is the rolling {_PACE_PROG_ROLL}-run average. Hover a dot for the run, its GA pace, and its actual pace. GA pace reads faster than the raw pace shown in the Runs tab on hilly runs (elevation is discounted), so a hilly long run can dip below 6:00/km here while its Runs-tab pace stays slower. Classifications are era-relative: each run was classified against the fitness curve at the time, so absolute paces for the same label drift as fitness changes.</p>
   </div>
 </div>"""
 
@@ -1097,8 +1106,8 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
 
 <div class="sub-tabs">
   <button class="sub-tab active" data-sub="injury" onclick="setSubTab(this)">Injury risk</button>
-  <button class="sub-tab" data-sub="paces" onclick="setSubTab(this)">Paces</button>
   <button class="sub-tab" data-sub="trends" onclick="setSubTab(this)">Trends</button>
+  <button class="sub-tab" data-sub="paces" onclick="setSubTab(this)">Paces</button>
   <button class="sub-tab" data-sub="compare" onclick="setSubTab(this);cmpDraw()">Compare</button>
 </div>
 
@@ -1479,6 +1488,33 @@ function cmpHoverDist(e,holder){{
   tip.style.top=((sr.top-hr.top)+22)+'px';
   tip.style.opacity=1;
 }}
+// ── Pace-progression scatter hover (static server-rendered SVG dots) ──────────
+// Each .pp-dot carries data-d (name · date), data-v (GA pace), data-a (actual
+// pace), data-g (elevation gain). Nearest-dot lookup in viewBox space so hits
+// survive the responsive scale, mirroring the compare-tab tooltip.
+function ppHover(e, holder){{
+  var svg=holder.querySelector('svg'); if(!svg) return;
+  var vb=svg.viewBox.baseVal, W=vb.width, H=vb.height;
+  var sr=svg.getBoundingClientRect();
+  var mx=(e.clientX-sr.left)/sr.width*W, my=(e.clientY-sr.top)/sr.height*H;
+  var dots=svg.querySelectorAll('.pp-dot');
+  var best=null, bd=Infinity, bx=0, by=0;
+  for(var i=0;i<dots.length;i++){{
+    var cx=parseFloat(dots[i].getAttribute('cx')), cy=parseFloat(dots[i].getAttribute('cy'));
+    var dx=cx-mx, dy=cy-my, d=dx*dx+dy*dy;
+    if(d<bd){{ bd=d; best=dots[i]; bx=cx; by=cy; }}
+  }}
+  var tip=holder.querySelector('.ptot-tip'); if(!tip||!best) return;
+  if(bd>1200){{ tip.style.opacity=0; return; }}
+  tip.innerHTML='<div class="ptot-tip-d">'+cmpEsc(best.getAttribute('data-d'))+'</div>'
+    +'<div><b>GA '+best.getAttribute('data-v')+'/km</b></div>'
+    +'<div class="ptot-tip-d">Actual '+best.getAttribute('data-a')+'/km · +'+best.getAttribute('data-g')+'m</div>';
+  var hr=holder.getBoundingClientRect(), scaleX=sr.width/W, scaleY=sr.height/H;
+  tip.style.left=((sr.left-hr.left)+bx*scaleX)+'px';
+  tip.style.top=((sr.top-hr.top)+by*scaleY)+'px';
+  tip.style.opacity=1;
+}}
+function ppLeave(holder){{ var t=holder.querySelector('.ptot-tip'); if(t) t.style.opacity=0; }}
 if(document.readyState==='loading'){{ document.addEventListener('DOMContentLoaded', cmpInit); }} else {{ cmpInit(); }}
 </script>
 </body>
