@@ -26,6 +26,10 @@ from pathlib import Path
 
 from generate_dashboards import fmt_time, fmt_pace, ga_time
 from config import load_config
+from dedupe import (
+    DUP_START_MAX_S, DUP_OVERLAP_FRAC, DUP_DIST_TOL,
+    DUP_TIME_TOL, DUP_START_M, DUP_CENTROID_M,
+)
 
 # Per-phase timing inside build_segments, printed only under --profile (STRAVA_PROFILE).
 PROFILE = bool(os.environ.get("STRAVA_PROFILE"))
@@ -436,6 +440,21 @@ def _split_chain_at_loop(chain):
     return out
 
 
+def _has_elevation(sub) -> bool:
+    return sum(1 for p in sub if p.get("elev") is not None) >= 2
+
+
+def _with_elevation(efforts):
+    """Efforts whose lap carries usable altitude, or all of them when none does.
+
+    The reference lap sets a segment's grade, gain and elevation profile for every
+    other effort, so letting a lap with no altitude win that job reports a real
+    climb as 0% flat. Some devices record no altitude at all (see lib/elevation.py),
+    and one of their laps landing on a 16-effort segment was enough to blank it.
+    """
+    return [e for e in efforts if _has_elevation(e["sub"])] or efforts
+
+
 def _net_gain(sub):
     """(net_elev, gain_m) for a sub-track, tolerant of points missing elevation.
 
@@ -694,10 +713,18 @@ def _runs_signature(runs):
              f"thruloop1:{LOOP_THRU_COV},{LOOP_THRU_LENRATIO},"
              f"anchors:{load_config().segment_anchors},{ANCHOR_TOL_M},{ANCHOR_COVER},{ANCHOR_CLOSE_M},"
              f"autoanchor2:{AUTO_ANCHOR_MAX_CANDIDATES},{AUTO_ANCHOR_MIN_RUNS},{AUTO_ANCHOR_MINED_GAP_M},"
-             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1,"
+             # dem1: DEM-backfilled elevation reaches detection through dist_stream,
+             # which the per-run hashes above do not cover, and the reference-lap and
+             # GA rules that read it changed at the same time.
+             f"locdedupe1,close1,anchorline2,elevprofile1,runtype1,nodecimate1,dem1,refga1,"
              f"subclimb1:{SUBCLIMB_MIN_GRADE},{SUBCLIMB_STEEPER},{SUBCLIMB_MAX_FRAC},"
              f"climbext3noloss:{CLIMB_EXT_MAX_M},{CLIMB_EXT_DROP_TOL},{CLIMB_EXT_REVERSE_M},"
-             f"salvageclimb1:{SALVAGE_CLIMB_MAX_M},{SALVAGE_MIN_OVERLAP}".encode())
+             f"salvageclimb1:{SALVAGE_CLIMB_MAX_M},{SALVAGE_MIN_OVERLAP},"
+             # Dropping a duplicate already changes the per-run hashes above, but the
+             # thresholds and overrides deciding WHICH recording survives do not, and
+             # the live NRC/Mi pair is identical on every field hashed there.
+             f"dedupe1:{DUP_START_MAX_S},{DUP_OVERLAP_FRAC},{DUP_DIST_TOL},{DUP_TIME_TOL},"
+             f"{DUP_START_M},{DUP_CENTROID_M},{load_config().duplicates}".encode())
     return h.hexdigest()
 
 
@@ -929,11 +956,12 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
         band = [e for e in efforts if 0.80 * seg_len <= e["dist_m"] <= 1.25 * seg_len] or efforts
         best_iso = max(_loop_roundness(e["sub"]) for e in band)
         good = [e for e in band if _loop_roundness(e["sub"]) >= max(0.33, 0.6 * best_iso)] or band
+        good = _with_elevation(good)
         midx = _medoid_index([e["sub"] for e in good])
         ref = good[midx] if midx is not None else max(good, key=lambda e: _loop_roundness(e["sub"]))
         poly = _simplify([[p["lat"], p["lon"]] for p in ref["sub"]])
     else:
-        ref = min(efforts, key=lambda e: abs(e["dist_m"] - seg_len))
+        ref = min(_with_elevation(efforts), key=lambda e: abs(e["dist_m"] - seg_len))
         poly = _simplify([[p["lat"], p["lon"]] for p in ref["sub"]])
     if len(poly) < 2:
         return None
@@ -972,7 +1000,13 @@ def _segment_from_efforts(efforts, run_by_id, force_type=None,
     for e in efforts:
         r = run_by_id[e["run_id"]]
         t = e["time_s"]
-        gx = ga_time(t, e["gain_m"], len_km) if len_km else t
+        # Every effort is adjusted by the segment's own gain, not by what its device
+        # made of the hill that day. Per-effort figures differ by GPS noise and by
+        # recording source (a run with no altitude reads 0, and a DEM-derived profile
+        # reads lower than a barometer's), which put the fastest effort behind a
+        # slower one in this column. The hill belongs to the route, so GA differences
+        # here are the runner's doing and nothing else's.
+        gx = ga_time(t, gain_m, len_km) if len_km else t
         name = r["name"]
         if id(e) in lap_no:
             name = f"{name} (lap {lap_no[id(e)]})"

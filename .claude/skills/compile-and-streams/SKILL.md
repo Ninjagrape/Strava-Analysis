@@ -46,7 +46,9 @@ The enriched CSV is *designed* to be the parse cache: a cache hit for an activit
 
 Builds `fit_distance_stream`: a JSON list of points `{d, t, pace, elev, hr, cad, lat, lon}` (`d` in km, elevation key is `elev`, NOT `e`), resampled **over distance** at `spacing = max(1000/STREAM_POINTS_PER_KM, total_dist/STREAM_MAX_POINTS)`, uniform ~7 m spatial resolution regardless of run length, capped at 3000 points past ~20 km. Each emitted point is a real `record` (epoch, cumulative distance); pace comes from a forward window of ≥ `STREAM_PACE_WINDOW_M` (50 m) and is nulled outside 120–1200 s/km.
 
-**IRON LAW**: elevation and lat/lon attach to resampled points by **cumulative-distance interpolation** (`elev_at` / `pos_at`: bisect on distance-sorted fixes, linear interpolation, snapping to the nearer fix across gaps wider than `GEO_GAP_MAX_M` = 60 m), NEVER by exact epoch match. Elevation is recorded on only a fraction of records, so epoch matching leaves most resampled points elevation-less; downstream `net_elev` then silently collapses to 0 and every climb misclassifies as flat. This shipped in June 2026 after a density increase, the symptom was ~all segments reading 0% grade. HR and cadence DO attach by exact epoch (`epoch in hr_by_t`), which is safe only because emitted points are real record epochs and HR/cadence appear on most records; any genuinely sparse channel must use the `elev_at` pattern.
+**IRON LAW**: elevation and lat/lon attach to resampled points by **cumulative-distance interpolation** (`elev_at` / `pos_at`: bisect on distance-sorted fixes, linear interpolation, snapping to the nearer fix across gaps wider than `GEO_GAP_MAX_M` = 60 m), NEVER by exact epoch match. Elevation is recorded on only a fraction of records, so epoch matching leaves most resampled points elevation-less; downstream `net_elev` then silently collapses to 0 and every climb misclassifies as flat. This shipped in June 2026 after a density increase, the symptom was ~all segments reading 0% grade.
+
+**HR is the exception to the distance rule**: `hr_at` attaches heart rate by **nearest sample in time**, bisecting on epoch, with no interpolation and a hard `HR_GAP_MAX_S` (10 s) tolerance; readings outside `HR_MIN_BPM`–`HR_MAX_BPM` are dropped before the lookup. Distance is the wrong index for a physiological channel, during a pause distance barely advances while HR falls, so a distance lookup holds a stale value for a long stretch. Nearest-not-interpolated is deliberate: between 1 s samples interpolation is noise, and across a strap dropout it fabricates a plateau, so a real dropout must render as a visible hole. The tolerance applies to the end cases too (epoch before the first or after the last reading), a strap that connects three minutes in must leave those three minutes HR-less rather than hold the first beat backwards, unlike `elev_at`'s unconditional end-clamps. Because nearest-neighbour halves the effective spacing, coverage stays ~100% up to a 20 s sample interval (2 × `HR_GAP_MAX_S`) and then falls off as `2 * HR_GAP_MAX_S / interval` (verified 2026-07-31: 25 s → 83%, 30 s → 69%, 60 s → 34%). Cadence still attaches by exact epoch (`epoch in cad_by_t`), which is safe only because emitted points are real record epochs and cadence appears on most records; any genuinely sparse channel must use `elev_at` (distance) or `hr_at` (time), never exact epoch.
 
 ## Key files and functions
 
@@ -58,6 +60,7 @@ All stage-1 code lives in `strava_compile.py` (entry `main()`; 966 lines as of 2
 | `decompress_fit_gz` | .gz → .fit into tmp; skips if target exists |
 | `load_prior_fit_cache`, `extract_activity_id` | Prior-CSV parse cache (see semantics above) |
 | `_parse_one` | Process-pool worker: decompress + `parse_fit`, never raises |
+| `_FitFile`, `_repack_byte_field` | `FitFile` subclass used by `parse_fit`; rebuilds multi-byte numeric fields that a device declared with the FIT `byte` base type (see pitfalls, as of 2026-08-02) |
 | `parse_fit` | One .fit → dict of all derived columns (session, laps, records) |
 | `_best_efforts` + `BEST_EFFORT_DISTANCES` | Sliding two-pointer window over (epoch, cum-dist) track; 11 targets 400m–half; `None` when the run is shorter than the target |
 | `_detect_reps`, `_interval_best_efforts` | Interval reps: only when session rest ratio ≥ `INTERVAL_REST_RATIO_THRESHOLD` (0.20); a rep ends after ≥ `INTERVAL_MIN_REST_DURATION_S` (5) consecutive records below `INTERVAL_SPEED_THRESHOLD_MPS` (2.0); needs ≥ 2 reps to populate |
@@ -70,7 +73,7 @@ All stage-1 code lives in `strava_compile.py` (entry `main()`; 966 lines as of 2
 
 ## Tunables
 
-All module-level in `strava_compile.py` (as of 2026-07). Grep: `grep -n "STREAM_\|GPS_\|GEO_GAP\|INTERVAL_\|PACE_ZONE" strava_compile.py`.
+All module-level in `strava_compile.py` (as of 2026-07). Grep: `grep -n "STREAM_\|GPS_\|GEO_GAP\|HR_\|INTERVAL_\|PACE_ZONE" strava_compile.py`.
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -78,13 +81,15 @@ All module-level in `strava_compile.py` (as of 2026-07). Grep: `grep -n "STREAM_
 | `STREAM_MAX_POINTS` | 3000 | dist_stream cap (bites past ~20 km) |
 | `STREAM_PACE_WINDOW_M` | 50.0 | min look-ahead for instantaneous pace |
 | `GEO_GAP_MAX_M` | 60.0 | wider fix gap → snap, don't interpolate a chord |
+| `HR_GAP_MAX_S` | 10.0 | max seconds to the nearest HR reading; beyond it the point gets no `hr` (as of 2026-07-31) |
+| `HR_MIN_BPM` / `HR_MAX_BPM` | 20 / 250 | HR outside this range is treated as absent (as of 2026-07-31) |
 | `GPS_POINTS_PER_KM` | 150 | polyline points per km |
 | `GPS_MIN_POINTS` / `GPS_MAX_POINTS` | 75 / 2500 | polyline floor / cap (cap bites past ~17 km) |
 
 Changing any of these requires `--rebuild` (see cache semantics), but they split by what they touch and thus by how they reach the segment cache:
 
 - `GPS_POINTS_PER_KM` / `GPS_MIN_POINTS` / `GPS_MAX_POINTS` alter `gps_polyline`, and `len(gps_polyline)` is hashed by `_runs_signature`, so after `--rebuild` the segment cache self-invalidates.
-- `STREAM_POINTS_PER_KM`, `STREAM_MAX_POINTS`, `STREAM_PACE_WINDOW_M`, and `GEO_GAP_MAX_M` alter only `dist_stream`, which the signature does NOT hash. After `--rebuild` you must ALSO manually delete `cache/segments_cache.json` (or bump a params-token version), or detection silently keeps using stale stream inputs.
+- `STREAM_POINTS_PER_KM`, `STREAM_MAX_POINTS`, `STREAM_PACE_WINDOW_M`, `GEO_GAP_MAX_M`, and the `HR_*` constants alter only `dist_stream`, which the signature does NOT hash. After `--rebuild` you must ALSO manually delete `cache/segments_cache.json` (or bump a params-token version), or detection silently keeps using stale stream inputs.
 
 See `.claude/skills/caches-and-invalidation/SKILL.md`.
 
@@ -121,6 +126,9 @@ See `.claude/skills/caches-and-invalidation/SKILL.md`.
 - Cached rows (when reuse works) are strings copied verbatim from the prior CSV, never re-derived.
 - Output CSV date = export archive mtime, not run date; two compiles of the same export overwrite one file.
 - `decompress_fit_gz` skips decompression when the `.fit` already exists in `--tmp`; a corrupt half-written tmp file persists until deleted.
+- Mi Fitness / Zepp band uploads declare every multi-byte numeric field (`timestamp`, `total_distance`, `position_lat`, ...) with the FIT `byte` base type and big-endian order, so stock fitparse hands back a tuple of raw bytes: `TypeError: '>=' not supported between instances of 'tuple' and 'int'` from `processors.process_type_date_time`, or a silent `total_distance` of `(0.0, 0.09, 0.8, 0.96)` where 6104 m was meant. `_FitFile` repacks them using the definition message's declared endianness; do not "simplify" it away, and never use bare `FitFile` in a new reader. Verified on 6 of 95 files, 2026-08-02.
+- Mi Fitness / Zepp records carry only `timestamp, distance, position_lat, position_long, heart_rate, cadence` (verified by dumping the messages, 2026-08-02). There is **no altitude field at all** and session ascent/descent are 0, so no amount of parsing recovers a profile; the hub fills one from a DEM instead (`lib/elevation.py`). Their `cadence` is a constant 0 on every record, which `_distance_stream` still keeps (it range-checks HR but only null-checks cadence), so those runs surface a flat zero cadence line and a per-km Cad column of 0s.
+- `parse_fit` never raises: it returns a stats dict with `fit_parse_error` set and every field `None`, so parse failures are only visible via the `WARNING: N .fit file(s) failed to parse` line compile prints after the parse phase. Downstream readers of a stats dict must treat a present key with a `None` value as missing.
 - A 3002-point stream is normal for long runs: `STREAM_MAX_POINTS` widens spacing rather than truncating, and endpoints are always emitted.
 - `--sport` is a substring match ("running" matches "Trail Running"); `--sport all` disables filtering.
-- HR/cadence epoch-attachment is only safe for dense channels; copy `elev_at`, not `epoch in hr_by_t`, for anything sparse.
+- Cadence epoch-attachment is only safe for dense channels; copy `elev_at` (distance) or `hr_at` (time), not `epoch in cad_by_t`, for anything sparse. HR moved off exact-epoch on 2026-07-31 because a chest strap or watch optical sensor samples slower than the 1 Hz distance records, which left the HR stream near-empty.

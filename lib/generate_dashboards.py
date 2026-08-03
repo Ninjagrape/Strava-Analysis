@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from config import Race, load_config
-from localtime import parse_date
+from localtime import index_zones, parse_date
 
 # Enriched-CSV stream fields (fit_distance_stream) can exceed the default
 # 128 KB per-field limit at higher sampling density.
@@ -721,6 +721,9 @@ def main():
     rows = load_rows(csv_path)
     if not rows:
         sys.exit("Error: CSV is empty")
+
+    # Same priming the hub does: without it a GPS-less run keeps its UTC date.
+    index_zones(rows)
 
     # Derive update date from CSV filename (YYYY-MM-DD_strava.csv) or today
     try:

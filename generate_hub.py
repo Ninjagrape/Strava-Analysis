@@ -35,6 +35,9 @@ from generate_analytics import (
     robust_threshold_mps,
     MAX_AS_OF_DAYS, extend_daily, _tsb_class,
 )
+from dedupe import find_duplicates
+from elevation import backfill_elevation
+from localtime import index_zones
 from generate_segments import (
     build_segments, body_segments, SEGMENTS_CSS,
     _reverse_geocode, _load_json, _save_json, CACHE_DIR,
@@ -444,6 +447,33 @@ def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[flo
 # Run-type classification (relative to the runner's own data)
 # ---------------------------------------------------------------------------
 
+# Heart rate arrives in three shapes: absent, a whole-run average only (Nike Run
+# Club logs just the mean), or a full per-point stream (a paired HR monitor).
+# Runs are classified so the UI can show what exists without pretending to more.
+HR_STREAM_MIN_PTS   = 2      # points needed to call a run "full"; matches the chart's own minimum
+HR_MIN_BPM          = 20     # scalars outside this range are device noise, not a reading
+HR_MAX_BPM          = 250
+HR_COV_LOW          = 0.90   # below this, label the chart with its coverage so gaps aren't read as truth
+
+
+def _hr_ok(v) -> bool:
+    """FIT session fields do not always carry the units their names imply
+    (fit_avg_speed_mps is really km/h), so range-check before trusting a reading."""
+    try:
+        return HR_MIN_BPM <= float(v) <= HR_MAX_BPM
+    except (TypeError, ValueError):
+        return False
+
+
+def _hr_scalar(row: dict, fit_key: str, csv_key: str) -> int | None:
+    """Prefer the device's own figure, fall back to Strava's export column."""
+    for key in (fit_key, csv_key):
+        v = num(row, key)
+        if _hr_ok(v):
+            return round(v)
+    return None
+
+
 MISC_MAX_KM         = 1.0    # below this = miscellaneous (stair sprints, elevation challenges, etc.)
 LONG_RUN_PERCENTILE = 0.75   # distance at/above this percentile of all runs = long candidate
 LONG_RUN_MIN_RATIO  = 1.30   # ...and at least this multiple of the median run distance
@@ -796,6 +826,10 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             lap["cadence_str"] = str(round(cad)) if cad else "—"
             asc = lap.get("ascent_m")
             lap["gain_str"] = f"+{round(asc)}m" if asc else "—"
+            # A lap can lack HR on an otherwise HR-carrying run: the device writes
+            # avg_heart_rate per lap only once the strap is connected.
+            lap_hr = lap.get("avg_hr")
+            lap["hr_str"] = str(round(lap_hr)) if _hr_ok(lap_hr) else "—"
 
         # Per-km splits (interpolated from record track in strava_compile.py)
         try:
@@ -833,6 +867,18 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             dist_stream = json.loads(row.get("fit_distance_stream") or "[]")
         except (json.JSONDecodeError, TypeError):
             dist_stream = []
+
+        # Heart-rate shape for this run. "full" needs enough points for the chart to
+        # actually draw, so the classification can never promise more than the UI shows.
+        avg_hr = _hr_scalar(row, "fit_avg_heart_rate", "Average Heart Rate")
+        max_hr = _hr_scalar(row, "fit_max_heart_rate", "Max Heart Rate")
+        hr_pts = sum(1 for p in dist_stream if p.get("hr") is not None)
+        if hr_pts >= HR_STREAM_MIN_PTS:
+            hr_coverage = "full"
+            hr_cov = round(hr_pts / len(dist_stream), 3) if dist_stream else None
+        else:
+            hr_coverage = "avg" if (avg_hr or max_hr) else "none"
+            hr_cov = None
 
         # Recording pauses/gaps derived from the stream's elapsed-time field, plus the
         # polyline index ranges the map draws dotted for them.
@@ -874,10 +920,17 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "pace_str":    fmt_pace(moving_s, dist_km * 1000) if moving_s > 0 else "—",
             "ga_pace_str": fmt_pace(ga_s, dist_km * 1000) if ga_s > 0 else "—",
             "gain":        round(gain),
-            "descent":     round(num(row, "fit_total_descent_m") or 0),
+            # Strava computes loss from the GPS track, so it is there even when the
+            # device reported no descent at all (the band writes a flat 0).
+            "descent":     round(num(row, "fit_total_descent_m")
+                                 or num(row, "Elevation Loss") or 0),
             "cadence":     round(num(row, "fit_avg_cadence")) if num(row, "fit_avg_cadence") else None,
             "calories":    round(num(row, "fit_total_calories")) if num(row, "fit_total_calories") else None,
-            "avg_hr":      round(num(row, "fit_avg_heart_rate") or num(row, "Average Heart Rate") or 0) or None,
+            "avg_hr":      avg_hr,
+            "max_hr":      max_hr,
+            "hr_pts":      hr_pts,
+            "hr_cov":      hr_cov,
+            "hr_coverage": hr_coverage,
             "is_interval":  is_interval(row),
             "lap_splits":   lap_splits,
             "km_splits":    km_splits,
@@ -1232,6 +1285,11 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
   background:#222;border:1px solid #3a3a3a;color:#888;transition:background .1s,color .1s}
 .chip:hover{background:#2a2a2a;color:#ccc}
 .chip.active{background:#1b2a1b;border-color:#5cb85c;color:#eee}
+.chip.rt-dup{border-color:#7a5a2a;color:#c8a45c}
+.chip.rt-dup.active{background:#2a1f10;border-color:#c8a45c}
+.dup-banner{margin:8px 0 4px;padding:8px 10px;border-radius:6px;font-size:11px;line-height:1.55;
+  background:#2a1f10;border:1px solid #7a5a2a;color:#d8bd85}
+.dup-banner code{background:#1a1408;padding:1px 4px;border-radius:3px;color:#e8d5a8}
 
 /* Sort + stat-range filters */
 .run-sort{display:flex;gap:4px;margin-top:8px;align-items:center}
@@ -2354,6 +2412,18 @@ function showRun(id) {
 // ── Run detail ────────────────────────────────────────────────────────────
 
 function renderDetail(r) {
+  // Name the surviving recording and both IDs: these are exactly what the user
+  // needs to reverse a wrong call via cache/config.json.
+  var dupBanner = '';
+  if (r.dup_of) {
+    var keeper = RUNS.find(function(x) { return x.strava_id === r.dup_of; });
+    dupBanner = '<p class="dup-banner">Duplicate recording of <strong>' +
+      (keeper ? keeper.name : r.dup_of) + '</strong>' +
+      (keeper ? ' (' + keeper.date_long + ')' : '') +
+      '. Excluded from all totals, load and segments.<br>' +
+      'This run <code>' + r.strava_id + '</code> &middot; kept <code>' + r.dup_of + '</code>' +
+      ' &middot; override in cache/config.json &rarr; duplicates</p>';
+  }
   var statsHtml =
     '<div class="rd-stats">' +
     stat('Distance', r.dist_km + ' km') +
@@ -2362,6 +2432,8 @@ function renderDetail(r) {
     statMuted('GA pace', r.ga_pace_str) +
     (r.gain > 0 ? stat('Elevation', '↑' + r.gain + ' m ↓' + r.descent + ' m') : '') +
     (r.cadence ? stat('Cadence', r.cadence + ' spm') : '') +
+    (r.avg_hr ? stat('Avg HR', r.avg_hr + ' bpm') : '') +
+    (r.max_hr ? stat('Max HR', r.max_hr + ' bpm') : '') +
     (r.calories ? stat('Calories', r.calories + ' kcal') : '') +
     (pauseSummary(r) ? stat('Pauses', pauseSummary(r)) : '') +
     kmExtraStats(r) +
@@ -2380,6 +2452,7 @@ function renderDetail(r) {
           '<h2 class="rd-name">' + esc(r.name) + '</h2>' +
           '<div class="rd-date">' + r.weekday + ', ' + r.date_long + '</div>' +
         '</div>' +
+        dupBanner +
         statsHtml +
       '</div>' +
       renderDesc(r) +
@@ -2459,9 +2532,15 @@ var DIST_METRICS = [
   {key: 'cad',  label: 'Cadence',   color: '#5b8fd9', invert: false}
 ];
 
+// Requires two points, not one: drawDistMetric cannot plot a line from a single
+// sample, so a lone stray reading must not earn a tab that then draws nothing.
 function availableMetrics(stream) {
   return DIST_METRICS.filter(function(m) {
-    return stream.some(function(p) { return p[m.key] != null; });
+    var n = 0;
+    for (var i = 0; i < stream.length; i++) {
+      if (stream[i][m.key] != null && ++n >= 2) return true;
+    }
+    return false;
   });
 }
 
@@ -2487,13 +2566,18 @@ function drawDistMetric(runId, metricKey, opts) {
   var holderId    = opts.holderId || ('dist-chart-' + runId);
   var interactive = !!opts.interactive;
   var r = RUNS.find(function(x) { return x.id === runId; });
-  if (!r || !r.dist_stream || !r.dist_stream.length) return;
+  // Bail out by writing an empty state, never by returning silently: the metric
+  // tab is marked active before this runs, so a bare return would leave the
+  // previous metric's chart on screen under the newly selected tab's label.
+  var holder = document.getElementById(holderId);
+  function bail() { if (holder) holder.innerHTML = '<p class="note">Not enough data for this metric.</p>'; }
+  if (!r || !r.dist_stream || !r.dist_stream.length) { bail(); return; }
   var metric = DIST_METRICS.find(function(m) { return m.key === metricKey; });
   var stream = r.dist_stream;
 
   var W = 720, H = 200, padL = 44, padR = 12, padT = 12, padB = 24;
   var pts = stream.filter(function(p) { return p[metricKey] != null && p.d != null; });
-  if (pts.length < 2) return;
+  if (pts.length < 2) { bail(); return; }
 
   // Distance-ordered list of points that carry GPS coords (taken from the full
   // stream, not the metric-filtered pts). Used to position the map cursor for
@@ -2837,9 +2921,20 @@ function renderDistChart(r) {
   var avail = availableMetrics(r.dist_stream);
   if (!avail.length) return '';
   var tabs = avail.map(function(m, i) {
+    // Surface partial HR coverage on the tab itself, so a strap that dropped out
+    // reads as incomplete data rather than as the shape of the run.
+    var label = m.label;
+    if (m.key === 'hr' && r.hr_coverage === 'full' && r.hr_cov != null && r.hr_cov < HR_COV_LOW) {
+      label += ' (' + Math.round(r.hr_cov * 100) + '%)';
+    }
+    // The device recorded no altitude on this run; the profile is terrain read off
+    // a map, so say so rather than pass it off as something the watch measured.
+    if (m.key === 'elev' && r.elev_source === 'dem') {
+      label += ' (map)';
+    }
     return '<button class="dist-tab' + (i === 0 ? ' active' : '') +
       '" data-metric="' + m.key + '" onclick="selectDistMetric(' + r.id + ',\'' + m.key + '\')">' +
-      m.label + '</button>';
+      label + '</button>';
   }).join('');
   return section('Over distance',
     '<div class="dist-tabs" id="dist-tabs-' + r.id + '">' + tabs + '</div>' +
@@ -2935,6 +3030,9 @@ function renderKmSplits(r) {
 
 function renderLapSplits(splits) {
   if (!splits || !splits.length) return '';
+  // Gate the column on presence, mirroring renderKmSplits: an unconditional
+  // header would give every HR-less run a column of em-dashes.
+  var hasHr = splits.some(function(l) { return l.avg_hr != null; });
   var rows = splits.map(function(lap) {
     return '<tr>' +
       '<td>' + lap.idx + '</td>' +
@@ -2942,12 +3040,14 @@ function renderLapSplits(splits) {
       '<td>' + lap.time_str + '</td>' +
       '<td class="pace-cell">' + lap.pace_str + '</td>' +
       '<td>' + lap.cadence_str + '</td>' +
+      (hasHr ? '<td>' + lap.hr_str + '</td>' : '') +
       '<td>' + lap.gain_str + '</td>' +
     '</tr>';
   }).join('');
   return section('Lap splits',
     '<table class="rd-table">' +
-    '<thead><tr><th>Lap</th><th>Dist</th><th>Time</th><th>Pace</th><th>Cadence</th><th>Gain</th></tr></thead>' +
+    '<thead><tr><th>Lap</th><th>Dist</th><th>Time</th><th>Pace</th><th>Cadence</th>' +
+    (hasHr ? '<th>HR</th>' : '') + '<th>Gain</th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table>');
 }
 
@@ -3217,7 +3317,9 @@ function passesStatFilters(r) {
 function applyRunFilters() {
   var q = (document.getElementById('run-search').value || '').toLowerCase();
   var filtered = RUNS.filter(function(r) {
-    var matchType = activeType === 'all' || r.run_type === activeType;
+    // Duplicates stay inspectable but out of the way: only their own chip shows them.
+    var matchType = activeType === 'dup' ? !!r.dup_of
+                  : !r.dup_of && (activeType === 'all' || r.run_type === activeType);
     var matchText = !q || r.name.toLowerCase().indexOf(q) >= 0 ||
       r.date_long.toLowerCase().indexOf(q) >= 0;
     return matchType && matchText && passesStatFilters(r);
@@ -3271,14 +3373,19 @@ document.getElementById('run-filter-toggle').addEventListener('click', function(
 
 // Build the filter chip bar — only categories that actually occur, each with a count.
 function buildRunChips() {
-  var counts = RUNS.reduce(function(m, r) { m[r.run_type] = (m[r.run_type] || 0) + 1; return m; }, {});
-  var chips = ['<span class="chip active" data-type="all">All ' + RUNS.length + '</span>'];
+  // Duplicates are excluded from every count here for the same reason they are
+  // excluded from the totals: they are the same run seen twice.
+  var primary = RUNS.filter(function(r) { return !r.dup_of; });
+  var nDup = RUNS.length - primary.length;
+  var counts = primary.reduce(function(m, r) { m[r.run_type] = (m[r.run_type] || 0) + 1; return m; }, {});
+  var chips = ['<span class="chip active" data-type="all">All ' + primary.length + '</span>'];
   RUN_TYPES.forEach(function(t) {
     if (counts[t.key]) {
       chips.push('<span class="chip rt-' + t.key + '" data-type="' + t.key + '">' +
         t.label + ' ' + counts[t.key] + '</span>');
     }
   });
+  if (nDup) chips.push('<span class="chip rt-dup" data-type="dup">Duplicates ' + nDup + '</span>');
   var bar = document.getElementById('run-chips');
   bar.innerHTML = chips.join('');
   bar.querySelectorAll('.chip').forEach(function(chip) {
@@ -3365,6 +3472,7 @@ initOverviewMap();
 def generate(
     rows: list[dict],
     runs: list[dict],
+    runs_all: list[dict],
     updated: str,
     threshold_mps: float | None,
     html_efforts: str,
@@ -3373,9 +3481,11 @@ def generate(
     segments: list[dict],
     html_segments: str,
 ) -> str:
+    # `rows`/`runs` exclude duplicate recordings so no total counts a run twice;
+    # `runs_all` keeps them so the browser can still open and audit one.
     stats          = _overview_stats(rows, runs, threshold_mps)
     t0             = time.perf_counter()
-    runs_json      = json.dumps(runs, ensure_ascii=False)
+    runs_json      = json.dumps(runs_all, ensure_ascii=False)
     if PROFILE:
         print(f"[profile] runs json.dumps: {time.perf_counter() - t0:.2f}s "
               f"({len(runs_json) / 1_048_576:.1f} MB)")
@@ -3586,6 +3696,7 @@ def generate(
         "const AS_OF_ANCHOR_OV = " + json.dumps(asof_anchor_ov) + ";\n"
         "const SEGMENTS = " + json.dumps(segments, ensure_ascii=False) + ";\n"
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
+        "const HR_COV_LOW = " + str(HR_COV_LOW) + ";\n"
         "const HEATMAP_CLUSTERS = " + heatmap_json + ";\n"
         + HUB_JS +
         "</script>\n"
@@ -3597,6 +3708,27 @@ def generate(
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def _print_duplicates(rows: list[dict], dupes: dict[str, str]) -> None:
+    """Print each collapsed group, since the Activity IDs shown here are what the
+    user needs to override a wrong call in cache/config.json."""
+    by_id = {(r.get("Activity ID") or "").strip(): r for r in rows}
+    groups: dict[str, list[str]] = {}
+    for loser, winner in dupes.items():
+        groups.setdefault(winner, []).append(loser)
+
+    print(f"Duplicate runs: {len(dupes)} recording(s) excluded from all totals")
+    for winner, losers in groups.items():
+        for aid in [winner] + losers:
+            row = by_id.get(aid, {})
+            km = (num(row, "Distance") or 0) / 1000.0
+            has_hr = '"hr":' in (row.get("fit_distance_stream") or "")
+            gps = "gps" if (row.get("fit_gps_polyline") or "").strip() else "no-gps"
+            role = "keep" if aid == winner else "drop"
+            print(f"  [{role}] {aid}  {row.get('Activity Date', '?')}  "
+                  f"{km:.2f} km  {gps}  {'hr-stream' if has_hr else 'no-hr'}")
+    print("  override in cache/config.json -> duplicates (see config.example.json)")
+
 
 def main():
     here    = Path(__file__).parent
@@ -3611,13 +3743,26 @@ def main():
     if not rows:
         sys.exit("Error: CSV is empty")
 
+    # Must precede every parse_date below: it is what lets a GPS-less recording
+    # (a treadmill run off the band) take its date from the timezone the runner
+    # was actually in, rather than from UTC.
+    index_zones(rows)
+
     try:
         date_str = csv_path.stem.split("_")[0]
         updated  = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d %b %Y")
     except (ValueError, IndexError):
         updated  = datetime.today().strftime("%d %b %Y")
 
-    threshold_mps = _compute_threshold(rows)
+    # One physical run logged by two apps arrives as two activities. Drop the
+    # weaker recording from every aggregate before anything is measured, or its
+    # distance and load are counted twice.
+    dupes = find_duplicates(rows)
+    rows_primary = [r for r in rows if (r.get("Activity ID") or "").strip() not in dupes]
+    if dupes:
+        _print_duplicates(rows, dupes)
+
+    threshold_mps = _compute_threshold(rows_primary)
     if threshold_mps:
         threshold_pace = fmt_pace(1000.0, threshold_mps * 1000.0)
         print(f"Threshold pace (from fitness curve): {threshold_pace}")
@@ -3625,22 +3770,41 @@ def main():
         print("No best efforts found; pace zones disabled")
 
     t0 = time.perf_counter()
+    # Built over every row so run ids stay positional across the full set: segment
+    # efforts cached in segments_cache.json reference runs by that index.
     runs = _build_runs(rows, threshold_mps)
+    for r in runs:
+        r["dup_of"] = dupes.get(r["strava_id"])
+    runs_primary = [r for r in runs if not r["dup_of"]]
     if PROFILE:
         print(f"[profile] _build_runs: {time.perf_counter() - t0:.2f}s ({len(runs)} runs)")
-    print(f"Loaded {len(runs)} runs")
+    print(f"Loaded {len(runs)} runs" +
+          (f" ({len(runs_primary)} after duplicates)" if dupes else ""))
+
+    # Before segments: a lap with no altitude reads as 0% grade and drags a real
+    # climb down with it. Nothing is written back to the CSV, which stays a parse
+    # cache; the DEM cache is where this persists.
+    t0 = time.perf_counter()
+    elev = backfill_elevation(runs)
+    if elev["filled"]:
+        print(f"Elevation: filled {elev['filled']}/{elev['candidates']} run(s) from the DEM "
+              f"({elev['fetched']} new lookups, {elev['cached']} cached)")
+    elif elev["candidates"]:
+        print(f"Elevation: {elev['candidates']} run(s) have no altitude and the DEM could not supply it")
+    if PROFILE:
+        print(f"[profile] backfill_elevation: {time.perf_counter() - t0:.2f}s")
 
     print("Detecting benchmark segments…")
     t0 = time.perf_counter()
-    segments = build_segments(runs)
+    segments = build_segments(runs_primary)
     if PROFILE:
         print(f"[profile] build_segments: {time.perf_counter() - t0:.2f}s ({len(segments)} segments)")
 
     print("Building dashboard panels…")
     t0 = time.perf_counter()
-    html_efforts   = body_best_efforts(rows, updated)
-    html_goals     = body_goal_dashboard(rows, updated)
-    html_analytics = body_analytics(rows, updated, runs)
+    html_efforts   = body_best_efforts(rows_primary, updated)
+    html_goals     = body_goal_dashboard(rows_primary, updated)
+    html_analytics = body_analytics(rows_primary, updated, runs_primary)
     html_segments  = body_segments(segments, updated)
     if PROFILE:
         print(f"[profile] panels (efforts/goals/analytics): {time.perf_counter() - t0:.2f}s")
@@ -3649,7 +3813,7 @@ def main():
     dashboards_dir.mkdir(exist_ok=True)
 
     out = dashboards_dir / "TrainingHub.html"
-    html = generate(rows, runs, updated, threshold_mps, html_efforts, html_goals,
+    html = generate(rows_primary, runs_primary, runs, updated, threshold_mps, html_efforts, html_goals,
                     html_analytics, segments, html_segments)
     out.write_text(html, encoding="utf-8")
     if PROFILE:

@@ -71,6 +71,8 @@ Three load-bearing ideas:
 | `main.py` | 37 | Runs the two stages via a `STEPS` tuple; forwards CLI args only to the compile step; `--profile` also sets `STRAVA_PROFILE=1` in the env for the hub. |
 | `strava_compile.py` | 966 | Stage 1. Finds the newest `export_*.zip`/folder in Downloads, unzips, decompresses `.fit.gz`, parses with `fitparse` (hard requirement, `SystemExit` if missing), computes best efforts / splits / streams, writes the enriched CSV. Entry: `main()`. |
 | `generate_hub.py` | 2956 | Stage 2. Reads the latest enriched CSV, builds run dicts (`_build_runs`), classifies runs (`_classify_run`), computes pace zones (`_compute_pace_zones`), assembles all six tabs, writes `dashboards/TrainingHub.html`. Inserts `lib/` on `sys.path` so plain imports work. |
+| `lib/elevation.py` | 250 | DEM backfill for runs whose device recorded no altitude. Public surface: `backfill_elevation(runs)`, called by the hub after `_build_runs` and before `build_segments`; tags `elev_source` and owns `cache/elevation_dem_cache.json`. |
+| `lib/localtime.py` | 105 | `parse_date(row)` (localizes from the first GPS coordinate) and `index_zones(rows)` (prime once per build so a GPS-less run borrows the nearest run's timezone instead of UTC). |
 | `lib/generate_segments.py` | 2475 | Segment mining + Segments tab. Public surface used by the hub: `build_segments(runs)`, `body_segments(segments, updated)`, `SEGMENTS_CSS`. Owns all `cache/segment*` JSON files and the Nominatim/Overpass network code. |
 | `lib/generate_analytics.py` | 1183 | Analytics tab math: `ctl_atl_tsb`, `acwr_series`, `monotony_strain`, `fit_critical_speed`, `daniels_vo2max`/`vdot_trend`; timezone-corrects dates via optional `timezonefinder`. |
 | `lib/generate_dashboards.py` | 958 | Best Efforts + Goals tabs: `riegel`, `fit_riegel`, `derive_training_target`, `_predict_race_time`, shared formatters (`fmt_pace`, `fmt_time`, `ga_time`). |
@@ -87,7 +89,8 @@ Three load-bearing ideas:
 | `cache/segment_geocode_cache.json` | geo_key → segment name (Nominatim results) | `cache/` |
 | `cache/segment_match_cache.json` | geo_key → map-matched polyline (Overpass; `[]` = "no snap" is cached too) | `cache/` |
 | `cache/segment_stars.json` | User-starred geo_keys; may not exist until something is starred | `cache/` |
-| `cache/config.json` | Optional user config (races, segment anchors); template at `config.example.json` | `cache/` |
+| `cache/elevation_dem_cache.json` | `"lat,lon"` (4 dp) → metres from Open-Meteo's DEM; `null` = asked, no data | `cache/` |
+| `cache/config.json` | Optional user config (races, segment anchors, `duplicates` overrides); template at `config.example.json` | `cache/` |
 | `dashboards/TrainingHub.html` | Final output, fully self-contained | `dashboards/`, gitignored |
 
 ## Playbooks

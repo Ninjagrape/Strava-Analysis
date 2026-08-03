@@ -73,6 +73,16 @@ Constants grep: `grep -n "NOMINATIM_URL\|OVERPASS_URL\|USER_AGENT\|NAME_REUSE_M\
 
 ### 4. Faster cold rebuild?
 
+## Third caller: Open-Meteo elevation (`lib/elevation.py`)
+
+`backfill_elevation(runs)` runs in the hub between `_build_runs` and `build_segments`, and only for runs that have a GPS track and **no altitude at all** (the Mi Fitness / Zepp band records none: no `altitude` field on any record, session ascent/descent 0). It reproduces what Strava does server-side, looking the route up against a DEM.
+
+- Endpoint `https://api.open-meteo.com/v1/elevation`, Copernicus GLO-90, no key for non-commercial use, attribution Copernicus / Open-Meteo (`https://doi.org/10.5270/ESA-c5d3d65`). Response is `{"elevation": [...]}` in request order.
+- **Billing is per coordinate, not per request**: 600 coordinates across six `DEM_BATCH`=100 calls tripped a 429 immediately (2026-08-02). `DEM_SLEEP_S` = 12 s between batches (~500 coords/min) and `_request` waits a 429 out (`Retry-After`, else `DEM_RETRY_S`, `DEM_RETRIES` attempts). Do not shorten these.
+- Anchored lookups, not per point: `DEM_ANCHOR_M` = 50 m along the route (two samples per 90 m cell), interpolated across stream points by cumulative distance the way `elev_at` does. The cache key is the rounded coordinate itself (`DEM_KEY_DP` = 4, ~11 m) so key and request can never disagree.
+- `DEM_MIN_COVER` = 0.80: a route whose anchors only partly resolved is refused outright rather than straight-lined through a hill. `DEM_SMOOTH_W` = 7 anchors: unsmoothed cell-boundary jitter invented 68 m of gain on a route Strava scores at 2 m; smoothed, the five affected runs land at 171/73/58 m against Strava's 187/95/61 m.
+- Fully degradable: any failure leaves the run elevation-less and the build continues. `STRAVA_DEM_OFF=1` skips the network and uses `cache/elevation_dem_cache.json` alone.
+
 The cold floor is Nominatim's ToS: ≤1 req/s, enforced by `time.sleep(1.1)` after each real call. Do not lower the sleep, batch differently to exceed 1 req/s, or rotate identifiers, never violate rate limits. Legitimate levers, all already implemented: the per-build memo (`GEO_MEMO_DP`), tolerant reuse (`NAME_REUSE_M`/`MATCH_REUSE_M`), the single union Overpass fetch, and running both phases concurrently. The practical answer is: keep the geocode/match caches, and only ever delete `cache/segments_cache.json` (caches-and-invalidation, playbook 2).
 
 ## Verification
