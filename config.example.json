@@ -16,5 +16,19 @@
       "notes": "flat course, target wave 100-120 min"
     }
   ],
-  "segment_anchors": []
+  "segment_anchors": [],
+
+  "_duplicates_help": [
+    "Manual corrections to automatic duplicate detection, all keyed by Activity ID.",
+    "Run the hub once and read the 'Duplicate runs' block it prints to get the IDs.",
+    "not_duplicates: pairs that are two real runs, never collapse them.",
+    "force_duplicate: loser -> winner pairs the heuristic missed.",
+    "force_primary: pin which recording survives in its group.",
+    "Applied in that order, later steps outranking earlier ones."
+  ],
+  "duplicates": {
+    "not_duplicates": [],
+    "force_duplicate": {},
+    "force_primary": []
+  }
 }

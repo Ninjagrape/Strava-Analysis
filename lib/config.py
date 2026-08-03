@@ -35,9 +35,18 @@ class SegmentAnchor:
 
 
 @dataclass(frozen=True)
+class DuplicateOverrides:
+    """Manual corrections to automatic duplicate detection, keyed by Activity ID."""
+    not_duplicates: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    force_duplicate: tuple[tuple[str, str], ...] = field(default_factory=tuple)  # (loser, winner)
+    force_primary: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class Config:
     races: tuple[Race, ...] = field(default_factory=tuple)
     segment_anchors: tuple[SegmentAnchor, ...] = field(default_factory=tuple)
+    duplicates: DuplicateOverrides = field(default_factory=DuplicateOverrides)
 
 
 def _parse_race(d: dict) -> Race | None:
@@ -69,6 +78,35 @@ def _parse_anchor(d: dict) -> SegmentAnchor | None:
         return None
 
 
+def _parse_duplicates(d: dict) -> DuplicateOverrides:
+    """Every field is independently salvageable: one malformed entry is dropped
+    rather than costing the user the whole block."""
+    pairs = []
+    for p in d.get("not_duplicates", []):
+        try:
+            a, b = str(p[0]).strip(), str(p[1]).strip()
+            if a and b and a != b:
+                pairs.append((a, b))
+        except (KeyError, TypeError, ValueError, IndexError) as e:
+            print(f"[config] skipping malformed not_duplicates entry ({e})")
+
+    forced = []
+    raw_forced = d.get("force_duplicate", {})
+    if isinstance(raw_forced, dict):
+        for loser, winner in raw_forced.items():
+            try:
+                lo, wi = str(loser).strip(), str(winner).strip()
+                if lo and wi and lo != wi:
+                    forced.append((lo, wi))
+            except (TypeError, ValueError) as e:
+                print(f"[config] skipping malformed force_duplicate entry ({e})")
+    elif raw_forced:
+        print("[config] force_duplicate must be an object of loser -> winner, ignoring it")
+
+    primary = tuple(str(a).strip() for a in d.get("force_primary", []) if str(a).strip())
+    return DuplicateOverrides(tuple(pairs), tuple(forced), primary)
+
+
 def load_config(path: Path = CONFIG_PATH) -> Config:
     """Load config.json if present. Never raises: a missing or malformed file
     yields an empty Config so the pipeline degrades to data-driven defaults."""
@@ -85,4 +123,6 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
 
     races = tuple(r for r in (_parse_race(d) for d in raw.get("races", []) if isinstance(d, dict)) if r)
     anchors = tuple(a for a in (_parse_anchor(d) for d in raw.get("segment_anchors", []) if isinstance(d, dict)) if a)
-    return Config(races=races, segment_anchors=anchors)
+    dup_raw = raw.get("duplicates", {})
+    dups = _parse_duplicates(dup_raw) if isinstance(dup_raw, dict) else DuplicateOverrides()
+    return Config(races=races, segment_anchors=anchors, duplicates=dups)

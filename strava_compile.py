@@ -9,6 +9,7 @@ import zipfile
 import shutil
 import csv
 import json
+import struct
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -21,6 +22,53 @@ try:
     from fitparse import FitFile
 except ImportError:
     raise SystemExit("fitparse not installed. Run: pip install fitparse")
+
+
+_UNCHANGED = object()  # distinct from None, which is a valid repacked result
+
+
+def _repack_byte_field(field_def, raw_value, endian: str):
+    """Reassemble a byte-array raw value into the scalar its field expects.
+
+    Some devices (seen on Mi Fitness / Zepp band uploads) declare multi-byte
+    numeric fields with the FIT `byte` base type instead of uint32/sint32/...
+    fitparse then reads them as a tuple of individual bytes, and the file dies
+    in the date_time processor with "'>=' not supported between instances of
+    'tuple' and 'int'" - or worse, survives with a total_distance of
+    (0.0, 0.09, 0.8, 0.96) where 6104 m was meant. Rebuilding the scalar here,
+    before fitparse renders and scales the value, keeps the rest of the
+    pipeline unaware of the quirk. Returns _UNCHANGED when there is nothing
+    to change.
+    """
+    field = field_def.field
+    if field is None or not isinstance(raw_value, tuple):
+        return _UNCHANGED
+    if getattr(field_def.base_type, "name", "") != "byte":
+        return _UNCHANGED  # a genuine array of some other type, leave it alone
+    base = field.base_type
+    if base.name == "byte" or base.size < 2 or base.size != len(raw_value):
+        return _UNCHANGED  # really is byte data, or not one value's worth
+    try:
+        value = struct.unpack(endian + base.fmt, bytes(raw_value))[0]
+    except (struct.error, ValueError, TypeError):
+        return _UNCHANGED
+    # base.parse returns None for the type's invalid sentinel (an unfixed GPS
+    # record, a dropped strap), which is the "missing" the rest of the parser
+    # already expects.
+    return base.parse(value)
+
+
+class _FitFile(FitFile):
+    """FitFile that repairs byte-typed numeric fields as it reads them."""
+
+    def _parse_raw_values_from_data_message(self, def_mesg):
+        raw_values = super()._parse_raw_values_from_data_message(def_mesg)
+        field_defs = def_mesg.field_defs + def_mesg.dev_field_defs
+        for i, (field_def, raw_value) in enumerate(zip(field_defs, raw_values)):
+            repacked = _repack_byte_field(field_def, raw_value, def_mesg.endian)
+            if repacked is not _UNCHANGED:
+                raw_values[i] = repacked
+        return raw_values
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +387,9 @@ STREAM_POINTS_PER_KM  = 150     # ~one sample every 7 m
 STREAM_MAX_POINTS     = 3000    # hard cap (kicks in past ~20 km)
 STREAM_PACE_WINDOW_M  = 50.0    # min look-ahead distance for instantaneous pace (noise control)
 GEO_GAP_MAX_M         = 60.0    # beyond this gap between fixes, snap the cursor rather than interpolate a chord (avoids cutting across a GPS dropout/pause)
+HR_GAP_MAX_S          = 10.0    # max seconds between a sample point and its nearest HR reading
+HR_MIN_BPM            = 20      # FIT session/record HR outside this range is treated as absent
+HR_MAX_BPM            = 250
 
 def _distance_stream(track: list, elev_stream: list, hr_stream: list,
                      cad_stream: list, pos_stream: list) -> str:
@@ -365,7 +416,7 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
 
     # lookups by epoch for the optional streams
     elev_by_t = {t: v for t, v in elev_stream if v is not None}
-    hr_by_t   = {t: v for t, v in hr_stream if v is not None}
+    hr_by_t   = {t: v for t, v in hr_stream if v is not None and HR_MIN_BPM <= v <= HR_MAX_BPM}
     cad_by_t  = {t: v for t, v in cad_stream if v is not None}
     pos_by_t  = {t: (la, lo) for t, la, lo in pos_stream if la is not None and lo is not None}
     have_elev = bool(elev_by_t)
@@ -433,6 +484,35 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
         f = (dist_m - d0) / (d1 - d0) if d1 > d0 else 0.0
         return v0 + (v1 - v0) * f
 
+    # Time-indexed heart rate. Unlike elevation and position this is indexed by epoch,
+    # not distance: HR is a function of time, so during a pause (distance barely moving
+    # while HR drops) a distance lookup would hold a stale value for a long stretch.
+    hr_sorted = sorted(hr_by_t.items())
+    hr_t = [h[0] for h in hr_sorted]
+    hr_v = [h[1] for h in hr_sorted]
+
+    def hr_at(epoch: float):
+        """Take the nearest HR reading in time, or nothing if none is close enough.
+
+        Deliberately does not interpolate: between 1 s samples that is noise, and across
+        a strap dropout it would fabricate a plateau where the truth is missing data.
+        Beyond HR_GAP_MAX_S the point is left HR-less so a dropout renders as a hole,
+        including before the first and after the last reading (a strap that connects
+        mid-run must not have its first beat held backwards over the warm-up).
+        """
+        if not hr_t:
+            return None
+        k = bisect.bisect_left(hr_t, epoch)
+        if k <= 0:
+            nearest = 0
+        elif k >= len(hr_t):
+            nearest = len(hr_t) - 1
+        else:
+            nearest = k - 1 if (epoch - hr_t[k - 1]) <= (hr_t[k] - epoch) else k
+        if abs(epoch - hr_t[nearest]) > HR_GAP_MAX_S:
+            return None
+        return hr_v[nearest]
+
     n = len(track)
     # Sample spacing in metres: target density, widened if it would blow the cap.
     spacing = max(1000.0 / STREAM_POINTS_PER_KM, total_dist / STREAM_MAX_POINTS)
@@ -456,8 +536,10 @@ def _distance_stream(track: list, elev_stream: list, hr_stream: list,
             ev = elev_at(dist_m)
             if ev is not None:
                 p["elev"] = round(ev, 1)
-        if have_hr and epoch in hr_by_t:
-            p["hr"] = round(hr_by_t[epoch])
+        if have_hr:
+            hv = hr_at(epoch)
+            if hv is not None:
+                p["hr"] = round(hv)
         if have_cad and epoch in cad_by_t:
             p["cad"] = round(cad_by_t[epoch])
         if have_pos:
@@ -587,7 +669,7 @@ def parse_fit(fit_path: Path) -> dict:
     }
 
     try:
-        ff = FitFile(str(fit_path))
+        ff = _FitFile(str(fit_path))
         messages = list(ff.get_messages())
     except Exception as e:
         stats["fit_parse_error"] = str(e)
@@ -655,8 +737,15 @@ def parse_fit(fit_path: Path) -> dict:
             lon_sc = d.get("position_long")
             lat = lat_sc * SEMICIRCLES_TO_DEG if lat_sc is not None else None
             lon = lon_sc * SEMICIRCLES_TO_DEG if lon_sc is not None else None
-            if ts is not None and dm is not None:
+            epoch = None
+            if ts is not None:
                 epoch = ts.timestamp() if hasattr(ts, "timestamp") else float(ts)
+            hr = d.get("heart_rate")
+            # HR attaches in the time domain, so a beat on a record that carries no
+            # distance is still usable; keep it rather than losing it to the gate below.
+            if epoch is not None and hr is not None:
+                hr_stream.append((epoch, float(hr)))
+            if ts is not None and dm is not None:
                 track.append((epoch, float(dm)))
                 speed_stream.append((epoch, float(sp) if sp is not None else None))
                 pos_stream.append((epoch, lat, lon))
@@ -665,8 +754,6 @@ def parse_fit(fit_path: Path) -> dict:
                 if alt is None:
                     alt = d.get("altitude")
                 elev_stream.append((epoch, float(alt) if alt is not None else None))
-                hr = d.get("heart_rate")
-                hr_stream.append((epoch, float(hr) if hr is not None else None))
                 cad = d.get("cadence")
                 frac = d.get("fractional_cadence")
                 if cad is not None:
@@ -778,7 +865,10 @@ def load_prior_fit_cache(csv_dir: Path, activity_cols: set) -> dict:
             if not fit_id or fit_id in cache:
                 continue
             fit_data = {k: v for k, v in row.items() if k not in activity_cols}
-            if any(v not in (None, "") for v in fit_data.values()):
+            # fit_file alone is not parsed data: a row whose .fit failed to
+            # parse carries the id and nothing else, and caching that would
+            # make one bad parse permanent until the next --rebuild.
+            if any(v not in (None, "") for k, v in fit_data.items() if k != "fit_file"):
                 cache[fit_id] = fit_data
         break  # most recent CSV is sufficient
     return cache
@@ -915,6 +1005,16 @@ def main():
     print(f"Reused {cached_count} cached, parsed {len(to_parse)} new "
           f"(.fit total {len(parsed)})")
 
+    # parse_fit swallows its own exceptions and returns an empty stats dict, so
+    # without this a corrupt or oddly-encoded file is just a silently blank row.
+    failed = [(fid, s["fit_parse_error"]) for fid, s in parsed.items()
+              if s.get("fit_parse_error")]
+    if failed:
+        print(f"WARNING: {len(failed)} .fit file(s) failed to parse "
+              f"(rows kept, but with no device data):")
+        for fid, err in failed[:10]:
+            print(f"  {fid}: {err}")
+
     if profile:
         print(f"[profile] parse stage: {parse_wall:.1f}s wall, "
               f"{workers} worker(s), {len(to_parse)} files parsed, "
@@ -922,7 +1022,10 @@ def main():
         for elapsed, name in sorted(parse_times, reverse=True)[:5]:
             print(f"[profile]   slowest: {name} {elapsed:.2f}s")
 
-    fit_keys = _fit_keys_from(next(iter(parsed.values()))) if parsed else []
+    # Take the column list from the richest stats dict: a file that failed to
+    # parse returns early with only a handful of keys, and picking that one
+    # would silently drop every derived column from the CSV.
+    fit_keys = _fit_keys_from(max(parsed.values(), key=len)) if parsed else []
 
     enriched = []
     matched = 0
@@ -934,7 +1037,9 @@ def main():
 
         sport_filter = args.sport.lower()
         act_type = act.get("Activity Type", "").lower()
-        fit_sport = fit_data.get("fit_sport", "").lower() if fit_data else ""
+        # A file that failed to parse still yields a stats dict, with every
+        # field left at None, so read through None as well as a missing key.
+        fit_sport = (fit_data.get("fit_sport") or "").lower()
 
         if sport_filter != "all":
             if sport_filter not in act_type and sport_filter not in fit_sport:

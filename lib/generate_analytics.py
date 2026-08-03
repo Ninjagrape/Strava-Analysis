@@ -79,11 +79,11 @@ def load_rows(csv_path: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 1. Pace-based training load -> CTL / ATL / TSB
 # ---------------------------------------------------------------------------
-# Strava's Fitness & Freshness uses a heart-rate or power load. With neither
-# available, we build an equivalent load from grade-adjusted effort: a session's
-# load is its grade-adjusted distance scaled by intensity (how fast it was run
-# relative to the athlete's recent best pace). This is the same principle
-# Runalyze falls back to ("TRIMP-less" load) when HR is missing.
+# Strava's Fitness & Freshness uses a heart-rate or power load; we deliberately build
+# a pace-based one instead, and it stays pace-based permanently, even once HR is
+# recorded, so the whole history stays on one comparable curve rather than jumping to
+# a different model partway through. A session's load is its grade-adjusted distance
+# scaled by intensity (how fast it was run relative to the athlete's recent best pace).
 
 def session_loads(rows: list[dict]) -> list[tuple[datetime, float]]:
     """Return [(date, load)] sorted by date. Load is a unitless stress score."""
@@ -1000,6 +1000,15 @@ def pace_progression_section(runs: list[dict] | None) -> str:
 
 
 def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> str:
+    tot_runs = len(rows)
+    hr_runs = sum(
+        1
+        for row in rows
+        if num(row, "fit_avg_heart_rate") is not None
+        or num(row, "Average Heart Rate") is not None
+        or '"hr":' in (row.get("fit_distance_stream") or "")
+    )
+
     loads = session_loads(rows)
     daily = daily_series(loads)
     fitness = ctl_atl_tsb(daily)
@@ -1133,6 +1142,19 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   </div>
 </div>"""
 
+    if hr_runs == 0:
+        hr_subtitle = "Derived from pace, distance and elevation only (this device records no HR or power)"
+    else:
+        hr_subtitle = (
+            f"Derived from pace, distance and elevation; heart rate is recorded on "
+            f"{hr_runs} of {tot_runs} runs and is shown but not used for load"
+        )
+
+    if hr_runs == 0:
+        hr_cmp_note = "heart rate is empty until an HR monitor is used"
+    else:
+        hr_cmp_note = f"heart rate available on {hr_runs} of {tot_runs} runs"
+
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -1145,7 +1167,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
 </head>
 <body>
 <h1>Training analytics</h1>
-<p class="subtitle">Derived from pace, distance and elevation only (this device records no HR or power) · grade-adjusted · updated {updated}</p>
+<p class="subtitle">{hr_subtitle} · grade-adjusted · updated {updated}</p>
 
 <div class="sub-tabs">
   <button class="sub-tab active" data-sub="injury" onclick="setSubTab(this)">Injury risk</button>
@@ -1174,7 +1196,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     </div>
     <div id="chart-fitness">{fitness_chart}</div>
   </div>
-  <p class="note">Load is a pace-based stress score (grade-adjusted distance weighted by intensity vs threshold pace), the heart-rate-free equivalent of Strava's Fitness &amp; Freshness. Form = prior fitness minus prior fatigue: positive means rested, negative means carrying fatigue.</p>
+  <p class="note">Load is a pace-based stress score (grade-adjusted distance weighted by intensity vs threshold pace); it stays pace-based even for runs that record heart rate, keeping the whole training history on one comparable curve. Form = prior fitness minus prior fatigue: positive means rested, negative means carrying fatigue.</p>
 </div>
 
 <div class="section">
@@ -1260,7 +1282,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     </div>
     <div id="cmp-chart" class="ptot-chart"></div>
     <div class="legend" id="cmp-legend"></div>
-    <p class="note">Pick any two metrics to plot against each other, watch one metric over time, or see its distribution. Points are coloured by run type; click a run type in the legend to toggle it off or on. In "Over time" mode the range buttons crop to the last 3M/6M/1Y. Runs missing the selected metric are skipped (heart rate is empty until an HR monitor is used). Pace is min/km, so lower sits toward the bottom.</p>
+    <p class="note">Pick any two metrics to plot against each other, watch one metric over time, or see its distribution. Points are coloured by run type; click a run type in the legend to toggle it off or on. In "Over time" mode the range buttons crop to the last 3M/6M/1Y. Runs missing the selected metric are skipped ({hr_cmp_note}). Pace is min/km, so lower sits toward the bottom.</p>
   </div>
 </div>
 </div>
@@ -1386,6 +1408,9 @@ var CMP_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov'
 // range: days to keep in "over time" mode (0 = all). hidden: run types toggled off.
 var CMP_STATE = {{mode:'scatter', x:'dist_km', y:'pace', range:0, hidden:{{}}}};
 var CMP_ALL_TYPES = null;   // run types present in RUNS, RUN_TYPES order (built in cmpInit)
+// RUNS carries duplicate recordings so the Runs tab can still show them; every
+// chart here must skip them or one physical run is plotted twice.
+function cmpRuns(){{ return (typeof RUNS==='undefined')?[]:RUNS.filter(function(r){{ return !r.dup_of; }}); }}
 var CMP_MAX_MS = 0;         // latest run date (ms), anchor for the range crop
 var CMP_METRICS = [
   {{key:'dist_km', label:'Distance', unit:'km', fmt:function(v){{ return (Math.round(v*100)/100)+' km'; }}, get:function(r){{ return r.dist_km>0?r.dist_km:null; }}}},
@@ -1413,10 +1438,10 @@ function cmpInit(){{
   var opts=CMP_METRICS.map(function(m){{ return '<option value="'+m.key+'">'+m.label+'</option>'; }}).join('');
   xs.innerHTML=opts; ys.innerHTML=opts; xs.value=CMP_STATE.x; ys.value=CMP_STATE.y;
   if(typeof RUNS!=='undefined' && typeof RUN_TYPES!=='undefined'){{
-    var present={{}};
-    for(var i=0;i<RUNS.length;i++){{
-      present[RUNS[i].run_type||'misc']=1;
-      var ms=Date.parse(RUNS[i].date_iso); if(!isNaN(ms)&&ms>CMP_MAX_MS) CMP_MAX_MS=ms;
+    var present={{}}, cr=cmpRuns();
+    for(var i=0;i<cr.length;i++){{
+      present[cr[i].run_type||'misc']=1;
+      var ms=Date.parse(cr[i].date_iso); if(!isNaN(ms)&&ms>CMP_MAX_MS) CMP_MAX_MS=ms;
     }}
     CMP_ALL_TYPES=[];
     for(var i=0;i<RUN_TYPES.length;i++){{ if(present[RUN_TYPES[i].key]) CMP_ALL_TYPES.push(RUN_TYPES[i].key); }}
@@ -1462,9 +1487,9 @@ function cmpDraw(){{
 }}
 function cmpDrawXY(holder){{
   var mode=CMP_STATE.mode, my=cmpMetric(CMP_STATE.y), mx=(mode==='time')?null:cmpMetric(CMP_STATE.x);
-  var pts=[];
-  for(var i=0;i<RUNS.length;i++){{
-    var r=RUNS[i], ty=r.run_type||'misc';
+  var pts=[], cr=cmpRuns();
+  for(var i=0;i<cr.length;i++){{
+    var r=cr[i], ty=r.run_type||'misc';
     if(CMP_STATE.hidden[ty]) continue;
     var yv=my.get(r); if(yv==null) continue;
     var xv;
@@ -1532,7 +1557,8 @@ function cmpHoverXY(e,holder){{
 }}
 function cmpDrawDist(holder){{
   var m=cmpMetric(CMP_STATE.y), vals=[];
-  for(var i=0;i<RUNS.length;i++){{ var ty=RUNS[i].run_type||'misc'; if(CMP_STATE.hidden[ty]) continue; var v=m.get(RUNS[i]); if(v!=null) vals.push({{v:v, type:ty}}); }}
+  var cr=cmpRuns();
+  for(var i=0;i<cr.length;i++){{ var ty=cr[i].run_type||'misc'; if(CMP_STATE.hidden[ty]) continue; var v=m.get(cr[i]); if(v!=null) vals.push({{v:v, type:ty}}); }}
   if(vals.length<2){{ holder.innerHTML='<p class="note">Not enough data for this metric.</p>'; cmpLegend([]); return; }}
   var vmin=Infinity, vmax=-Infinity;
   for(var i=0;i<vals.length;i++){{ if(vals[i].v<vmin)vmin=vals[i].v; if(vals[i].v>vmax)vmax=vals[i].v; }}
