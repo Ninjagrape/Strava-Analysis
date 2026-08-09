@@ -10,6 +10,11 @@ pace/elevation/heart-rate/cadence profile that shows the exact distance and valu
 hover along it. Clicking a route opens an expanded view where tracing the graph also moves
 a marker along the map.
 
+One physical run logged by two apps arrives from Strava as two activities, so the hub collapses
+those into one before anything is totalled (see [Duplicate recordings](#duplicate-recordings)),
+and a run whose device recorded no altitude gets an elevation profile read off a digital
+elevation model (see [Elevation from a DEM](#elevation-from-a-dem)).
+
 ## Requirements
 
 Python 3.10+ and one third-party library:
@@ -19,6 +24,12 @@ pip install fitparse
 ```
 
 `timezonefinder` is an optional extra. Install it (`pip install timezonefinder`) and each run's dates and times are resolved to the activity's own local timezone from its GPS start point; without it, dates fall back to UTC.
+
+A run with no GPS at all (a treadmill session logged by a wrist band) has no coordinate to
+resolve against, so it borrows the timezone of the nearest GPS-carrying run in time. That keeps
+a morning run at UTC+10 on the day it was actually run instead of the previous one. The index
+behind this is primed once per build, so it works for `python generate_hub.py` and for
+`lib/generate_dashboards.py` run standalone.
 
 ## Usage
 
@@ -55,6 +66,18 @@ Both the `.fit` parse (compile) and segment detection (hub) are cached, so a nor
 STRAVA_SEG_REBUILD=1 python generate_hub.py   # ignore segments_cache.json and re-detect
 ```
 
+### Environment variables
+
+`main.py` translates its own flags into these; `generate_hub.py` reads them directly, since it
+takes no command-line flags of its own.
+
+| Variable | Effect |
+|---|---|
+| `STRAVA_PROFILE=1` | Print per-phase timings (same as `main.py --profile`) |
+| `STRAVA_SEG_REBUILD=1` | Ignore `segments_cache.json` and re-detect segments |
+| `STRAVA_SEG_DEBUG=1` | Print per-segment match/reject diagnostics |
+| `STRAVA_DEM_OFF=1` | Skip all elevation-model network calls, use only what is already cached |
+
 ### Personalization (optional)
 
 Everything is derived from your export, so no setup is required. To add race-goal cards to the
@@ -65,6 +88,10 @@ predictions only — no personal targets.
 `cache/config.json` is gitignored, so your goals stay local. It also accepts an optional
 `segment_anchors` list, but you rarely need it: recurring loops are now auto-detected even when
 you only ever run them inside a longer route (see [Benchmark segments](#benchmark-segments-generate_segmentspy)). Use an anchor only to pin or rename a loop the detector misses.
+
+A third optional block, `duplicates`, corrects the automatic duplicate-recording detector
+(see [Duplicate recordings](#duplicate-recordings)). Every block is independently optional and a
+malformed entry is skipped rather than costing you the rest of the file.
 
 ### Options
 
@@ -91,6 +118,19 @@ unchanged archive parses nothing and finishes near-instantly.
 Run with `--rebuild` to discard the cache and re-parse everything. This is required after any
 change to the parser's output columns (`parse_fit` in `strava_compile.py`), since the cache
 would otherwise keep serving the old schema.
+
+A file that fails to parse is never cached as if it had succeeded, and the run ends with a
+`WARNING: N .fit file(s) failed to parse` list naming the offenders, so a corrupt upload shows up
+as a warning rather than as a silently blank row.
+
+### Device quirks
+
+Some uploads (seen on Mi Fitness / Zepp band files) declare multi-byte numeric fields with the
+FIT `byte` base type instead of the numeric type the field expects. `fitparse` then reads them as
+a tuple of separate bytes, and the file either dies in its date processor or survives with a
+total distance of `(0.0, 0.09, 0.8, 0.96)` where 6104 m was meant. `strava_compile.py` reassembles
+those scalars as it reads, before values are scaled, so the rest of the pipeline never sees the
+quirk.
 
 ### How to get your Strava export
 
@@ -183,13 +223,21 @@ same spatial resolution rather than the same total count. Each point carries whi
 metrics the run recorded:
 
 ```json
-{ "d": 1.42, "pace": 312.5, "elev": 41.2, "hr": 155, "cad": 168, "lat": -33.84, "lon": 151.21 }
+{ "d": 1.42, "t": 431.0, "pace": 312.5, "elev": 41.2, "hr": 155, "cad": 168, "lat": -33.84, "lon": 151.21 }
 ```
 
-`d` is distance in km and `pace` is seconds/km; `lat`/`lon` let the chart cursor map a
-distance back to a position on the route map. Keys are omitted when a metric isn't recorded.
-The sampling density and cap are tunable via `STREAM_POINTS_PER_KM` and `STREAM_MAX_POINTS`
-at the top of the stream section in `strava_compile.py`.
+`d` is distance in km, `t` is elapsed seconds since the first record (what
+[pause detection](#pause--gap-detection) reads), and `pace` is seconds/km; `lat`/`lon` let the
+chart cursor map a distance back to a position on the route map. Keys are omitted when a metric
+isn't recorded. The sampling density and cap are tunable via `STREAM_POINTS_PER_KM` and
+`STREAM_MAX_POINTS` at the top of the stream section in `strava_compile.py`.
+
+Elevation and position are interpolated onto each sample by cumulative distance. Heart rate is
+the exception: it attaches by **nearest reading in time** (within `HR_GAP_MAX_S`, 10 s) and is
+never interpolated, because HR is a function of time rather than distance, and a strap dropout
+should read as a hole rather than as a fabricated plateau. Readings outside `HR_MIN_BPM`–`HR_MAX_BPM`
+(20–250) are treated as device noise and dropped. A heartbeat recorded on a message that carries
+no distance is still kept, so an HR trace that starts before the GPS does is not thrown away.
 
 ### Best efforts
 
@@ -250,12 +298,28 @@ Once you have a `csv_data/YYYY-MM-DD_strava.csv`, `generate_hub.py` builds a sin
 
 | Tab | Contents |
 |---|---|
-| Overview | Summary stats, fitness/fatigue/form (CTL/ATL/TSB) indicators, a "Plan for next 7 days" load recommendation (target weekly distance with safe range, longest run, climb, and easy-pace ceiling, derived from your ACWR and current form), a "Preview after rest days" date control that decays the CTL/ATL/TSB tiles and the plan card forward up to 7 days as if no new activity were logged (history charts unaffected), and an all-time GPS heatmap that clusters runs into named hotspots with a chip bar to jump between them, off-screen edge markers, and a 90d/1y/All time filter |
+| Overview | Summary stats, fitness/fatigue/form (CTL/ATL/TSB) indicators, a "Plan for next 7 days" load recommendation (target weekly distance with safe range, longest run, climb, and easy-pace ceiling, derived from your ACWR and current form), a "Preview after rest days" date control that decays the CTL/ATL/TSB tiles and the plan card forward up to 7 days as if no new activity were logged (history charts unaffected), and an all-time GPS heatmap that clusters runs into named hotspots with a chip bar to jump between them (each remote chip labelled with its total distance, and its run count, distance and date range on hover), off-screen edge markers, and a 90d/1y/All time filter |
 | Best Efforts | Top-3 best efforts per distance band (400m → half marathon), with raw and grade-adjusted pace. Each card is clickable and opens that run's expanded map and analysis view |
 | Goals | Race-goal gap cards, training targets vs current bests, Riegel race predictions, and weekly mileage |
 | Analytics | Training load/fitness/fatigue (CTL/ATL/TSB), ACWR, training strain, critical-speed model, pace-zone distribution, VDOT trend, cadence trend, calendar heatmap, and a weekly/monthly distance/elevation/time totals chart. Most charts have independent time-range toggles (3M/6M/1Y/All). The tab is organised into Injury risk, Paces, Trends, and Compare sub-tabs, the last a stat-comparison tool that scatters or distributes any two run metrics against each other |
-| Runs | Run list where each run is tagged with a training-type badge (see [Run classification](#run-classification)) and can be searched by name/date, filtered by type chip and by min/max ranges on distance, time, speed, and elevation, and sorted by date, distance, time, speed, or elevation (ascending or descending). Selecting a run shows its Strava description (with a more/less toggle), stats, a route map, per-km splits (with elevation gain/loss and cadence), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. Hovering a best-effort row highlights that effort's stretch in gold on both the route map and the over-distance chart. Recording pauses (auto-pause, manual pause, or a stopped-then-resumed session) are marked consistently on both views: on the over-distance graph the line segment spanning each pause is drawn as an amber dotted stretch (replacing the solid line) and labelled with the stop's duration, and on the route map the stretch traversed during each pause — including any positional jump from a stopped-then-resumed session — is drawn as an amber dotted polyline with a marker at the stop. Runs that paused also show a "Pauses" stat. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
+| Runs | Run list where each run is tagged with a training-type badge (see [Run classification](#run-classification)) and can be searched by name/date, filtered by type chip and by min/max ranges on distance, time, speed, and elevation, and sorted by date, distance, time, speed, or elevation (ascending or descending). Duplicate recordings are held back from the counts and from every other chip, and reachable through a **Duplicates** chip of their own. Selecting a run shows its Strava description (with a more/less toggle), stats (including average and max heart rate when recorded), a route map, per-km splits (with elevation gain/loss and cadence), lap splits (with an HR column when the device recorded one), pace zones, best efforts, and over-distance pace/elevation/HR/cadence charts that label the exact distance and value on hover. A metric only earns a chart tab once at least two samples carry it; an HR trace covering under 90% of the run is labelled with its coverage, and an elevation profile filled in from a DEM is labelled `Elevation (map)`. Hovering a best-effort row highlights that effort's stretch in gold on both the route map and the over-distance chart. Recording pauses (auto-pause, manual pause, or a stopped-then-resumed session) are marked consistently on both views: on the over-distance graph the line segment spanning each pause is drawn as an amber dotted stretch (replacing the solid line) and labelled with the stop's duration, and on the route map the stretch traversed during each pause — including any positional jump from a stopped-then-resumed session — is drawn as an amber dotted polyline with a marker at the stop. Runs that paused also show a "Pauses" stat. Clicking the map opens an expanded view with the route and over-distance graph on one screen — tracing the graph there also moves a marker along the route |
 | Segments | Auto-detected benchmark routes you repeat — loops, climbs, and point-to-point stretches — each with a route map, every timed attempt, a personal record, and a trend chart of time over date. Clicking a segment opens an interactive map and attempt list (see [Benchmark segments](#benchmark-segments-generate_segmentspy)) |
+
+### Heatmap hotspots
+
+The Overview heatmap groups runs into hotspots by single-link clustering on their centroids, at
+`HEAT_CLUSTER_KM` (30 km). The largest cluster is "Home" and needs no lookup; the rest are named
+from OpenStreetMap reverse geocoding at zoom 12, in English so the chips stay skimmable whatever
+the local script. How specific a name gets depends on whether the cluster shares Home's country:
+a domestic cluster takes the suburb ("Copacabana"), since you know the area, while a foreign one
+skips straight to the city ("Kyoto"), because a suburb name where you don't live means nothing.
+A single lookup answers both, and the home country is itself resolved only when there is at least
+one remote cluster to name.
+
+Names are cached in `cache/heatmap_geocode_cache.json` and reused for any centroid within
+`HEAT_NAME_REUSE_KM` (8 km), which absorbs the drift a new run adds to a centroid without letting
+one suburb's name bleed into its neighbour's. A failed lookup caches nothing and falls back to a
+bearing label, so the next online build heals it.
 
 ### Run classification
 
@@ -418,6 +482,91 @@ If real stops are being missed, lower `PAUSE_GAP_MULTIPLIER` or `PAUSE_MIN_GAP_S
 segments are being flagged, raise them. The constants are at the top of the pause-detection
 section in `generate_hub.py`.
 
+### Duplicate recordings
+
+Recording one run with two apps (for example Nike Run Club as a backstop for a wrist band that
+does not reliably reach Strava) puts the same physical run in the export twice, and every total
+downstream counts it twice: distance, training load, CTL/ATL/TSB, best efforts, segment efforts.
+`lib/dedupe.py` collapses those groups in the hub. Nothing is written back to the CSV, which stays
+a parse cache rather than a judgement, so a rerun can always change its mind.
+
+The test is simultaneity, not similarity. Two recordings of one run cover nearly the same
+wall-clock window, while two genuinely separate runs done back to back cannot overlap at all.
+That is what keeps a warm-up plus a race, or two laps of a course started minutes apart, safely
+distinct. All five conditions must hold:
+
+| Constant | Default | Condition |
+|---|---|---|
+| `DUP_START_MAX_S` | `300` | Recorded start times within 5 minutes |
+| `DUP_OVERLAP_FRAC` | `0.60` | Elapsed windows overlap by this fraction of the shorter one |
+| `DUP_DIST_TOL` | `0.10` | Distances within 10% of each other |
+| `DUP_TIME_TOL` | `0.15` | Moving times within 15% of each other |
+| `DUP_START_M` / `DUP_CENTROID_M` | `250` / `500` | Start points and route centroids this close, when both sides have GPS |
+
+Grouping is union-find, not pairwise, so a run captured by three apps still leaves one survivor.
+Matching uses the raw UTC `Activity Date` rather than a localized one, since a GPS-less recording
+and its GPS-carrying twin would otherwise appear a whole timezone apart.
+
+Which recording survives is decided in order: **a recording without GPS can never win**, whatever
+its heart-rate data. Route data is load-bearing (dates, maps, the heatmap and every segment effort
+come off it) while HR is descriptive. After that the richer recording wins, by per-point HR over a
+scalar average, then by stream size, record count and polyline size, with the Activity ID as a
+final tie-break so rebuilds stay byte-identical.
+
+Aggregates are computed over the survivors only, but the full tagged list still reaches the
+browser, so a duplicate stays inspectable under the **Duplicates** chip in the Runs tab. Opening
+one shows a banner naming the recording that was kept, both Activity IDs, and where to override
+the call. The build also prints each collapsed group with those IDs:
+
+```
+Duplicate runs: 1 recording(s) excluded from all totals
+  [keep] 1234567890  Aug 2, 2026, 8:14:03 PM  10.42 km  gps  no-hr
+  [drop] 1234567891  Aug 2, 2026, 8:14:11 PM  10.39 km  no-gps  hr-stream
+  override in cache/config.json -> duplicates (see config.example.json)
+```
+
+Corrections go in `cache/config.json` under `duplicates`, keyed by Activity ID and applied in this
+order, each outranking the ones before it:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `not_duplicates` | list of `[id, id]` pairs | Two real runs, never collapse them |
+| `force_duplicate` | object of `loser: winner` | A pair the heuristic missed |
+| `force_primary` | list of ids | Pin which recording survives in its group |
+
+### Elevation from a DEM
+
+Some devices record a GPS track with no altitude at all: the Mi Fitness / Zepp band writes
+timestamp, distance, position, heart rate and cadence, and reports 0 ascent for the session.
+Strava's own app still draws a profile for those activities because it looks each coordinate up
+against a digital elevation model server-side, but the bulk export passes on only the run-level
+summary. `lib/elevation.py` does the same lookup, so a route the device could not measure still
+gets the profile the terrain implies. This matters beyond the chart: without it a real climb reads
+as 0% grade and drags the whole segment down with it.
+
+The rules are deliberately all-or-nothing per run:
+
+- Only runs with GPS and **no altitude whatsoever** are touched. A run that recorded its own
+  altitude keeps it, since a barometer follows the actual path taken, including the footbridge a
+  90 m DEM cell knows nothing about. Partial mixing is forbidden, it puts a step at the join.
+- Each run is tagged `elev_source` (`device`, `dem`, or nothing) and a DEM-derived profile is
+  labelled `Elevation (map)` in the UI rather than passed off as a measurement.
+- Lookups are anchored every `DEM_ANCHOR_M` (50 m) along the route and interpolated between over
+  cumulative distance, the same way recorded altitude is attached. A 5 km run costs ~200 lookups.
+- Profiles are smoothed over `DEM_SMOOTH_W` (7) anchors, about 350 m of route. Raw cell-boundary
+  jitter invents elevation gain that was never run: unsmoothed, a flat foreshore route read 68 m
+  against Strava's 2 m. Real hills are far longer than the window and survive it.
+- Nothing here is ever fatal. No network, a refusing API or a corrupt cache leaves the run with no
+  elevation and the build carries on.
+
+The source is [Open-Meteo's elevation API](https://open-meteo.com/en/docs/elevation-api) (Copernicus
+DEM GLO-90, no API key for non-commercial use). It bills per **coordinate**, not per request, so
+600 coordinates spread over six calls is already enough for a 429; batches are paced at
+`DEM_SLEEP_S` and a 429 is waited out rather than treated as failure. Results are cached in
+`cache/elevation_dem_cache.json` at ~11 m key precision, so repeat runs down the same street reuse
+entries and a rebuild over unchanged runs makes no network calls at all. Set `STRAVA_DEM_OFF=1` to
+skip the network entirely and use only what is cached.
+
 ## Benchmark segments (`generate_segments.py`)
 
 The Segments tab mines recurring routes from your GPS tracks and turns them into Strava-style
@@ -448,7 +597,13 @@ length, plus a curated name.
 
 Each attempt's elapsed time comes from the per-record time stream; pace and grade-adjusted
 pace (via the same Minetti model as the rest of the hub) are shown per attempt, and the
-fastest attempt is flagged as the PR. Repeats of a loop within a single session are numbered
+fastest attempt is flagged as the PR. Grade adjustment uses the **segment's own** elevation gain
+for every attempt, not what each device made of the hill that day: per-effort figures differ by
+GPS noise and by recording source (a run with no altitude reads 0, a DEM-derived profile reads
+lower than a barometer's), which was enough to sort a slower effort above a faster one. The hill
+belongs to the route, so differences in this column are the runner's doing. For the same reason
+the reference lap that sets a segment's shape and grade is chosen from the efforts that carry
+usable altitude, unless none does. Repeats of a loop within a single session are numbered
 `(lap 2)`, `(lap 3)`, … so they read correctly in the attempt list.
 
 In the trend chart each attempt dot is coloured by the run's training type (see
@@ -492,7 +647,7 @@ and the next build reads it so stars also survive a full regenerate on a fresh b
 
 ## Analytics dashboard (`generate_analytics.py`)
 
-All analyses use pace, distance, and elevation — no heart rate or power required. These analyses appear in the hub's Analytics tab; running the script standalone outputs `dashboards/analytics_dashboard.html`.
+All analyses use pace, distance, and elevation — no heart rate or power required, and none is used even when present (heart rate is displayed, never fed into load). These analyses appear in the hub's Analytics tab; running the script standalone outputs `dashboards/analytics_dashboard.html`.
 
 ### Sections
 
@@ -505,20 +660,29 @@ All analyses use pace, distance, and elevation — no heart rate or power requir
 | Time in pace zones | Proportion of total moving time in 5 zones anchored to critical speed (Z4 = threshold); aims for a polarised Z1/Z2 + Z4/Z5 distribution |
 | VO₂max estimate (VDOT) | Monthly best Daniels VDOT from grade-adjusted 1mi–10K efforts; useful as a fitness trend rather than an absolute figure |
 | Average cadence by month | Steps/min (one foot); rising cadence at the same pace signals improving running economy |
-| Pace progression | Grade-adjusted pace over time per run type (tempo/threshold/race/intervals/long/easy/recovery), each with a rolling trend line |
-| Compare stats | Interactive tool to scatter, plot over time, or show the distribution of any two of your run metrics (distance, pace, elevation, time, cadence, calories, HR), coloured by run type |
+| Pace progression | Grade-adjusted pace over time per run type (tempo/threshold/race/intervals/long/easy/recovery), each with a recency-weighted trend line. Run type and time window (3M/6M/1Y/All) are independent selectors |
+| Compare stats | Interactive tool to scatter, plot over time, or show the distribution of any two of your run metrics (distance, pace, elevation, time, cadence, calories, HR), coloured by run type. Run types can be toggled from the legend, and "Over time" mode gets its own 3M/6M/1Y/All range |
 | Training log calendar | Daily training load heatmap — darker green = higher load, gaps are rest days |
 | Distance, elevation & time | Per-week or per-month totals for distance, elevation gain, or moving time, gap-filled so rest periods drop to the axis. Time window (3M/6M/1Y/All) and granularity (weekly/monthly) are independent toggles |
 
 ### Load score
 
-The CTL/ATL/TSB calculation uses a pace-based stress score because no HR or power data is available. Each session's load is:
+The CTL/ATL/TSB calculation uses a pace-based stress score rather than an HR- or power-based one, and it stays pace-based permanently, even for runs that do record heart rate. Switching models partway through would put the training history on two incomparable curves, so HR is shown but never fed into load. The tab's subtitle states which runs carry HR. Each session's load is:
 
 ```
 load = grade_adjusted_distance_km × 10 × intensity²
 ```
 
 where `intensity = threshold_pace / session_GA_pace`, clamped to [0.5, 1.5]. The threshold pace is the 15th-percentile fastest GA pace across all sessions. This mirrors the TRIMP-less load that Runalyze uses when HR is absent.
+
+### Pace progression trend
+
+The trend line under each run type is a recency-weighted mean rather than a fixed-window rolling
+average: every earlier run's weight halves for each `_PACE_PROG_HALFLIFE_DAYS` (30) of age, so a
+fresh run dominates and months-old runs fade out on their own. Unlike a rolling window it is
+defined from the first run, so a type with one recent attempt still reports a realistic current
+pace instead of nothing. The "Current *type* pace" stat is that weighted value at the latest run,
+and it is independent of the chart's time-window buttons.
 
 ### Next-week load recommendation
 
@@ -550,18 +714,22 @@ Strava-Analysis/
 │   ├── generate_dashboards.py      # best-efforts/goal logic; also runs standalone
 │   ├── generate_analytics.py       # analytics logic; also runs standalone
 │   ├── generate_segments.py        # benchmark-segment detection for the hub's Segments tab
+│   ├── dedupe.py                   # collapses one run recorded by two apps into a single activity
+│   ├── elevation.py                # DEM-derived elevation for runs whose device recorded none
 │   ├── localtime.py                # resolves each run's local timezone from GPS + Activity Date (optional timezonefinder)
 │   ├── grade.py                    # shared Minetti grade-adjustment helpers (minetti_cost, ga_time)
-│   └── config.py                   # loads optional cache/config.json (races + segment anchors)
+│   └── config.py                   # loads optional cache/config.json (races, segment anchors, duplicate overrides)
 ├── config.example.json         # sample personalization file; copy to cache/config.json
 ├── csv_data/                   # output CSVs (gitignored)
 │   └── YYYY-MM-DD_strava.csv
 ├── cache/                      # detection caches + personal config/stars (gitignored)
-│   ├── config.json                 # optional personalization (races + segment anchors)
+│   ├── config.json                 # optional personalization (races, segment anchors, duplicate overrides)
 │   ├── segment_stars.json          # user-starred segments (geo-keys); read at build
 │   ├── segments_cache.json         # detected segments, keyed on a run-set signature
 │   ├── segment_geocode_cache.json  # cached OSM (Nominatim) segment names
-│   └── segment_match_cache.json    # cached OSM (Overpass) map-matched route lines
+│   ├── segment_match_cache.json    # cached OSM (Overpass) map-matched route lines
+│   ├── heatmap_geocode_cache.json  # cached OSM (Nominatim) heatmap hotspot names
+│   └── elevation_dem_cache.json    # cached Open-Meteo DEM elevations, keyed by coordinate
 ├── dashboards/                 # output HTML dashboards (gitignored)
 │   ├── TrainingHub.html        # the consolidated training hub (main output)
 │   ├── top_runs_by_distance.html   # only if lib/generate_dashboards.py is run alone
