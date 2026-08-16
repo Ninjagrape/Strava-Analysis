@@ -18,6 +18,15 @@
   ],
   "segment_anchors": [],
 
+  "_physiology_help": [
+    "Only the Analytics > Trends HR-derived VO2max estimate reads this block.",
+    "hr_max: true maximum heart rate. Unset, the highest bpm ever recorded is used,",
+    "which understates it unless you have actually run yourself to the line.",
+    "hr_rest: resting heart rate, measured lying down before getting up. Unset, 60 is assumed.",
+    "Both shift the absolute estimate; neither changes its direction of travel."
+  ],
+  "physiology": {},
+
   "_duplicates_help": [
     "Manual corrections to automatic duplicate detection, all keyed by Activity ID.",
     "Run the hub once and read the 'Duplicate runs' block it prints to get the IDs.",

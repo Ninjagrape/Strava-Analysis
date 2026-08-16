@@ -43,10 +43,24 @@ class DuplicateOverrides:
 
 
 @dataclass(frozen=True)
+class Physiology:
+    """Athlete constants no export can supply.
+
+    Only the HR-derived VO2max estimate reads these; every other metric stays
+    purely data-driven. Left unset, the estimate falls back to the highest heart
+    rate ever recorded and a generic resting rate, which sets its absolute level
+    but not its direction of travel.
+    """
+    hr_max: int | None = None
+    hr_rest: int | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     races: tuple[Race, ...] = field(default_factory=tuple)
     segment_anchors: tuple[SegmentAnchor, ...] = field(default_factory=tuple)
     duplicates: DuplicateOverrides = field(default_factory=DuplicateOverrides)
+    physiology: Physiology = field(default_factory=Physiology)
 
 
 def _parse_race(d: dict) -> Race | None:
@@ -107,6 +121,26 @@ def _parse_duplicates(d: dict) -> DuplicateOverrides:
     return DuplicateOverrides(tuple(pairs), tuple(forced), primary)
 
 
+def _parse_physiology(d: dict) -> Physiology:
+    """Each field is independently salvageable, and an implausible bpm is dropped
+    rather than silently skewing every VO2max estimate."""
+    def bpm(key: str, lo: int, hi: int) -> int | None:
+        raw = d.get(key)
+        if raw is None:
+            return None
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            print(f"[config] physiology.{key} is not a number, ignoring it")
+            return None
+        if not lo <= v <= hi:
+            print(f"[config] physiology.{key}={v} is outside {lo}-{hi} bpm, ignoring it")
+            return None
+        return v
+
+    return Physiology(hr_max=bpm("hr_max", 120, 230), hr_rest=bpm("hr_rest", 25, 100))
+
+
 def load_config(path: Path = CONFIG_PATH) -> Config:
     """Load config.json if present. Never raises: a missing or malformed file
     yields an empty Config so the pipeline degrades to data-driven defaults."""
@@ -125,4 +159,6 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     anchors = tuple(a for a in (_parse_anchor(d) for d in raw.get("segment_anchors", []) if isinstance(d, dict)) if a)
     dup_raw = raw.get("duplicates", {})
     dups = _parse_duplicates(dup_raw) if isinstance(dup_raw, dict) else DuplicateOverrides()
-    return Config(races=races, segment_anchors=anchors, duplicates=dups)
+    phys_raw = raw.get("physiology", {})
+    phys = _parse_physiology(phys_raw) if isinstance(phys_raw, dict) else Physiology()
+    return Config(races=races, segment_anchors=anchors, duplicates=dups, physiology=phys)

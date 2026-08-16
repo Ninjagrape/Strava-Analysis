@@ -2,10 +2,16 @@
 """
 generate_analytics.py
 Builds a third dashboard, analytics_dashboard.html, from a strava_compile.py
-enriched CSV. Everything here is derived from PACE / DISTANCE / ELEVATION only,
-because the source device records no heart rate and no power. These are the
-analyses that paid Strava / Runalyze / SmashRun offer that your current two
-dashboards do not yet cover, restricted to what your data can actually support.
+enriched CSV. These are the analyses that paid Strava / Runalyze / SmashRun offer
+that your current two dashboards do not yet cover, restricted to what your data
+can actually support.
+
+Nearly everything here is derived from PACE / DISTANCE / ELEVATION, because most
+of this history was recorded by a device with no heart rate and no power. Section
+7 is the single exception: a strap arrived partway through, so runs that carry
+heart rate get a second VO2max estimate from it. Load deliberately stays
+pace-based even on those runs, so the whole history stays on one comparable curve
+rather than jumping models partway.
 
 Sections:
   1. Fitness / Fatigue / Form (CTL / ATL / TSB) from a pace-based load score
@@ -14,14 +20,16 @@ Sections:
   4. Critical-speed model (running analog of Strava's power curve)
   5. Pace-zone time-in-zone distribution (derived from critical speed)
   6. VO2max / VDOT estimate trend (Daniels, from GA best efforts)
-  7. Cadence trend
-  8. Training-log calendar heatmap
+  7. VO2max from heart rate, where a run recorded it (submaximal extrapolation)
+  8. Cadence trend
+  9. Training-log calendar heatmap
 
 Run after generate_dashboards.py:
     python generate_analytics.py
 Writes analytics_dashboard.html next to the script.
 """
 
+import bisect
 import csv
 import html
 import json
@@ -37,6 +45,7 @@ from pathlib import Path
 
 from grade import minetti_cost, COST_FLAT, ga_time
 from generate_dashboards import fit_riegel
+from config import load_config
 
 
 def num(row: dict, key: str):
@@ -437,14 +446,23 @@ def time_in_pace_zones(rows: list[dict], zones: list[dict]) -> list[float]:
 # 6. VDOT / VO2max estimate trend (Daniels)
 # ---------------------------------------------------------------------------
 
+def daniels_vo2_at_velocity(v_m_per_min: float) -> float:
+    """Oxygen cost (ml/kg/min) of running at a velocity, Daniels' cost curve.
+
+    Shared with the HR-derived estimate below so both VO2max figures on the Trends
+    tab price a given speed identically: where the two disagree, that is heart rate
+    disagreeing with race performance, not two energy models talking past each other.
+    """
+    return -4.60 + 0.182258 * v_m_per_min + 0.000104 * v_m_per_min ** 2
+
+
 def daniels_vo2max(dist_m: float, time_s: float) -> float:
     """Jack Daniels VDOT estimate from a single time-trial effort."""
     t_min = time_s / 60
     velocity = dist_m / t_min  # m/min
     pct_max = 0.8 + 0.1894393 * math.exp(-0.012778 * t_min) + \
         0.2989558 * math.exp(-0.1932605 * t_min)
-    vo2 = -4.60 + 0.182258 * velocity + 0.000104 * velocity ** 2
-    return vo2 / pct_max
+    return daniels_vo2_at_velocity(velocity) / pct_max
 
 
 def vdot_trend(rows: list[dict]) -> list[tuple]:
@@ -476,7 +494,302 @@ def vdot_trend(rows: list[dict]) -> list[tuple]:
 
 
 # ---------------------------------------------------------------------------
-# 7. Cadence trend
+# 7. VO2max from heart rate (submaximal extrapolation)
+# ---------------------------------------------------------------------------
+# The VDOT trend above asks "how fast did you race?". This asks "what did that pace
+# cost your heart?", so it moves on ordinary training runs where no best effort was
+# set, and it can fall while VDOT stands still. The method is the textbook
+# submaximal one: price the oxygen cost of the speed actually being held, read heart
+# rate as a fraction of heart-rate reserve, and scale one by the other, on the
+# %HRR = %VO2R equivalence (Swain). Speed is priced with Daniels' cost curve, the
+# same one VDOT uses, so the two numbers stay comparable.
+#
+# Hills are the whole difficulty, and they are met twice over. Speed is
+# grade-adjusted per window from the stream's own elevation, using the Minetti cost
+# curve the rest of this file runs on, so a 6:30/km climb is priced as the
+# flat-equivalent effort the heart is actually paying for and a freewheeling descent
+# stops reading as fitness. Whole-run ga_time cannot do that: it spreads one average
+# grade (gain/2 over the distance) across a run that was half up and half down.
+# Windows steeper than HRV_MAX_GRADE are dropped rather than adjusted, because past
+# that the cost curve stops being what binds (braking downhill, a walking gait up).
+#
+# What is left after the filters is steady aerobic running, which is the only state
+# in which a heart rate means anything about VO2max. Everything else is discarded
+# on purpose: the opening minutes while HR is still climbing, the seconds after a
+# surge, pauses, walks, and any window whose pace would not hold still.
+
+HRV_WINDOW_S      = 150.0   # length of one candidate steady-state window. Shorter reads
+                            # noisier, longer survives fewer of the steadiness gate's
+                            # standards; per-run answers move under 2 units either way
+                            # across 120-240 s (measured 2026-08-16, 5 HR runs)
+HRV_WARMUP_S      = 300.0   # skip the opening minutes: HR is still climbing toward the
+                            # effort's steady state and reads low for the pace held
+HRV_LAG_S         = 20.0    # HR trails the effort causing it; sample HR this much later
+                            # than the distance window it is paired with
+HRV_MAX_GAP_S     = 20.0    # a longer hole between stream points is a pause or dropout
+HRV_MIN_SPEED_MPS = 2.0     # ~8:20/km; below this the running cost curve stops applying
+HRV_MAX_SPEED_MPS = 7.0     # ~2:23/km; above this is a GPS artefact, not a runner
+HRV_MAX_GRADE     = 0.15    # per-window net grade ceiling, uphill or down
+HRV_STEADY_RATIO  = 1.35    # max/min grade-adjusted speed across the window's quarters
+HRV_HRR_MIN       = 0.50    # below half of reserve the extrapolation amplifies noise
+HRV_HRR_MAX       = 0.95    # at the very top the linear relation flattens out
+HRV_MIN_HR_PTS    = 3       # HR samples needed inside a window's lagged span
+HRV_MIN_WINDOWS   = 4       # ~10 min of steady running before a run earns an estimate
+HRV_RUN_PCTILE    = 0.75    # which of a run's windows to believe, see run_hr_vo2max
+HRV_MIN_VO2       = 25.0    # plausibility gate on a single window's answer
+HRV_MAX_VO2       = 90.0
+HRV_GRADE_LIMIT   = 0.45    # Minetti's polynomial is fitted over +/-45% only
+HR_REST_DEFAULT   = 60      # assumed resting HR when config.json declares none
+HR_MAX_FLOOR      = 120     # a lower "max" than this is a dropout, not a heart rate
+HR_MAX_CEILING    = 230
+VO2_REST          = 3.5     # ml/kg/min, one MET, the zero point of both reserves
+
+
+def _pctile(vals: list[float], p: float) -> float:
+    """Linear-interpolated percentile of a non-empty list."""
+    s = sorted(vals)
+    k = (len(s) - 1) * p
+    lo = int(k)
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] + (s[hi] - s[lo]) * (k - lo)
+
+
+def hr_reference(runs: list[dict]) -> dict:
+    """Heart-rate anchors for the estimate: max and resting, with their provenance.
+
+    Configured values win. Failing that, max HR is the highest ever recorded, which
+    understates a true max unless the runner has actually gone to the line, and
+    resting HR falls back to a generic figure because no export carries one. Both
+    are reported to the UI so the reader knows which number is measured and which
+    is assumed.
+    """
+    phys = load_config().physiology
+    observed = [r["max_hr"] for r in runs
+                if r.get("max_hr") and HR_MAX_FLOOR <= r["max_hr"] <= HR_MAX_CEILING]
+    if phys.hr_max:
+        hr_max, hr_max_src = float(phys.hr_max), "config"
+    elif observed:
+        hr_max, hr_max_src = float(max(observed)), "observed"
+    else:
+        return {}
+    hr_rest = float(phys.hr_rest) if phys.hr_rest else float(HR_REST_DEFAULT)
+    hr_rest_src = "config" if phys.hr_rest else "assumed"
+    if hr_max - hr_rest < 40:       # an unusable reserve; every estimate would be noise
+        return {}
+    return {"hr_max": hr_max, "hr_rest": hr_rest,
+            "hr_max_src": hr_max_src, "hr_rest_src": hr_rest_src}
+
+
+def _ga_speed(p0: dict, p1: dict, fallback_grade: float) -> tuple | None:
+    """(grade-adjusted m/s, net grade) between two stream points, or None.
+
+    Falls back to the run's average grade for a stream with no elevation at all, so
+    a run the DEM could not answer for still contributes rather than being priced as
+    flat.
+    """
+    dt = (p1.get("t") or 0.0) - (p0.get("t") or 0.0)
+    dd = ((p1.get("d") or 0.0) - (p0.get("d") or 0.0)) * 1000.0
+    if dt <= 0 or dd <= 0:
+        return None
+    e0, e1 = p0.get("elev"), p1.get("elev")
+    grade = (e1 - e0) / dd if (e0 is not None and e1 is not None) else fallback_grade
+    grade = max(-HRV_GRADE_LIMIT, min(HRV_GRADE_LIMIT, grade))
+    return (dd / dt) * (minetti_cost(grade) / COST_FLAT), grade
+
+
+def _window_estimate(pts: list[dict], i0: int, i1: int, hr_mean: float,
+                     hr_max: float, hr_rest: float, fallback_grade: float):
+    """VO2max implied by one window, or None if the window is not steady aerobic running."""
+    span = _ga_speed(pts[i0], pts[i1], fallback_grade)
+    if not span:
+        return None
+    v_ga, grade = span
+    raw_v = ((pts[i1]["d"] - pts[i0]["d"]) * 1000.0) / (pts[i1]["t"] - pts[i0]["t"])
+    if not HRV_MIN_SPEED_MPS <= raw_v <= HRV_MAX_SPEED_MPS or abs(grade) > HRV_MAX_GRADE:
+        return None
+
+    # Steadiness, judged on grade-adjusted speed across the window's quarters: a
+    # window that surged and eased averages out to a pace the heart never saw.
+    quarters = []
+    for q in range(4):
+        a = i0 + (i1 - i0) * q // 4
+        b = i0 + (i1 - i0) * (q + 1) // 4
+        qs = _ga_speed(pts[a], pts[b], fallback_grade) if b > a else None
+        if not qs or qs[0] <= 0:
+            return None
+        quarters.append(qs[0])
+    if max(quarters) / min(quarters) > HRV_STEADY_RATIO:
+        return None
+
+    hrr = (hr_mean - hr_rest) / (hr_max - hr_rest)
+    if not HRV_HRR_MIN <= hrr <= HRV_HRR_MAX:
+        return None
+    vo2 = daniels_vo2_at_velocity(v_ga * 60.0)
+    if vo2 <= VO2_REST:
+        return None
+    vo2max = VO2_REST + (vo2 - VO2_REST) / hrr
+    return vo2max if HRV_MIN_VO2 <= vo2max <= HRV_MAX_VO2 else None
+
+
+def run_hr_vo2max(run: dict, hr_max: float, hr_rest: float) -> dict | None:
+    """Estimate one run's VO2max from its HR stream, or None if it cannot be judged.
+
+    Windows are non-overlapping and each is scored independently. The run's answer is
+    the HRV_RUN_PCTILE percentile of them rather than the median, because the errors
+    are one-sided: heat, dehydration, cardiac drift and yesterday's session all raise
+    heart rate at a given pace and so drag the estimate down, while almost nothing
+    lowers it. The upper quartile is the least-contaminated evidence of the day; the
+    percentile rather than the maximum keeps one noisy window from setting it.
+    """
+    pts = [p for p in (run.get("dist_stream") or [])
+           if p.get("t") is not None and p.get("d") is not None]
+    if len(pts) < 2:
+        return None
+    dist_m = (run.get("dist_km") or 0.0) * 1000.0
+    fallback_grade = ((run.get("gain") or 0.0) / 2) / dist_m if dist_m > 0 else 0.0
+
+    hr_t = [p["t"] for p in pts if p.get("hr") is not None]
+    hr_v = [p["hr"] for p in pts if p.get("hr") is not None]
+    if len(hr_t) < HRV_MIN_HR_PTS:
+        return None
+
+    def hr_mean_over(t0: float, t1: float) -> float | None:
+        """Mean HR across a span shifted HRV_LAG_S later than the distance window."""
+        lo = bisect.bisect_left(hr_t, t0 + HRV_LAG_S)
+        hi = bisect.bisect_right(hr_t, t1 + HRV_LAG_S)
+        vals = hr_v[lo:hi]
+        return sum(vals) / len(vals) if len(vals) >= HRV_MIN_HR_PTS else None
+
+    estimates = []
+    i = 0
+    while i < len(pts) - 1:
+        if pts[i]["t"] < HRV_WARMUP_S:
+            i += 1
+            continue
+        j = i
+        broken = False
+        while j < len(pts) - 1 and pts[j]["t"] - pts[i]["t"] < HRV_WINDOW_S:
+            if pts[j + 1]["t"] - pts[j]["t"] > HRV_MAX_GAP_S:
+                broken = True
+                break
+            j += 1
+        if broken:                      # resume after the pause, never across it
+            i = j + 1
+            continue
+        if pts[j]["t"] - pts[i]["t"] < HRV_WINDOW_S:
+            break                       # tail too short to fill a window
+        hr_mean = hr_mean_over(pts[i]["t"], pts[j]["t"])
+        if hr_mean is not None:
+            v = _window_estimate(pts, i, j, hr_mean, hr_max, hr_rest, fallback_grade)
+            if v is not None:
+                estimates.append(v)
+        i = j
+    if len(estimates) < HRV_MIN_WINDOWS:
+        return None
+    return {"date_iso": run.get("date_iso"), "name": run.get("name"),
+            "value": _pctile(estimates, HRV_RUN_PCTILE), "windows": len(estimates)}
+
+
+def hr_vo2max_trend(runs: list[dict] | None) -> dict:
+    """Per-month HR-derived VO2max: [(label, value)] plus the anchors it assumed.
+
+    A month keeps its best run, the same convention vdot_trend uses, and for the same
+    reason: a ceiling is evidenced by the day it was reached, not by the average of
+    days that included a recovery jog in the heat. A month with no qualifying run
+    simply does not appear, since heart rate arrived partway through this history and
+    not every run since carries a usable stream.
+    """
+    empty = {"series": [], "months": [], "runs_used": 0, "hr_runs": 0, "windows": 0}
+    if not runs:
+        return empty
+    hr_runs = [r for r in runs if (r.get("hr_pts") or 0) > 0]
+    ref = hr_reference(runs)
+    if not hr_runs or not ref:
+        return {**empty, **ref, "hr_runs": len(hr_runs)}
+
+    monthly = defaultdict(list)
+    used = windows = 0
+    for r in hr_runs:
+        est = run_hr_vo2max(r, ref["hr_max"], ref["hr_rest"])
+        if not est or not est["date_iso"]:
+            continue
+        y, m, _ = est["date_iso"].split("-")
+        monthly[(int(y), int(m))].append(est["value"])
+        used += 1
+        windows += est["windows"]
+
+    months = [{"label": datetime(y, m, 1).strftime("%b"),
+               "value": round(max(vals), 1), "runs": len(vals)}
+              for (y, m), vals in sorted(monthly.items())]
+    return {**ref, "series": [(x["label"], x["value"]) for x in months],
+            "months": months, "runs_used": used, "hr_runs": len(hr_runs),
+            "windows": windows}
+
+
+def _hr_vo2max_section(hrv: dict) -> str:
+    """Trends-tab card for the HR-derived estimate.
+
+    Renders nothing at all when no run carries heart rate, so the tab is unchanged
+    for a history recorded without a strap; explains itself rather than showing an
+    empty chart when HR exists but nothing qualified.
+    """
+    hr_runs = hrv.get("hr_runs") or 0
+    if not hr_runs:
+        return ""
+    series = hrv.get("series") or []
+    cur = f"{series[-1][1]:.1f}" if series else "n/a"
+
+    if series:
+        def render(n):
+            sub = series if n is None else series[-n:]
+            if not sub:
+                return "<p class='note'>No estimate in this window.</p>"
+            return _bar_chart([lab for lab, _ in sub], [v for _, v in sub],
+                              color="#d9534f", fmt=lambda v: f"{v:.0f}")
+        body = _ranged(MONTHLY_RANGES, "6M", render)
+    elif not hrv.get("hr_max"):
+        body = ("<p class='note'>No usable maximum heart rate yet, so a reserve cannot "
+                "be worked out. Set <code>physiology.hr_max</code> in "
+                "<code>cache/config.json</code>.</p>")
+    else:
+        body = ("<p class='note'>Heart rate is recorded, but no run has yet held an "
+                "effort steady enough for long enough to be read this way. Ten minutes "
+                "of even running above a jog will do it.</p>")
+
+    max_src = ("your configured maximum" if hrv.get("hr_max_src") == "config"
+               else "the highest ever recorded, which understates a true max")
+    rest_src = ("your configured resting rate" if hrv.get("hr_rest_src") == "config"
+                else "assumed, no export carries one")
+    anchors = (f"Anchored on {hrv['hr_max']:.0f} bpm maximum ({max_src}) and "
+               f"{hrv['hr_rest']:.0f} bpm at rest ({rest_src}); set "
+               f"<code>physiology.hr_max</code> and <code>physiology.hr_rest</code> in "
+               f"<code>cache/config.json</code> to use your own. "
+               if hrv.get("hr_max") else "")
+    coverage = (f"{hrv.get('runs_used', 0)} of {hr_runs} heart-rate runs qualified, "
+                f"{hrv.get('windows', 0)} steady windows in total. ")
+
+    return f"""
+<div class="section">
+  <p class="section-title">VO&#8322;max from heart rate by month</p>
+  <div class="card">
+    {body}
+    <p class="note">What a pace cost your heart, rather than how fast you raced, so it
+    moves on ordinary training runs. Each run is cut into
+    {HRV_WINDOW_S / 60:.1f}-minute windows of steady running (warm-up, pauses, surges
+    and anything steeper than {HRV_MAX_GRADE * 100:.0f}% discarded); each window's
+    speed is grade-adjusted from the run's own elevation profile with the Minetti cost
+    curve, so a climb is priced as the flat-equivalent effort your heart actually paid
+    for and a descent stops reading as fitness. Oxygen cost then comes off the same
+    Daniels curve the VDOT chart above uses, scaled by heart-rate reserve
+    (%HRR = %VO&#8322;R). Latest estimate: <strong>{cur}</strong>. {coverage}{anchors}
+    The absolute figure moves with those two anchors; the direction of travel, and the
+    gap to the VDOT chart above, are what to read.</p>
+  </div>
+</div>"""
+
+
+# ---------------------------------------------------------------------------
+# 8. Cadence trend
 # ---------------------------------------------------------------------------
 
 def cadence_trend(rows: list[dict]) -> list[tuple]:
@@ -549,7 +862,7 @@ def period_totals(rows: list[dict], by: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 8. Calendar heatmap
+# 9. Calendar heatmap
 # ---------------------------------------------------------------------------
 
 def calendar_data(loads: list[tuple]) -> dict:
@@ -1054,6 +1367,11 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     vdot = vdot_trend(rows)
     cur_vdot = vdot[-1][1] if vdot else None
 
+    # HR-derived VO2max: only the runs that recorded heart rate, only their steady
+    # stretches. Needs the hub's runs (streams and DEM elevation); the standalone
+    # build passes none and the section simply does not appear.
+    hrv = hr_vo2max_trend(runs)
+
     # cadence
     cad = cadence_trend(rows)
 
@@ -1100,6 +1418,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
         return render
     vdot_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(vdot, "#5cb85c")) if vdot else ""
     cad_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(cad, "#5b8fd9")) if cad else ""
+    hrv_section = _hr_vo2max_section(hrv)
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
@@ -1147,7 +1466,8 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     else:
         hr_subtitle = (
             f"Derived from pace, distance and elevation; heart rate is recorded on "
-            f"{hr_runs} of {tot_runs} runs and is shown but not used for load"
+            f"{hr_runs} of {tot_runs} runs, where it drives the Trends tab's VO&#8322;max "
+            f"estimate and nothing else (load stays pace-based)"
         )
 
     if hr_runs == 0:
@@ -1251,6 +1571,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     <p class="note">Daniels VDOT from your best grade-adjusted efforts each month. Current estimate: <strong>{cur_vdot if cur_vdot else "n/a"}</strong>. An aerobic-fitness proxy, useful as a trend rather than an absolute figure.</p>
   </div>
 </div>
+{hrv_section}
 
 <div class="section">
   <p class="section-title">Average cadence by month</p>
