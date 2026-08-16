@@ -414,33 +414,81 @@ def _threshold_at(dt: datetime, efforts: list[tuple[datetime, float]],
     return robust_mps
 
 
-def _compute_pace_zones(km_splits: list[dict], threshold_mps: float) -> list[float]:
+ZONE_BOUNDS = [0.77, 0.87, 0.93, 1.03]  # speed as a fraction of threshold; mirrored by ZONE_NAMES in HUB_JS
+
+
+def _zone_index(frac: float) -> int:
+    """Zone holding a speed expressed as a fraction of threshold speed."""
+    for i, b in enumerate(ZONE_BOUNDS):
+        if frac < b:
+            return i
+    return len(ZONE_BOUNDS)
+
+
+def _compute_pace_zones(km_splits: list[dict], threshold_mps: float,
+                        avg_dist_m: float = 0.0,
+                        avg_time_s: float = 0.0) -> tuple[list[float], str]:
     """
     Time in each of 5 pace zones, computed from per-km splits.
     Each split covers exactly 1000 m, so time_s == seconds-per-km.
     Zone boundaries use the same speed-fraction-of-threshold model as Strava/TrainingPeaks.
+
+    Returns the zone seconds and their provenance: "splits", "avg" for the
+    whole-run fallback below, or "none" when there was nothing to go on.
+
+    A GPS-less recording (a treadmill run on a band that writes no per-record
+    distance) carries no per-km splits at all, so the loop yields nothing and the
+    run reads as no-signal, which sends `_classify_run` to its "easy" default
+    however slow the run actually was. `avg_dist_m`/`avg_time_s` offer the
+    whole-run average speed as a single last-resort bucket. They are consulted
+    only when the splits produced no time whatsoever, so a run carrying real
+    splits can never be reclassified by this.
     """
-    if not threshold_mps or threshold_mps <= 0 or not km_splits:
-        return [0.0, 0.0, 0.0, 0.0, 0.0]
-    bounds = [0.77, 0.87, 0.93, 1.03]
     secs = [0.0, 0.0, 0.0, 0.0, 0.0]
+    if not threshold_mps or threshold_mps <= 0:
+        return secs, "none"
     for s in km_splits:
         t = s.get("time_s")
         if not t or t <= 0:
             continue
-        speed = 1000.0 / t       # m/s (1 km in t seconds)
-        frac = speed / threshold_mps
-        if frac < bounds[0]:
-            secs[0] += t
-        elif frac < bounds[1]:
-            secs[1] += t
-        elif frac < bounds[2]:
-            secs[2] += t
-        elif frac < bounds[3]:
-            secs[3] += t
-        else:
-            secs[4] += t
-    return [round(s, 1) for s in secs]
+        secs[_zone_index((1000.0 / t) / threshold_mps)] += t   # 1 km covered in t seconds
+    if sum(secs) > 0:
+        return [round(s, 1) for s in secs], "splits"
+    if avg_dist_m > 0 and avg_time_s > 0:
+        secs[_zone_index((avg_dist_m / avg_time_s) / threshold_mps)] = round(avg_time_s, 1)
+        return secs, "avg"
+    return secs, "none"
+
+
+# Pace zones answer "how hard was this kilometre", which is the wrong question for a
+# race: threshold_mps is a 5K-equivalent speed, so an all-out 14 km is *meant* to be
+# ~6% slower than it and every split lands in Z4. City to Surf 2026 ran 4:58/km against
+# a 4:40/km 5K-equivalent and classified as a threshold session for exactly that reason.
+# Riegel's power law (T = a·D^b) supplies the falloff, so a run can be judged against
+# what is achievable over its own distance: predicted all-out speed = threshold ·
+# (D/5000)^(1-b).
+#
+# The exponent is the literature value, matching generate_dashboards.riegel(), not the
+# personal fit from fit_current_curve(). That fit reads b~1.12 here because its long-
+# distance anchors are best efforts lifted out of easy long runs rather than races, so
+# it under-predicts long-distance capability and would call any hard 10 km a race. A
+# fixed exponent also keeps a run's category from drifting every time the curve refits.
+RACE_RIEGEL_B = 1.06
+
+
+def _race_effort_ratio(dist_km: float, moving_s: float,
+                       threshold_mps: float | None) -> float | None:
+    """Whole-run speed as a fraction of the all-out speed predicted for this distance.
+
+    1.0 means the run held exactly its Riegel-predicted race pace; below 1 falls short
+    of it. Returns None when there is no threshold to judge against (no 5K effort yet).
+    """
+    if not threshold_mps or threshold_mps <= 0 or dist_km <= 0 or moving_s <= 0:
+        return None
+    dist_m = dist_km * 1000.0
+    speed = dist_m / moving_s
+    predicted = threshold_mps * (dist_m / 5000.0) ** (1 - RACE_RIEGEL_B)
+    return round(speed / predicted, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +527,9 @@ LONG_RUN_PERCENTILE = 0.75   # distance at/above this percentile of all runs = l
 LONG_RUN_MIN_RATIO  = 1.30   # ...and at least this multiple of the median run distance
 LONG_RUN_MIN_KM     = 10.0   # ...and never below this absolute floor
 RACE_Z5_SHARE       = 0.40   # >= this share of zoned time in zone 5 (frac>=1.03) = race
+RACE_EFFORT_RATIO   = 0.98   # >= this share of the distance-adjusted all-out pace = race
+RACE_EFFORT_MIN_KM  = 3.0    # ...over at least this far; below it Riegel is unreliable
+                             # and a genuine max effort is nearly all Z5 anyway
 THRESHOLD_Z4_SHARE  = 0.30   # >= this share in zone 4 (0.93-1.03) = threshold session
 THRESHOLD_Z45_SHARE = 0.50   # >= this combined share in zones 4-5 (at/above threshold speed) = threshold session
 TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
@@ -488,8 +539,12 @@ RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.77) = recovery
 def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
     """Assign one training category to a run.
 
-    Intensity buckets (race/threshold/tempo) use the share of zoned time from
-    `pace_zones`; they require a *sustained* share, so an easy long run falls
+    "race" is decided first, and on distance-adjusted pace (`race_ratio`) rather
+    than zones, because a maximal effort over a race distance sits *below* 5K pace
+    by definition and the zone shares would read it as a threshold session.
+
+    The remaining intensity buckets (threshold/tempo) use the share of zoned time
+    from `pace_zones`; they require a *sustained* share, so an easy long run falls
     through to "long" while a genuine workout outranks distance. Distance is
     judged relative to the runner's own distribution, so "long" tracks fitness
     rather than a fixed cutoff. Falls back to "easy" when there's no signal
@@ -504,6 +559,15 @@ def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
 
     if run["is_interval"]:
         return "intervals"
+
+    # A maximal effort is maximal *for its distance*, so the zone shares below cannot
+    # see it: an all-out 14 km spends its whole length in Z4 by construction. Compare
+    # the run against its own Riegel-predicted race pace instead, before the zone rules
+    # get to call it a threshold session.
+    ratio = run.get("race_ratio")
+    if ratio is not None and run["dist_km"] >= RACE_EFFORT_MIN_KM \
+            and ratio >= RACE_EFFORT_RATIO:
+        return "race"
 
     zones = run.get("pace_zones") or []
     total = sum(zones)
@@ -854,7 +918,15 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         # The threshold tracks contemporaneous fitness, so an early effort is judged
         # against the runner's 5K form at the time rather than today's all-time best.
         run_threshold = _threshold_at(dt, efforts, threshold_mps)
-        pace_zones = _compute_pace_zones(km_splits, run_threshold)
+        # A run with no per-km splits (no GPS, and a band that logs no per-record
+        # distance) gets its whole-run average offered as a fallback bucket, so the
+        # pace still reaches the classifier. Withheld below MISC_MAX_KM: those are
+        # bucketed "misc" without consulting zones at all, and a synthesised zone
+        # for a 30-second stair sprint would only be noise in the UI.
+        avg_dist_m = dist_m if dist_km >= MISC_MAX_KM else 0.0
+        pace_zones, zone_source = _compute_pace_zones(
+            km_splits, run_threshold, avg_dist_m, moving_s)
+        race_ratio = _race_effort_ratio(dist_km, moving_s, run_threshold)
 
         # GPS polyline for map
         try:
@@ -935,6 +1007,8 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
             "lap_splits":   lap_splits,
             "km_splits":    km_splits,
             "pace_zones":   pace_zones,
+            "zone_source":  zone_source,
+            "race_ratio":   race_ratio,
             "best_efforts": best_efforts,
             "gps_polyline": gps_polyline,
             "dist_stream": dist_stream,
@@ -1244,6 +1318,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
   background:#1b2a1b;border:1px solid #5cb85c;color:#cfe8cf;font-size:10px;
   padding:2px 7px;border-radius:10px;cursor:pointer;transform:translate(-50%,-50%);white-space:nowrap}
 .heat-edge .he-arrow{display:inline-block;font-size:9px;line-height:1}
+/* Home reads as the way back, not as one more remote cluster */
+.heat-edge.home{background:#14200f;border-color:#8fd48f;color:#dff0df;font-weight:600}
 
 /* Runs panel */
 #panel-runs{height:calc(100vh - 44px);overflow:hidden}
@@ -2460,7 +2536,7 @@ function renderDetail(r) {
     mapHtml +
     renderRunShape(r) +
     renderKmSplits(r) +
-    renderPaceZones(r.pace_zones) +
+    renderPaceZones(r.pace_zones, r.zone_source) +
     renderBestEfforts(r.best_efforts) +
     renderDistChart(r);
 }
@@ -3053,7 +3129,7 @@ function renderLapSplits(splits) {
 
 // ── Pace zones ────────────────────────────────────────────────────────────
 
-function renderPaceZones(zones) {
+function renderPaceZones(zones, source) {
   if (!zones || zones.every(function(z) { return z === 0; })) return '';
   var total = zones.reduce(function(a, b) { return a + b; }, 0) || 1;
 
@@ -3073,7 +3149,11 @@ function renderPaceZones(zones) {
       ZONE_NAMES[i] + ' ' + (s / total * 100).toFixed(0) + '%</span>';
   }).join('');
 
-  return section('Pace zones',
+  // Whole-run-average zones are one flat bucket, not a distribution — say so
+  // rather than letting a solid bar imply the pace held steady for every km.
+  var title = 'Pace zones' + (source === 'avg' ? ' (whole-run average)' : '');
+
+  return section(title,
     '<div style="height:24px;border-radius:4px;overflow:hidden;display:flex;margin-bottom:6px">' + bar + '</div>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap">' + legend + '</div>');
 }
@@ -3233,18 +3313,19 @@ function setHeatRange(btn) {
   if (overviewHeat) overviewHeat.setLatLngs(heatPointsFor(heatFilter));
 }
 
-// Directional edge markers: one per remote hotspot, kept pinned to the map
-// viewport edge (pointing at the hotspot) while it's off-screen, hidden once
-// it scrolls into view. Repositioned on every pan/zoom/resize.
+// Directional edge markers: one per hotspot, kept pinned to the map viewport
+// edge (pointing at the hotspot) while it's off-screen, hidden once it scrolls
+// into view. Repositioned on every pan/zoom/resize. Home gets one too: once you
+// pan to a remote cluster Home is the off-screen one, and without a marker the
+// only way back is the chip bar.
 function initHeatEdges() {
   var el = document.getElementById('overview-heatmap');
   if (!el || !overviewMap) return;
   heatEdgeEls = [];
   HEATMAP_CLUSTERS.forEach(function(c, i) {
-    if (c.home) return;
     var title = c.runs + (c.runs === 1 ? ' run' : ' runs') + ' · ' + c.km + ' km · ' + c.when;
     var div = document.createElement('div');
-    div.className = 'heat-edge';
+    div.className = 'heat-edge' + (c.home ? ' home' : '');
     div.title = title;
     div.onclick = function() { flyToCluster(i); };
     div.innerHTML = '<span class="he-arrow">➤</span><span>' + c.name + '</span>';

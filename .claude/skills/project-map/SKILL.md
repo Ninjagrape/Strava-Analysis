@@ -62,7 +62,7 @@ Three load-bearing ideas:
 - **Medoid**: the single real lap whose track best represents a loop, chosen by `_medoid_index` (line segments instead draw from the effort nearest the median distance). Either way the drawn line comes from one real run, so it drifts as runs are added, which is why the geo caches use distance-tolerant reuse (`NAME_REUSE_M`, `MATCH_REUSE_M`).
 - **geo_key**: cache key for a segment's line, three "lat,lon" points rounded to 4 dp (~11 m, as of 2026-07) joined by `|`. The 4 dp is hard-coded in `_geo_key`; it matches `GEO_MEMO_DP = 4` by design, not by reference.
 - **params token**: the constants-and-version string hashed into `_runs_signature` alongside per-run metadata; bump it (add/change a version token like `refine2`) whenever detection logic changes, because the signature does NOT hash `dist_stream`.
-- **Threshold speed**: the reference speed pace zones are fractions of; the hub derives it from the best 5K (it prints e.g. `Threshold pace (from best 5K): 4:48/km`), with zone bounds `[0.77, 0.87, 0.93, 1.03]` in `_compute_pace_zones` in `generate_hub.py` (as of 2026-07). Grep: `grep -n "bounds = \[0.77" generate_hub.py`.
+- **Threshold speed**: the reference speed pace zones are fractions of; the hub derives it from the best 5K (it prints e.g. `Threshold pace (from best 5K): 4:48/km`), with zone bounds `[0.77, 0.87, 0.93, 1.03]` in `ZONE_BOUNDS` in `generate_hub.py` (as of 2026-08), applied by `_zone_index` for `_compute_pace_zones`. Grep: `grep -n "ZONE_BOUNDS" generate_hub.py`.
 
 ## Key files and functions
 
