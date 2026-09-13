@@ -1146,6 +1146,26 @@ def robust_threshold_mps(rows: list[dict]) -> float | None:
     return _best_5k_threshold_mps(rows)
 
 
+def curve_anchor_holders(rows: list[dict]) -> set[str]:
+    """Activity IDs holding a best effort that fit_current_curve fits through.
+
+    A run that set the anchor must not be judged against it: when one half marathon
+    holds every point, the anchor is that half's own fastest splits and the half
+    reads as falling short of itself."""
+    best: dict[float, tuple[float, str]] = {}
+    for col, dist_m in CS_DISTANCES:
+        if dist_m not in _CURVE_FIT_DISTS:
+            continue
+        for r in rows:
+            s = num(r, col)
+            if not s or s <= 0:
+                continue
+            ga_s = ga_time(s, num(r, "Elevation Gain") or 0, (num(r, "Distance") or 0) / 1000)
+            if dist_m not in best or ga_s < best[dist_m][0]:
+                best[dist_m] = (ga_s, (r.get("Activity ID") or "").strip())
+    return {aid for _, aid in best.values() if aid}
+
+
 # Run-type dot/line colours, mirrored verbatim from generate_hub.RUN_TYPE_COLOR so the
 # progression chart matches the Runs-tab badges. misc is excluded from the chart entirely.
 RUN_TYPE_COLOR = {

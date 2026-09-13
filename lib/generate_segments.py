@@ -2513,6 +2513,7 @@ SEGMENTS_CSS = """
 .seg-pr-stat{font-size:11px;color:#5cb85c;font-weight:600;margin-left:auto}
 .seg-body{display:flex;gap:10px;margin-bottom:8px}
 .seg-map{width:46%;min-width:130px;height:150px;border-radius:8px;border:1px solid #333;background:#111;overflow:hidden}
+.seg-map .leaflet-control-attribution{font-size:9px;line-height:1.4;padding:0 4px;white-space:nowrap}
 .seg-trend{flex:1;height:150px;background:#1c1c1c;border:1px solid #333;border-radius:8px;position:relative}
 .seg-trend svg{display:block;width:100%;height:100%}
 .seg-attempts{font-size:12px}

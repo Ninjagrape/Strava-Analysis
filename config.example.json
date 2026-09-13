@@ -1,11 +1,17 @@
 {
+  "_races_help": [
+    "Goal races for the Goals tab. activity_id is optional: once a race is run, set it",
+    "to that run's Strava Activity ID and the Runs tab always labels that run a race,",
+    "even when a fitter later race makes its pace read as a tempo run."
+  ],
   "races": [
     {
       "name": "14km race",
       "distance_m": 14000,
       "date": "2026-08",
       "target_time_s": 4200,
-      "notes": "5:00/km target"
+      "notes": "5:00/km target",
+      "activity_id": ""
     },
     {
       "name": "Half marathon",
@@ -17,6 +23,13 @@
     }
   ],
   "segment_anchors": [],
+
+  "_basemap_key_help": [
+    "CARTO raster basemap key, free from https://carto.com/basemaps/apikey/.",
+    "Unset, every map still loads but each tile is watermarked 'API KEY REQUIRED'.",
+    "Leave the key unrestricted: the hub opens from file://, which sends no referrer."
+  ],
+  "basemap_key": "",
 
   "_physiology_help": [
     "Only the Analytics > Trends HR-derived VO2max estimate reads this block.",

@@ -11,6 +11,7 @@ loop the segment detector misses.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,7 @@ class Race:
     target_time_s: int | None = None
     target_wave_s: tuple[int, int] | None = None
     notes: str = ""
+    activity_id: str = ""       # the run that raced it; pins that run's type to "race"
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,19 @@ class Config:
     segment_anchors: tuple[SegmentAnchor, ...] = field(default_factory=tuple)
     duplicates: DuplicateOverrides = field(default_factory=DuplicateOverrides)
     physiology: Physiology = field(default_factory=Physiology)
+    basemap_key: str = ""       # CARTO raster basemap key; empty means watermarked tiles
+
+
+def _parse_basemap_key(raw: object) -> str:
+    """The key is pasted into a tile URL in the hub, so anything outside CARTO's
+    alphabet is treated as a paste error and dropped rather than breaking every map."""
+    if raw is None:
+        return ""
+    key = str(raw).strip()
+    if key and not re.fullmatch(r"[A-Za-z0-9_\-]+", key):
+        print("[config] basemap_key has unexpected characters, ignoring it")
+        return ""
+    return key
 
 
 def _parse_race(d: dict) -> Race | None:
@@ -73,6 +88,7 @@ def _parse_race(d: dict) -> Race | None:
             target_time_s=int(d["target_time_s"]) if d.get("target_time_s") is not None else None,
             target_wave_s=(int(wave[0]), int(wave[1])) if wave else None,
             notes=str(d.get("notes", "")),
+            activity_id=str(d.get("activity_id") or "").strip(),
         )
     except (KeyError, TypeError, ValueError, IndexError) as e:
         print(f"[config] skipping malformed race entry ({e})")
@@ -161,4 +177,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     dups = _parse_duplicates(dup_raw) if isinstance(dup_raw, dict) else DuplicateOverrides()
     phys_raw = raw.get("physiology", {})
     phys = _parse_physiology(phys_raw) if isinstance(phys_raw, dict) else Physiology()
-    return Config(races=races, segment_anchors=anchors, duplicates=dups, physiology=phys)
+    return Config(races=races, segment_anchors=anchors, duplicates=dups, physiology=phys,
+                  basemap_key=_parse_basemap_key(raw.get("basemap_key")))

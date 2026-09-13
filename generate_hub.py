@@ -32,7 +32,7 @@ from generate_dashboards import (
 from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
     ANALYTICS_PANEL_CSS, body_analytics, overview_sections,
-    robust_threshold_mps,
+    robust_threshold_mps, curve_anchor_holders,
     MAX_AS_OF_DAYS, extend_daily, _tsb_class,
 )
 from dedupe import find_duplicates
@@ -42,6 +42,25 @@ from generate_segments import (
     build_segments, body_segments, SEGMENTS_CSS,
     _reverse_geocode, _load_json, _save_json, CACHE_DIR,
 )
+from config import load_config
+
+
+# CARTO has required a key on its raster basemaps since 2026-08. The legacy URL
+# still serves tiles without one, watermarked, which beats a blank map.
+CARTO_TILE_KEYED = "https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png?key="
+CARTO_TILE_LEGACY = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+# CARTO's basemap terms require a visible OpenStreetMap + CARTO credit on every map;
+# this is the wording CARTO issues with its keys.
+CARTO_ATTRIBUTION = ('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, '
+                     '&copy; <a href="https://carto.com/attributions">CARTO</a>')
+
+
+def _tile_url() -> str:
+    key = load_config().basemap_key
+    if not key:
+        print("[hub] no basemap_key in cache/config.json, map tiles will be watermarked")
+        return CARTO_TILE_LEGACY
+    return CARTO_TILE_KEYED + key
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +433,24 @@ def _threshold_at(dt: datetime, efforts: list[tuple[datetime, float]],
     return robust_mps
 
 
+def _self_free_anchors(rows_primary: list[dict], dupes: dict[str, str]
+                       ) -> dict[str, tuple[list[tuple[datetime, float]], float | None]]:
+    """(efforts, robust_mps) refitted without each run that holds an anchor point.
+
+    Keyed by Activity ID, duplicate recordings included, so a run's zones and race
+    ratio are never measured against splits from that same physical run. Only the
+    handful of record holders are refitted, everything else shares the full anchor.
+    """
+    out = {}
+    for aid in curve_anchor_holders(rows_primary):
+        rest = [r for r in rows_primary if (r.get("Activity ID") or "").strip() != aid]
+        out[aid] = (_build_threshold_curve(rest), robust_threshold_mps(rest))
+    for loser, winner in dupes.items():
+        if winner in out:
+            out[loser] = out[winner]
+    return out
+
+
 ZONE_BOUNDS = [0.77, 0.87, 0.93, 1.03]  # speed as a fraction of threshold; mirrored by ZONE_NAMES in HUB_JS
 
 
@@ -595,6 +632,24 @@ def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
         return "recovery"
 
     return "easy"
+
+
+def _pin_declared_races(runs: list[dict], races) -> None:
+    """A race declared in config.json with an activity_id is a race, whatever its pace.
+
+    Pace can only be judged against fitness, and fitness here is measured largely by
+    the races themselves: City to Surf 2026 was run all-out five weeks before a half
+    that proved fitter, so against that later anchor it reads as a tempo run.
+    """
+    ids = {r.activity_id for r in races if r.activity_id}
+    matched = set()
+    for run in runs:
+        for aid in (run["strava_id"], run.get("dup_of")):
+            if aid in ids:
+                run["run_type"] = "race"
+                matched.add(aid)
+    for aid in sorted(ids - matched):
+        print(f"[hub] config race activity_id {aid} matches no run, ignoring it")
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
@@ -858,7 +913,8 @@ def _paused_route_ranges(gps_polyline: list, pauses: list[dict]) -> list[list[in
 # Data preparation
 # ---------------------------------------------------------------------------
 
-def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
+def _build_runs(rows: list[dict], threshold_mps: float | None,
+                self_free: dict | None = None) -> list[dict]:
     """Convert enriched CSV rows to per-run dicts for the JS frontend."""
     efforts = _build_threshold_curve(rows)
     runs = []
@@ -917,7 +973,8 @@ def _build_runs(rows: list[dict], threshold_mps: float | None) -> list[dict]:
         # Pace zones: prefer km-split-based computation (correct units, personal threshold).
         # The threshold tracks contemporaneous fitness, so an early effort is judged
         # against the runner's 5K form at the time rather than today's all-time best.
-        run_threshold = _threshold_at(dt, efforts, threshold_mps)
+        own = (self_free or {}).get((row.get("Activity ID") or "").strip())
+        run_threshold = _threshold_at(dt, *own) if own else _threshold_at(dt, efforts, threshold_mps)
         # A run with no per-km splits (no GPS, and a band that logs no per-record
         # distance) gets its whole-run average offered as a fallback bucket, so the
         # pace still reaches the classifier. Withheld below MISC_MAX_KM: those are
@@ -1501,8 +1558,8 @@ function initRunMap(r) {
       var mapEl = document.getElementById('run-map-' + r.id);
       if (!mapEl) return;
       currentRunMap = L.map(mapEl, {zoomControl: true, preferCanvas: true});
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      L.tileLayer(TILE_URL, {
+        attribution: TILE_ATTR,
         subdomains: 'abcd', maxZoom: 19
       }).addTo(currentRunMap);
       var bounds = drawRunRoute(currentRunMap, r);
@@ -1548,8 +1605,8 @@ function openRunOverlay(runId) {
       if (overlayMap) { overlayMap.remove(); overlayMap = null; }
       var el = document.getElementById('ro-map');
       overlayMap = L.map(el, {zoomControl: true, preferCanvas: true});
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      L.tileLayer(TILE_URL, {
+        attribution: TILE_ATTR,
         subdomains: 'abcd', maxZoom: 19
       }).addTo(overlayMap);
       var bounds = drawRunRoute(overlayMap, r);
@@ -1971,10 +2028,13 @@ function addSegEndpoints(map, poly, px) {
 function initSegMap(seg) {
   var el = document.getElementById('seg-map-' + seg.id);
   if (!el || !seg.polyline || seg.polyline.length < 2) return;
-  var map = L.map(el, {zoomControl: false, attributionControl: false,
+  var map = L.map(el, {zoomControl: false,
                        dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
                        boxZoom: false, keyboard: false, tap: false, preferCanvas: true});
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  // Leaflet's own prefix would crowd CARTO's required credit off a 130 px card.
+  map.attributionControl.setPrefix(false);
+  L.tileLayer(TILE_URL, {
+    attribution: TILE_ATTR,
     subdomains: 'abcd', maxZoom: 19
   }).addTo(map);
   var colour = seg.type === 'climb' ? '#e0a020' : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
@@ -2298,7 +2358,8 @@ function openSegOverlay(id) {
     el.innerHTML = '';
     if (typeof L === 'undefined' || !seg.polyline || seg.polyline.length < 2) return;
     var map = L.map(el, {preferCanvas: true});
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(TILE_URL, {
+      attribution: TILE_ATTR,
       subdomains: 'abcd', maxZoom: 19
     }).addTo(map);
     var colour = seg.type === 'climb' ? '#e0a020' : (seg.type === 'segment' ? '#5a9fd4' : '#5cb85c');
@@ -3241,8 +3302,8 @@ function initOverviewMap() {
     var el = document.getElementById('overview-heatmap');
     if (!el) return;
     overviewMap = L.map(el, {zoomControl: true});
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+    L.tileLayer(TILE_URL, {
+      attribution: TILE_ATTR,
       subdomains: 'abcd', maxZoom: 19
     }).addTo(overviewMap);
     // Set a view first so getZoom()/getCenter() are valid for tuneHeatRadius below.
@@ -3779,6 +3840,8 @@ def generate(
         "const THRESHOLD_S_KM = " + str(threshold_s_km) + ";\n"
         "const HR_COV_LOW = " + str(HR_COV_LOW) + ";\n"
         "const HEATMAP_CLUSTERS = " + heatmap_json + ";\n"
+        "const TILE_URL = " + json.dumps(_tile_url()) + ";\n"
+        "const TILE_ATTR = " + json.dumps(CARTO_ATTRIBUTION) + ";\n"
         + HUB_JS +
         "</script>\n"
         "</body>\n"
@@ -3853,9 +3916,10 @@ def main():
     t0 = time.perf_counter()
     # Built over every row so run ids stay positional across the full set: segment
     # efforts cached in segments_cache.json reference runs by that index.
-    runs = _build_runs(rows, threshold_mps)
+    runs = _build_runs(rows, threshold_mps, _self_free_anchors(rows_primary, dupes))
     for r in runs:
         r["dup_of"] = dupes.get(r["strava_id"])
+    _pin_declared_races(runs, load_config().races)
     runs_primary = [r for r in runs if not r["dup_of"]]
     if PROFILE:
         print(f"[profile] _build_runs: {time.perf_counter() - t0:.2f}s ({len(runs)} runs)")
