@@ -600,9 +600,12 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
         ))
 
     # --- Race goal cards (from optional config; generic predictions otherwise) ---
+    # A race with an activity_id has been run; it stays in config only so the Runs tab
+    # pins that run as a race, and is no longer a goal.
+    goal_races = [r for r in cfg.races if not r.activity_id]
     race_cards_html = [
         render_race_card(r, _predict_race_time(r, t10k_ga, _riegel_a, _riegel_b))
-        for r in cfg.races
+        for r in goal_races
     ]
     race_section = ""
     if race_cards_html:
@@ -620,11 +623,11 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
     if t10k_ga:
         _STD = [("5K", 5_000.0), ("10K", 10_000.0),
                 ("Half marathon", 21_097.5), ("Full marathon", 42_195.0)]
-        extras = [(r.name, r.distance_m) for r in cfg.races
+        extras = [(r.name, r.distance_m) for r in goal_races
                   if not any(abs(r.distance_m - d) / d <= 0.02 for _, d in _STD)]
         for label, dist_m in sorted(_STD + extras, key=lambda x: x[1]):
             ps = riegel(t10k_ga, 10_000, dist_m)
-            race = _race_for_distance(cfg.races, dist_m)
+            race = _race_for_distance(goal_races, dist_m)
             if race and race.target_time_s:
                 gap = ps - race.target_time_s
                 note = f"target {fmt_time(race.target_time_s)} · gap {'+' if gap >= 0 else '-'}{fmt_time(abs(gap))}"
