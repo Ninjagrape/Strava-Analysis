@@ -576,21 +576,32 @@ THRESHOLD_Z4_SHARE  = 0.50   # >= this share in zone 4 (0.88-1.03) = threshold s
 THRESHOLD_Z45_SHARE = 0.60   # >= this combined share in zones 4-5 (at/above threshold speed) = threshold session
 TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
 RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.71) = recovery
+LONG_DOUBLE_TAG     = {"tempo", "threshold", "race"}   # long runs of these types show both badges
+LONG_ABSORBS        = {"easy", "recovery"}             # long runs of these types are just "long"
 
 
-def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
-    """Assign one training category to a run.
+def _is_long(run: dict, dist_p75: float, dist_median: float) -> bool:
+    """Distance tag, independent of intensity, so a run can be both tempo and long.
+
+    Judged relative to the runner's own distribution, so "long" tracks fitness
+    rather than a fixed cutoff.
+    """
+    return dist_median > 0 and run["dist_km"] >= LONG_RUN_MIN_KM \
+        and run["dist_km"] >= dist_p75 \
+        and run["dist_km"] >= LONG_RUN_MIN_RATIO * dist_median
+
+
+def _classify_run(run: dict) -> str:
+    """Assign one intensity category to a run; distance is tagged by `_is_long`.
 
     "race" is decided first, and on distance-adjusted pace (`race_ratio`) rather
     than zones, because a maximal effort over a race distance sits *below* 5K pace
     by definition and the zone shares would read it as a threshold session.
 
-    The remaining intensity buckets (threshold/tempo) use the share of zoned time
-    from `pace_zones`; they require a *sustained* share, so an easy long run falls
-    through to "long" while a genuine workout outranks distance. Distance is
-    judged relative to the runner's own distribution, so "long" tracks fitness
-    rather than a fixed cutoff. Falls back to "easy" when there's no signal
-    (e.g. no personal threshold yet, so the zone times are all zero).
+    The remaining intensity buckets (threshold/tempo/recovery) use the share of
+    zoned time from `pace_zones`; threshold and tempo require a *sustained* share.
+    Falls back to "easy" when there's no signal (e.g. no personal threshold yet,
+    so the zone times are all zero).
 
     Suspiciously short efforts (stair sprints for a segment record, an elevation
     challenge done on one flight of steps, etc.) are bucketed as "misc" before
@@ -627,11 +638,6 @@ def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
             return "threshold"
         if (z3 + z4) >= TEMPO_Z34_SHARE:
             return "tempo"
-
-    if dist_median > 0 and run["dist_km"] >= LONG_RUN_MIN_KM \
-            and run["dist_km"] >= dist_p75 \
-            and run["dist_km"] >= LONG_RUN_MIN_RATIO * dist_median:
-        return "long"
 
     if z1 >= RECOVERY_Z1_SHARE:
         return "recovery"
@@ -1078,13 +1084,20 @@ def _build_runs(rows: list[dict], threshold_mps: float | None,
             "pause_ranges": pause_ranges,
         })
 
-    # Classify each run once the full distance distribution is known, so "long"
-    # is judged relative to the runner's own history rather than a fixed cutoff.
+    # Tag "long" once the full distance distribution is known, so it is judged
+    # relative to the runner's own history rather than a fixed cutoff.
     dists = sorted(r["dist_km"] for r in runs)
     dist_median = _percentile(dists, 0.50)
     dist_p75 = _percentile(dists, LONG_RUN_PERCENTILE)
+    # Only a workout keeps its intensity beside "long"; an easy or recovery long
+    # run is simply a long run, since its distance is what makes it notable.
     for r in runs:
-        r["run_type"] = _classify_run(r, dist_p75, dist_median)
+        r["run_type"] = _classify_run(r)
+        r["is_long"] = _is_long(r, dist_p75, dist_median)
+        if r["is_long"] and r["run_type"] in LONG_ABSORBS:
+            r["run_type"] = "long"
+        elif r["run_type"] not in LONG_DOUBLE_TAG:
+            r["is_long"] = False
 
     runs.sort(key=lambda r: r["date_iso"], reverse=True)
     return runs
@@ -2505,6 +2518,17 @@ function runTypeBadge(t) {
   return '<span class="ri-tag rt-' + t + '">' + RUN_TYPE_LABEL[t] + '</span>';
 }
 
+// A long workout keeps its intensity and gains a Long badge ("Tempo Long"); an
+// easy long run already has run_type 'long' (LONG_DOUBLE_TAG in generate_hub.py).
+function runTypeBadges(r) {
+  return runTypeBadge(r.run_type) +
+    (r.is_long && r.run_type !== 'long' ? runTypeBadge('long') : '');
+}
+
+function matchesRunType(r, key) {
+  return key === 'long' ? !!r.is_long : r.run_type === key;
+}
+
 function renderRunList(runs) {
   var el = document.getElementById('run-list-items');
   if (!runs.length) {
@@ -2522,7 +2546,7 @@ function renderRunList(runs) {
       '<div class="ri-bottom">' +
         '<span class="ri-pace">' + r.pace_str + '</span>' +
         (r.gain > 10 ? '<span class="ri-gain">↑' + r.gain + 'm</span>' : '') +
-        runTypeBadge(r.run_type) +
+        runTypeBadges(r) +
       '</div></div>';
   }).join('');
 }
@@ -3466,7 +3490,7 @@ function applyRunFilters() {
   var filtered = RUNS.filter(function(r) {
     // Duplicates stay inspectable but out of the way: only their own chip shows them.
     var matchType = activeType === 'dup' ? !!r.dup_of
-                  : !r.dup_of && (activeType === 'all' || r.run_type === activeType);
+                  : !r.dup_of && (activeType === 'all' || matchesRunType(r, activeType));
     var matchText = !q || r.name.toLowerCase().indexOf(q) >= 0 ||
       r.date_long.toLowerCase().indexOf(q) >= 0;
     return matchType && matchText && passesStatFilters(r);
@@ -3524,7 +3548,11 @@ function buildRunChips() {
   // excluded from the totals: they are the same run seen twice.
   var primary = RUNS.filter(function(r) { return !r.dup_of; });
   var nDup = RUNS.length - primary.length;
-  var counts = primary.reduce(function(m, r) { m[r.run_type] = (m[r.run_type] || 0) + 1; return m; }, {});
+  // Counts overlap: a long run is counted under Long and under its intensity.
+  var counts = {};
+  RUN_TYPES.forEach(function(t) {
+    counts[t.key] = primary.filter(function(r) { return matchesRunType(r, t.key); }).length;
+  });
   var chips = ['<span class="chip active" data-type="all">All ' + primary.length + '</span>'];
   RUN_TYPES.forEach(function(t) {
     if (counts[t.key]) {

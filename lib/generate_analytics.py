@@ -1264,7 +1264,12 @@ def pace_progression_section(runs: list[dict] | None) -> str:
             continue
         pace = ga_time(moving_s, gain, dist_km) / dist_km  # s/km GA
         act = moving_s / dist_km  # s/km actual (what the Runs tab shows)
-        by_type[rt].append((d, pace, r.get("name") or "Run", r.get("date_long") or "", act, gain))
+        point = (d, pace, r.get("name") or "Run", r.get("date_long") or "", act, gain)
+        by_type[rt].append(point)
+        # A long workout (tempo/threshold/race) carries "long" beside its intensity,
+        # so it feeds both series.
+        if r.get("is_long") and rt != "long":
+            by_type["long"].append(point)
 
     eligible = {t: sorted(v) for t, v in by_type.items() if len(v) >= _PACE_PROG_MIN_RUNS}
     if not eligible:

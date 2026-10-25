@@ -70,7 +70,7 @@ Three coexisting patterns, by role: plain/raw non-f triple-quoted strings for CS
 
 ## Tunables (run classification)
 
-`_classify_run(run, dist_p75, dist_median)` assigns exactly one type, checked in this priority order (as of 2026-07; grep: `grep -n "MISC_MAX_KM" generate_hub.py`):
+`_classify_run(run)` assigns exactly one *intensity* type, checked in this priority order (as of 2026-10-25, "long" is no longer one of them, see below; grep: `grep -n "MISC_MAX_KM" generate_hub.py`):
 
 1. **misc**, `dist_km < MISC_MAX_KM` (1.0 km).
 2. **intervals**, `run["is_interval"]` (set by `is_interval(row)` from lib/generate_dashboards).
@@ -80,9 +80,10 @@ After classification, `_pin_declared_races` forces "race" on any run whose Activ
 4. **race** (zone-based), zone-5 share of zoned time >= `RACE_Z5_SHARE` (0.40). Catches short max efforts, where Riegel is unreliable and an all-out run is nearly all Z5 anyway. Zone checks 4-6 only run when total zoned time > 0.
 5. **threshold**, zone-4 share >= `THRESHOLD_Z4_SHARE` (0.50 as of 2026-10-25, was 0.30) OR zones 4+5 combined share >= `THRESHOLD_Z45_SHARE` (0.60, was 0.50) (time at/above threshold speed; both race rules are checked first, so this catches sustained hard efforts whose fast/downhill kms spill into Z5).
 6. **tempo**, zones 3+4 share >= `TEMPO_Z34_SHARE` (0.35).
-7. **long**, `dist_km >= LONG_RUN_MIN_KM` (10.0) AND >= the runner's own p75 (`LONG_RUN_PERCENTILE` 0.75) AND >= `LONG_RUN_MIN_RATIO` (1.30) x median.
-8. **recovery**, zone-1 share >= `RECOVERY_Z1_SHARE` (0.70).
-9. **easy**, fallback (also when there is no threshold, so all zone times are zero).
+7. **recovery**, zone-1 share >= `RECOVERY_Z1_SHARE` (0.70).
+8. **easy**, fallback (also when there is no threshold, so all zone times are zero).
+
+**Long is a separate tag** (as of 2026-10-25): `_is_long(run, dist_p75, dist_median)` sets `run["is_long"]` when `dist_km >= LONG_RUN_MIN_KM` (10.0) AND >= the runner's own p75 (`LONG_RUN_PERCENTILE` 0.75) AND >= `LONG_RUN_MIN_RATIO` (1.30) x median, then, in `_build_runs`, an easy or recovery long run becomes `run_type = "long"` (`LONG_ABSORBS`), a tempo/threshold/race long run keeps its type and shows both badges, e.g. "Tempo Long" (`LONG_DOUBLE_TAG`), and any other type has `is_long` cleared. `_pin_declared_races` runs afterwards, so a pinned race that read as long becomes race + long. In `HUB_JS`, `runTypeBadges(r)` draws both badges and `matchesRunType(r, key)` makes the Long chip filter/count on `is_long` (chip counts overlap). Single-colour views (segment trend dots, Analytics compare chart) colour by `run_type` only; Analytics pace progression feeds a double-tagged run into both its intensity series and the Long series.
 
 `RACE_RIEGEL_B` is deliberately the literature 1.06 (matching `generate_dashboards.riegel()`), **not** the personal exponent from `fit_current_curve` — that fit reads b~1.12 on this dataset because its long-distance anchors are best efforts pulled out of easy long runs rather than races, which would promote any hard 10 km to "race". A fixed exponent also keeps a run's badge from drifting each time the curve refits. Measured margin as of 2026-08-16 (96 runs): City to Surf 0.999, next non-interval candidate 0.969, so the 0.98 cut sits mid-gap. As of 2026-09-13 (103 runs, anchor 4:18/km): Sydney Half 1.035 (self-excluded), next non-race candidate Lunch Run 2026-08-02 at 0.965.
 
