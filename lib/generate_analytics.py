@@ -1451,12 +1451,12 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     if curve and thr_mps:
         a, b, n_fit = curve
         p = 1000.0 / thr_mps                      # s/km at threshold speed (5K-equiv off the curve)
-        # Z3/Z4 bands mirror generate_hub bounds [0.87, 0.93, 1.03] (speed fractions).
+        # Z3/Z4 bands mirror generate_hub bounds [0.82, 0.88, 1.03] (speed fractions).
         # Slower pace = larger s/km, so divide by the slow-end fraction for the slow bound.
         thr_lo = fmt_pace_from_s_per_km(p / 1.03)  # threshold (Z4) fast bound
-        thr_hi = fmt_pace_from_s_per_km(p / 0.93)  # ...slow bound
-        tmp_lo = fmt_pace_from_s_per_km(p / 0.93)  # tempo (Z3) fast bound
-        tmp_hi = fmt_pace_from_s_per_km(p / 0.87)  # ...slow bound
+        thr_hi = fmt_pace_from_s_per_km(p / 0.88)  # ...slow bound
+        tmp_lo = fmt_pace_from_s_per_km(p / 0.88)  # tempo (Z3) fast bound
+        tmp_hi = fmt_pace_from_s_per_km(p / 0.82)  # ...slow bound
         # equivalent-effort paces read straight off the fitted curve T = a * D^b.
         dist_defs = [("1 km", 1000.0), ("1 mile", 1609.344), ("5 km", 5000.0),
                      ("10 km", 10000.0), ("15 km", 15000.0), ("Half", 21_097.5)]
@@ -1470,8 +1470,8 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   <p class="section-title">Current paces</p>
   <div class="card">
     <div class="stat-row">
-      <div class="stat"><p class="stat-label">Threshold pace</p><p class="stat-value green">{thr_lo}-{thr_hi}/km</p><p class="stat-sub">Z4 (0.93-1.03 &times; threshold speed)</p></div>
-      <div class="stat"><p class="stat-label">Tempo pace</p><p class="stat-value amber">{tmp_lo}-{tmp_hi}/km</p><p class="stat-sub">Z3 (0.87-0.93 &times; threshold speed)</p></div>
+      <div class="stat"><p class="stat-label">Threshold pace</p><p class="stat-value green">{thr_lo}-{thr_hi}/km</p><p class="stat-sub">Z4 (0.88-1.03 &times; threshold speed)</p></div>
+      <div class="stat"><p class="stat-label">Tempo pace</p><p class="stat-value amber">{tmp_lo}-{tmp_hi}/km</p><p class="stat-sub">Z3 (0.82-0.88 &times; threshold speed)</p></div>
     </div>
     <table>
       <thead><tr><th>Distance</th><th>Equivalent time</th><th>Pace</th></tr></thead>

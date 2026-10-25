@@ -451,7 +451,11 @@ def _self_free_anchors(rows_primary: list[dict], dupes: dict[str, str]
     return out
 
 
-ZONE_BOUNDS = [0.77, 0.87, 0.93, 1.03]  # speed as a fraction of threshold; mirrored by ZONE_NAMES in HUB_JS
+# Speed as a fraction of threshold (a 5K-equivalent); mirrored by paceZoneIdx in HUB_JS.
+# Lactate threshold proper sits nearer 10K-to-half pace than 5K pace, so Z4 opens at
+# 0.88 (4:53/km against a 4:18 anchor): a steady 4:44-4:50 effort is threshold work,
+# not tempo. Z1 stops at 0.71 so a sub-6:00 run reads easy rather than recovery.
+ZONE_BOUNDS = [0.71, 0.82, 0.88, 1.03]
 
 
 def _zone_index(frac: float) -> int:
@@ -567,10 +571,11 @@ RACE_Z5_SHARE       = 0.40   # >= this share of zoned time in zone 5 (frac>=1.03
 RACE_EFFORT_RATIO   = 0.98   # >= this share of the distance-adjusted all-out pace = race
 RACE_EFFORT_MIN_KM  = 3.0    # ...over at least this far; below it Riegel is unreliable
                              # and a genuine max effort is nearly all Z5 anyway
-THRESHOLD_Z4_SHARE  = 0.30   # >= this share in zone 4 (0.93-1.03) = threshold session
-THRESHOLD_Z45_SHARE = 0.50   # >= this combined share in zones 4-5 (at/above threshold speed) = threshold session
+THRESHOLD_Z4_SHARE  = 0.50   # >= this share in zone 4 (0.88-1.03) = threshold session; a hard
+                             # opening km or two inside an easier run stays tempo
+THRESHOLD_Z45_SHARE = 0.60   # >= this combined share in zones 4-5 (at/above threshold speed) = threshold session
 TEMPO_Z34_SHARE     = 0.35   # >= this combined share in zones 3-4 = tempo session
-RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.77) = recovery
+RECOVERY_Z1_SHARE   = 0.70   # >= this share in zone 1 (frac<0.71) = recovery
 
 
 def _classify_run(run: dict, dist_p75: float, dist_median: float) -> str:
@@ -2456,7 +2461,7 @@ function shortDate(iso) {
 }
 
 var ZONE_COLORS = ['#3a7a3a', '#5cb85c', '#e0a020', '#e07020', '#d9534f'];
-var ZONE_NAMES  = ['Z1 Easy', 'Z2 Endurance', 'Z3 Tempo', 'Z4 Threshold', 'Z5 Speed'];
+var ZONE_NAMES  = ['Z1 Recovery', 'Z2 Easy', 'Z3 Tempo', 'Z4 Threshold', 'Z5 Speed'];
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -2467,9 +2472,9 @@ function paceZoneIdx(pace_s) {
   if (!THRESHOLD_S_KM || !pace_s) return 0;
   // frac = lap_speed / threshold_speed = threshold_s_km / lap_s_km
   var frac = THRESHOLD_S_KM / pace_s;
-  if (frac < 0.77) return 0;
-  if (frac < 0.87) return 1;
-  if (frac < 0.93) return 2;
+  if (frac < 0.71) return 0;
+  if (frac < 0.82) return 1;
+  if (frac < 0.88) return 2;
   if (frac < 1.03) return 3;
   return 4;
 }
