@@ -44,7 +44,7 @@ csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 from pathlib import Path
 
 from grade import minetti_cost, COST_FLAT, ga_time
-from generate_dashboards import fit_riegel
+from generate_dashboards import fit_riegel, athlete_age_basis, set_age_anchor, row_age_grade, is_interval, DISTANCE_BANDS
 from config import load_config
 
 
@@ -491,6 +491,27 @@ def vdot_trend(rows: list[dict]) -> list[tuple]:
     for (y, m), v in sorted(monthly.items()):
         out.append((datetime(y, m, 1).strftime("%b"), round(v, 1)))
     return out
+
+
+def age_grade_trend(rows: list[dict]) -> list[tuple]:
+    """Per-month best WMA age grade across every supported best-effort distance.
+    Returns [(label, pct)], empty when age/sex are not configured."""
+    if not athlete_age_basis():
+        return []
+    set_age_anchor(rows)
+    cols = [c for _, c, _, incl in DISTANCE_BANDS if not incl]
+    monthly: dict[tuple, float] = {}
+    for r in rows:
+        dt = parse_date(r)
+        if not dt or is_interval(r):
+            continue
+        for col in cols:
+            s = num(r, col)
+            pct = row_age_grade(r, col, s) if s and s > 0 else None
+            if pct is not None:
+                key = (dt.year, dt.month)
+                monthly[key] = max(monthly.get(key, 0.0), pct)
+    return [(datetime(y, m, 1).strftime("%b"), round(v, 1)) for (y, m), v in sorted(monthly.items())]
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1491,22 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
     vdot_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(vdot, "#5cb85c")) if vdot else ""
     cad_chart = _ranged(MONTHLY_RANGES, "6M", _monthly_render(cad, "#5b8fd9")) if cad else ""
     hrv_section = _hr_vo2max_section(hrv)
+    ag = age_grade_trend(rows)
+    ag_section = ""
+    if ag:
+        def _ag_render(n):
+            sub = ag if n is None else ag[-n:]
+            return _bar_chart([l for l, _ in sub], [v for _, v in sub],
+                              color="#e0a020", fmt=lambda v: f"{v:.1f}", yfmt=lambda v: f"{v:.0f}%")
+        ag_section = f"""
+<div class="section">
+  <p class="section-title">Age-graded performance by month</p>
+  <div class="card">
+    {_ranged(MONTHLY_RANGES, "6M", _ag_render)}
+    <p class="note">WMA 2025 age grade of your best effort each month, taken from raw time at your age on the day. 60% is local class, 70% regional, 80% national, 90% world class.</p>
+  </div>
+</div>
+"""
 
     cs_pace_str = fmt_pace_from_s_per_km(1000 / cs) if cs else "-"
 
@@ -1623,6 +1660,7 @@ def generate(rows: list[dict], updated: str, runs: list[dict] | None = None) -> 
   </div>
 </div>
 {hrv_section}
+{ag_section}
 
 <div class="section">
   <p class="section-title">Average cadence by month</p>

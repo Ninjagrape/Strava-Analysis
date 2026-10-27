@@ -13,6 +13,7 @@ loop the segment detector misses.
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "cache" / "config.json"
@@ -48,13 +49,16 @@ class DuplicateOverrides:
 class Physiology:
     """Athlete constants no export can supply.
 
-    Only the HR-derived VO2max estimate reads these; every other metric stays
-    purely data-driven. Left unset, the estimate falls back to the highest heart
-    rate ever recorded and a generic resting rate, which sets its absolute level
-    but not its direction of travel.
+    The HR-derived VO2max estimate reads hr_max and hr_rest; age grading reads
+    age and sex. Every other metric stays purely data-driven. Left unset,
+    the VO2max estimate falls back to the highest heart rate ever recorded and a
+    generic resting rate, which sets its absolute level but not its direction of
+    travel, and age grading is simply not shown.
     """
     hr_max: int | None = None
     hr_rest: int | None = None
+    age: int | None = None      # current age, back-dated to older runs from the latest run
+    sex: str | None = None      # "M" or "F", the two WMA tables
 
 
 @dataclass(frozen=True)
@@ -154,7 +158,27 @@ def _parse_physiology(d: dict) -> Physiology:
             return None
         return v
 
-    return Physiology(hr_max=bpm("hr_max", 120, 230), hr_rest=bpm("hr_rest", 25, 100))
+    age = None
+    raw_age = d.get("age")
+    if raw_age not in (None, ""):
+        try:
+            age = int(raw_age)
+        except (TypeError, ValueError):
+            print("[config] physiology.age must be a whole number, ignoring it")
+        else:
+            if not 5 <= age <= 100:
+                print(f"[config] physiology.age={age} is outside 5-100, ignoring it")
+                age = None
+
+    sex = None
+    raw_sex = d.get("sex")
+    if raw_sex not in (None, ""):
+        sex = {"m": "M", "male": "M", "f": "F", "female": "F"}.get(str(raw_sex).strip().lower())
+        if sex is None:
+            print("[config] physiology.sex must be M or F, ignoring it")
+
+    return Physiology(hr_max=bpm("hr_max", 120, 230), hr_rest=bpm("hr_rest", 25, 100),
+                      age=age, sex=sex)
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:

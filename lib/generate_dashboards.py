@@ -17,9 +17,11 @@ best_*_s columns, fit_avg_cadence, Elevation Gain, etc).
 import csv
 import math
 import sys
-from datetime import datetime
+from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 
+import age_grade
 from config import Race, load_config
 from localtime import index_zones, parse_date
 
@@ -184,12 +186,69 @@ def is_interval(row: dict) -> bool:
     return (elapsed - moving) / elapsed >= 0.20
 
 
+@lru_cache(maxsize=1)
+def athlete_age_basis():
+    """(age, sex) when both are configured, else None; age grading needs both."""
+    phys = load_config().physiology
+    return (phys.age, phys.sex) if phys.age and phys.sex else None
+
+
+_age_anchor: tuple[int, date | None] = (0, None)
+
+
+def set_age_anchor(rows: list[dict]) -> None:
+    """Pin the configured age to the newest run in `rows`. Memoised on the list
+    identity because every caller passes the same primary rows many times."""
+    global _age_anchor
+    if _age_anchor[0] == id(rows):
+        return
+    dates = [dt.date() for dt in map(parse_date, rows) if dt is not None]
+    _age_anchor = (id(rows), max(dates, default=None))
+
+
+def row_age_grade(row: dict, col: str, time_s: float) -> float | None:
+    """Age grade of one effort at the runner's age on the run's local date."""
+    basis = athlete_age_basis()
+    if not basis or not age_grade.supported(col, basis[1]):
+        return None
+    dt = parse_date(row)
+    latest = _age_anchor[1]
+    if dt is None or latest is None:
+        return None
+    age = age_grade.age_at_run(basis[0], dt.date(), latest)
+    return age_grade.age_grade(col, time_s, age, basis[1])
+
+
+def best_age_grades(rows: list[dict]) -> list[dict]:
+    """Best age grade per supported distance, which need not be the fastest run
+    because the factor shifts with the runner's age at the time."""
+    set_age_anchor(rows)
+    best = []
+    for label, col_s, _target_m, incl_intervals in DISTANCE_BANDS:
+        top = None
+        for r in rows:
+            if not incl_intervals and is_interval(r):
+                continue
+            try:
+                s = float(r.get(col_s) or 0)
+            except ValueError:
+                continue
+            pct = row_age_grade(r, col_s, s) if s > 0 else None
+            if pct is not None and (top is None or pct > top["pct"]):
+                top = {"label": label, "pct": pct, "time_str": fmt_time(s),
+                       "date": fmt_date(r), "activity": r.get("Activity Name", "").strip()}
+        if top:
+            best.append(top)
+    return best
+
+
 def top3_for_band(
     rows: list[dict],
     col_s: str,
     target_m: float,
     incl_intervals: bool,
 ) -> list[dict]:
+    set_age_anchor(rows)
     efforts = []
     for r in rows:
         if not incl_intervals and is_interval(r):
@@ -217,6 +276,7 @@ def top3_for_band(
             "dist_km":     dist_km,
             "gain":        gain,
             "is_interval": is_interval(r),
+            "ag":          row_age_grade(r, col_s, s),
         })
     efforts.sort(key=lambda x: x["s"])
     return efforts[:3]
@@ -250,6 +310,17 @@ BEST_EFFORTS_CSS = """
 .pace-col{text-align:right;white-space:nowrap;}
 .pace-raw{font-size:14px;font-weight:600;margin:0;color:#eee;}
 .pace-ga{font-size:11px;color:#666;margin:2px 0 0;}
+.pace-ag{font-size:11px;color:#5cb85c;margin:2px 0 0;}
+.ag-card{background:#222;border:1px solid #3a3a3a;border-radius:8px;padding:10px 14px;margin:0 0 1rem;}
+.ag-hint{font-size:12px;color:#666;}
+.ag-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 6px;}
+.ag-title{font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;}
+.ag-top{font-size:20px;font-weight:700;color:#5cb85c;}
+.ag-top-sub{font-size:11px;color:#666;}
+.ag-row{display:grid;grid-template-columns:110px 56px 1fr;gap:0 10px;font-size:12px;padding:2px 0;color:#bbb;}
+.ag-row .ag-pct{font-weight:600;color:#e0a020;text-align:right;}
+.ag-row.is-top .ag-pct{color:#5cb85c;}
+.ag-row .ag-note{color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 """
 
 
@@ -267,6 +338,8 @@ def render_band(label: str, efforts: list[dict]) -> str:
             f" onclick=\"openRunByStravaId('{sid}')\" title=\"Open run analysis\""
             if sid else ""
         )
+        ag_html = (f'\n      <p class="pace-ag">AG {e["ag"]:.1f}%</p>'
+                   if e.get("ag") is not None else "")
         cards.append(f"""\
   <div class="{card_class}"{extra_style}{click_attrs}>
     <span class="medal">{MEDALS[i]}</span>
@@ -277,13 +350,39 @@ def render_band(label: str, efforts: list[dict]) -> str:
     </div>
     <div class="pace-col">
       <p class="pace-raw">{e['raw_pace']}</p>
-      <p class="pace-ga">GA {e['ga_pace']}</p>
+      <p class="pace-ga">GA {e['ga_pace']}</p>{ag_html}
     </div>
   </div>""")
     return f"""\
 <div class="band">
   <div class="band-header"><p class="band-label">{label}</p></div>
 {''.join(cards)}
+</div>
+"""
+
+
+def render_age_grade_card(rows: list[dict]) -> str:
+    if not athlete_age_basis():
+        return ('<div class="ag-card"><span class="ag-hint">Add physiology.age and '
+                'physiology.sex to cache/config.json to see age-graded scores.</span></div>\n')
+    best = best_age_grades(rows)
+    if not best:
+        return ""
+    top = max(best, key=lambda b: b["pct"])
+    lines = "".join(
+        f'<div class="ag-row{" is-top" if b is top else ""}"><span>{b["label"]}</span>'
+        f'<span class="ag-pct">{b["pct"]:.1f}%</span>'
+        f'<span class="ag-note">{b["time_str"]} · {b["date"]} · {age_grade.level(b["pct"])}</span></div>'
+        for b in best
+    )
+    return f"""\
+<div class="ag-card">
+  <div class="ag-head">
+    <span class="ag-title">Age grade (WMA 2025)</span>
+    <span class="ag-top">{top["pct"]:.1f}%</span>
+    <span class="ag-top-sub">{top["label"]} · {age_grade.level(top["pct"])} · {top["date"]}</span>
+  </div>
+{lines}
 </div>
 """
 
@@ -307,7 +406,7 @@ def generate_best_efforts(rows: list[dict], updated: str) -> str:
 </head>
 <body>
 <h1>Best efforts by distance — sliding window from GPS track · updated {updated}</h1>
-{''.join(bands_html)}
+{render_age_grade_card(rows)}{''.join(bands_html)}
 </body>
 </html>
 """

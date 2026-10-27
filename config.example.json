@@ -33,11 +33,15 @@
   "basemap_key": "",
 
   "_physiology_help": [
-    "Only the Analytics > Trends HR-derived VO2max estimate reads this block.",
+    "The Analytics > Trends HR-derived VO2max estimate reads hr_max and hr_rest.",
     "hr_max: true maximum heart rate. Unset, the highest bpm ever recorded is used,",
     "which understates it unless you have actually run yourself to the line.",
     "hr_rest: resting heart rate, measured lying down before getting up. Unset, 60 is assumed.",
-    "Both shift the absolute estimate; neither changes its direction of travel."
+    "Both shift the absolute estimate; neither changes its direction of travel.",
+    "age (your current age in whole years) and sex (\"M\" or \"F\") turn on WMA age grading on the Best",
+    "Efforts tab and the Analytics > Trends age-graded chart. Unset, both are hidden.",
+    "Age at older runs is back-dated from your latest run, so no date of birth is stored.",
+    "Example: \"physiology\": {\"hr_max\": 190, \"age\": 35, \"sex\": \"F\"}"
   ],
   "physiology": {},
 
