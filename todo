@@ -1,26 +1,11 @@
 ## General
-[] Anticipate runs may or may not have HR data
+[x] Anticipate runs may or may not have HR
 
 ## Glob Heatmap
-[] Better naming
-[] # of runs vs total mileage? 
+[x] Better naming
 
 ## Analysis improvements
+[] Race readiness + tapering tracker
 [] Power rankings against age group
 [] Seiler inspired decoupling if HR data exists
-[] Race readiness + tapering tracker
-[] Aerobic cost (pace/HR) over time
 [] Eddington distribution and progression
-
-[] Recovery tracking??? Gamify this stat too to encourage recovery
-
-[] Monthly consistency vs Improvement
-
-# Monthly Consistency vs Improvement
-This chart shows how training consistency within each month relates to changes in aerobic efficiency over time.
-
-Consistency (CV) measures how variable your runs are during a month. Lower values mean more stable training, while higher values indicate more variability.
-
-The vertical axis shows the percentage change in aerobic efficiency compared to the previous month. Positive values indicate improvement, while negative values indicate decline.
-
-This relationship is correlational and should be interpreted alongside training load, terrain, and intensity distribution.

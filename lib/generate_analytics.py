@@ -872,6 +872,22 @@ def calendar_data(loads: list[tuple]) -> dict:
     return dict(by_day)
 
 
+def daily_totals(rows: list[dict]) -> dict:
+    """{date: {"dist" km, "elev" m, "time" s, "runs"}} for the training-log hover card."""
+    by_day = defaultdict(lambda: {"dist": 0.0, "elev": 0.0, "time": 0.0, "runs": 0})
+    for r in rows:
+        dt = parse_date(r)
+        dist_m = num(r, "Distance")
+        if not dt or not dist_m or dist_m <= 0:
+            continue
+        b = by_day[dt.date()]
+        b["dist"] += dist_m / 1000
+        b["elev"] += num(r, "Elevation Gain") or 0
+        b["time"] += num(r, "Moving Time") or 0
+        b["runs"] += 1
+    return dict(by_day)
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -1029,9 +1045,11 @@ def _bar_chart(labels, values, color="#5cb85c", w=720, h=140, pad=28, fmt=None, 
     return "".join(parts)
 
 
-def _calendar_heatmap(cal: dict, w=720):
+def _calendar_heatmap(cal: dict, w=720, stats: dict | None = None):
+    """stats (from daily_totals) adds hover data to run days; the card itself is calHover()."""
     if not cal:
         return "<p class='note'>No data.</p>"
+    stats = stats or {}
     days = sorted(cal)
     start, end = days[0], days[-1]
     # align start to Monday
@@ -1063,13 +1081,21 @@ def _calendar_heatmap(cal: dict, w=720):
             fill = f"rgb({int(40+t*40)},{g},{int(40+t*40)})"
         x = 26 + col * (cell + 2)
         y = 22 + row * (cell + 2)
-        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell:.1f}" height="{cell:.1f}" rx="2" fill="{fill}"/>')
+        s = stats.get(cur)
+        data = ""
+        if s:
+            data = (f' class="cal-day" data-d="{cur.strftime("%a %d %b %Y")}" data-km="{s["dist"]:.2f}"'
+                    f' data-t="{s["time"]:.0f}" data-e="{s["elev"]:.0f}" data-n="{s["runs"]}"')
+        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell:.1f}" height="{cell:.1f}" rx="2" fill="{fill}"{data}/>')
         cur += timedelta(days=1)
     for col, lab in month_marks.items():
         x = 26 + col * (cell + 2)
         parts.append(f'<text x="{x:.1f}" y="14" font-size="8" fill="#666">{lab}</text>')
     parts.append("</svg>")
-    return "".join(parts)
+    if not stats:
+        return "".join(parts)
+    return ('<div class="pp-holder" onmousemove="calHover(event,this)" onmouseleave="ppLeave(this)">'
+            + "".join(parts) + '<div class="ptot-tip"></div></div>')
 
 
 # ---------------------------------------------------------------------------
@@ -1999,6 +2025,7 @@ def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") ->
     """
     loads = session_loads(rows)
     cal = calendar_data(loads)
+    day_stats = daily_totals(rows)
 
     def _cal_render(win):
         if win is None or not cal:
@@ -2006,7 +2033,7 @@ def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") ->
         else:
             start = max(cal) - timedelta(days=win)
             c = {d: v for d, v in cal.items() if d >= start}
-        return _calendar_heatmap(c)
+        return _calendar_heatmap(c, stats=day_stats)
     cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
 
     # pace-zone distribution, anchored to critical speed
@@ -2075,7 +2102,7 @@ def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") ->
   <p class="ov-section-title">Training log</p>
   <div class="card">
     {cal_chart}
-    <p class="note">Daily training load. Darker green = higher load. Gaps are rest days.</p>
+    <p class="note">Daily training load. Darker green = higher load. Gaps are rest days. Hover a day for its distance, time and elevation.</p>
   </div>
 </div>
 
@@ -2226,6 +2253,24 @@ function ptotHover(e, holder){{
     tip.style.opacity=1;
   }}
   ptotSetTotal(ptotRangeLabel(p.date, PTOT_STATE.gran)+': '+ptotFmt(st.metric, p[st.metric]));
+}}
+
+// ── Training-log hover card. Rects carry data-* from daily_totals; the tip
+// reuses ppLeave() from the analytics panel script to hide.
+function calHover(e, holder){{
+  var tip=holder.querySelector('.ptot-tip'); if(!tip) return;
+  var el=e.target;
+  if(!el.classList || !el.classList.contains('cal-day')){{ tip.style.opacity=0; return; }}
+  var secs=+el.getAttribute('data-t'), h=Math.floor(secs/3600), m=Math.round((secs%3600)/60);
+  if(m===60){{h++;m=0;}}
+  var n=+el.getAttribute('data-n');
+  tip.innerHTML='<div class="ptot-tip-d">'+el.getAttribute('data-d')+(n>1?' · '+n+' runs':'')+'</div>'
+    +'<div><b>'+(+el.getAttribute('data-km')).toFixed(2)+' km</b></div>'
+    +'<div>'+(h?h+'h ':'')+m+'m · +'+el.getAttribute('data-e')+' m</div>';
+  var r=el.getBoundingClientRect(), hr=holder.getBoundingClientRect();
+  tip.style.left=(r.left-hr.left+r.width/2)+'px';
+  tip.style.top=(r.top-hr.top)+'px';
+  tip.style.opacity=1;
 }}
 
 function ptotSet(kind, val, btn){{
