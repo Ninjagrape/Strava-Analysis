@@ -711,6 +711,72 @@ def run_hr_vo2max(run: dict, hr_max: float, hr_rest: float) -> dict | None:
             "value": _pctile(estimates, HRV_RUN_PCTILE), "windows": len(estimates)}
 
 
+DECOUPLE_MIN_S     = 2400.0  # 40 min of valid running; shorter than this the two halves
+                             # are each too brief for drift to rise above HR noise
+DECOUPLE_HR_COVER  = 0.80    # share of each half's time that must carry an HR sample, so
+                             # a strap dropout cannot make one half's mean unrepresentative
+DECOUPLE_GOOD      = 5.0     # Friel: under 5% means aerobic endurance is in place
+DECOUPLE_HIGH      = 10.0    # past this the heart is working markedly harder for the
+                             # same pace, usually heat, fatigue or a pace set too high
+
+
+def run_decoupling(run: dict) -> float | None:
+    """Pace:HR drift (%) between the first and second half of a run, or None.
+
+    Efficiency factor is grade-adjusted speed per beat; decoupling is how far it falls
+    from the first half to the second. The halves are split on valid running time, not
+    elapsed time, so a long pause does not tilt the split. Intervals are skipped: the
+    pace swings by design and the number would measure the session plan, not fitness.
+    """
+    if run.get("is_interval") or run.get("run_type") == "intervals":
+        return None
+    pts = [p for p in (run.get("dist_stream") or [])
+           if p.get("t") is not None and p.get("d") is not None]
+    if len(pts) < 2:
+        return None
+    dist_m = (run.get("dist_km") or 0.0) * 1000.0
+    fallback_grade = ((run.get("gain") or 0.0) / 2) / dist_m if dist_m > 0 else 0.0
+
+    segs = []  # (dt, ga_dist_m, hr or None)
+    for p0, p1 in zip(pts, pts[1:]):
+        if p0["t"] < HRV_WARMUP_S:
+            continue
+        dt = p1["t"] - p0["t"]
+        if dt <= 0 or dt > HRV_MAX_GAP_S:
+            continue
+        span = _ga_speed(p0, p1, fallback_grade)
+        if not span:
+            continue
+        raw_v = (p1["d"] - p0["d"]) * 1000.0 / dt
+        if not HRV_MIN_SPEED_MPS <= raw_v <= HRV_MAX_SPEED_MPS:
+            continue
+        segs.append((dt, span[0] * dt, p1.get("hr")))
+
+    total = sum(s[0] for s in segs)
+    if total < DECOUPLE_MIN_S:
+        return None
+
+    halves = ([], [])
+    elapsed = 0.0
+    for seg in segs:
+        halves[0 if elapsed < total / 2 else 1].append(seg)
+        elapsed += seg[0]
+
+    efs = []
+    for half in halves:
+        t_all = sum(s[0] for s in half)
+        hr_segs = [s for s in half if s[2] is not None]
+        t_hr = sum(s[0] for s in hr_segs)
+        if t_all <= 0 or t_hr < DECOUPLE_HR_COVER * t_all:
+            return None
+        hr = sum(s[2] * s[0] for s in hr_segs) / t_hr
+        speed = sum(s[1] for s in half) / t_all
+        if hr <= 0 or speed <= 0:
+            return None
+        efs.append(speed / hr)
+    return (efs[0] - efs[1]) / efs[0] * 100.0
+
+
 def hr_vo2max_trend(runs: list[dict] | None) -> dict:
     """Per-month HR-derived VO2max: [(label, value)] plus the anchors it assumed.
 

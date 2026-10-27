@@ -33,7 +33,7 @@ from generate_analytics import (
     num, parse_date, session_loads, daily_series, ctl_atl_tsb,
     ANALYTICS_PANEL_CSS, body_analytics, overview_sections,
     robust_threshold_mps, curve_anchor_holders,
-    MAX_AS_OF_DAYS, extend_daily, _tsb_class,
+    MAX_AS_OF_DAYS, extend_daily, _tsb_class, run_decoupling,
 )
 from dedupe import find_duplicates
 from elevation import backfill_elevation
@@ -1483,6 +1483,9 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a1a;color:#ee
 .rds-l{font-size:10px;color:#555;margin-bottom:3px}
 .rds-v{font-size:15px;font-weight:600;color:#eee}
 .rds-v-muted{font-size:13px;color:#777;font-weight:400}
+.rds-v.dc-good{color:#5cb85c}
+.rds-v.dc-mid{color:#e0a020}
+.rds-v.dc-bad{color:#d9534f}
 .rd-section{margin-bottom:1.25rem}
 .rd-section-title{font-size:11px;font-weight:600;color:#666;text-transform:uppercase;
   letter-spacing:.05em;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid #2a2a2a}
@@ -2600,6 +2603,7 @@ function renderDetail(r) {
     (r.cadence ? stat('Cadence', r.cadence + ' spm') : '') +
     (r.avg_hr ? stat('Avg HR', r.avg_hr + ' bpm') : '') +
     (r.max_hr ? stat('Max HR', r.max_hr + ' bpm') : '') +
+    (r.decouple != null ? statDecouple(r.decouple) : '') +
     (r.calories ? stat('Calories', r.calories + ' kcal') : '') +
     (pauseSummary(r) ? stat('Pauses', pauseSummary(r)) : '') +
     kmExtraStats(r) +
@@ -2633,6 +2637,11 @@ function renderDetail(r) {
 
 function stat(label, value) {
   return '<div class="rds"><div class="rds-l">' + label + '</div><div class="rds-v">' + value + '</div></div>';
+}
+function statDecouple(v) {
+  var cls = v < 5 ? 'dc-good' : (v <= 10 ? 'dc-mid' : 'dc-bad');
+  return '<div class="rds" title="Pace:HR drift between the first and second half of steady running. Under 5% means aerobic endurance is holding.">' +
+    '<div class="rds-l">Decoupling</div><div class="rds-v ' + cls + '">' + v.toFixed(1) + '%</div></div>';
 }
 function statMuted(label, value) {
   return '<div class="rds"><div class="rds-l">' + label + '</div><div class="rds-v rds-v-muted">' + value + '</div></div>';
@@ -3971,6 +3980,11 @@ def main():
         print(f"Elevation: {elev['candidates']} run(s) have no altitude and the DEM could not supply it")
     if PROFILE:
         print(f"[profile] backfill_elevation: {time.perf_counter() - t0:.2f}s")
+
+    # After backfill_elevation: the grade adjustment needs per-point elevation.
+    for r in runs:
+        v = run_decoupling(r)
+        r["decouple"] = round(v, 1) if v is not None else None
 
     print("Detecting benchmark segments…")
     t0 = time.perf_counter()
