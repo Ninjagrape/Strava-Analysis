@@ -777,6 +777,47 @@ def run_decoupling(run: dict) -> float | None:
     return (efs[0] - efs[1]) / efs[0] * 100.0
 
 
+def eddington(day_km: list[float]) -> int:
+    """Largest E such that at least E days reached E km or more."""
+    ranked = sorted(day_km, reverse=True)
+    e = 0
+    while e < len(ranked) and ranked[e] >= e + 1:
+        e += 1
+    return e
+
+
+def eddington_summary(day_stats: dict) -> dict:
+    """Eddington number plus what the Overview section shows around it.
+
+    day_stats is daily_totals() output, so km are already summed per calendar day.
+    """
+    days = sorted((d, v["dist"]) for d, v in day_stats.items() if v.get("dist", 0) > 0)
+    kms = [km for _, km in days]
+    e = eddington(kms)
+    next_e = e + 1
+    need = next_e - sum(1 for km in kms if km >= next_e)
+
+    # Every calendar month gets a point, a runless one carrying E forward, so the
+    # line's x-axis stays even in time.
+    progression = []
+    if days:
+        y, m = days[0][0].year, days[0][0].month
+        end = (days[-1][0].year, days[-1][0].month)
+        i = 0
+        seen: list[float] = []
+        while (y, m) <= end:
+            while i < len(days) and (days[i][0].year, days[i][0].month) == (y, m):
+                seen.append(days[i][1])
+                i += 1
+            progression.append((datetime(y, m, 1).strftime("%b %y"), eddington(seen)))
+            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+    longest = max(kms, default=0.0)
+    distribution = [(n, sum(1 for km in kms if km >= n)) for n in range(1, int(longest) + 1)]
+    return {"e": e, "next": next_e, "need": need, "longest": longest,
+            "progression": progression, "distribution": distribution}
+
+
 def hr_vo2max_trend(runs: list[dict] | None) -> dict:
     """Per-month HR-derived VO2max: [(label, value)] plus the anchors it assumed.
 
@@ -2140,6 +2181,12 @@ def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") ->
         return _calendar_heatmap(c, stats=day_stats)
     cal_chart = _ranged(CAL_RANGES, "6M", _cal_render)
 
+    edd = eddington_summary(day_stats)
+    edd_prog = _line_chart([{"date": lab, "e": v} for lab, v in edd["progression"]],
+                           [("e", "#5b8fd9", "Eddington number")], yfmt=lambda v: f"{v:.0f}")
+    edd_dist = _bar_chart([f"{n} km" for n, _ in edd["distribution"]],
+                          [c for _, c in edd["distribution"]], color="#8a6db5")
+
     # pace-zone distribution, anchored to critical speed
     pts = best_effort_points(rows)
     cs, _dprime, _r2 = fit_critical_speed(pts)
@@ -2207,6 +2254,22 @@ def overview_sections(rows: list[dict], updated: str, heatmap_html: str = "") ->
   <div class="card">
     {cal_chart}
     <p class="note">Daily training load. Darker green = higher load. Gaps are rest days. Hover a day for its distance, time and elevation.</p>
+  </div>
+</div>
+
+<div class="ov-section">
+  <p class="ov-section-title">Eddington number</p>
+  <div class="card">
+    <div class="stat-row">
+      <div class="stat"><p class="stat-label">Eddington number</p><p class="stat-value">{edd["e"]}</p></div>
+      <div class="stat"><p class="stat-label">Next: {edd["next"]}</p><p class="stat-value">{edd["need"]}</p><p class="stat-sub">more days of {edd["next"]} km+</p></div>
+      <div class="stat"><p class="stat-label">Longest day</p><p class="stat-value">{edd["longest"]:.1f} km</p></div>
+    </div>
+    {edd_prog}
+    <p class="note">Progression by month end.</p>
+    {edd_dist}
+    <p class="note">Days at or above each distance.</p>
+    <p class="note"><em>E is the largest number such that you have run at least E km on E different days. Distances are summed per calendar day, and duplicate recordings are already excluded.</em></p>
   </div>
 </div>
 
