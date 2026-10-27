@@ -431,6 +431,10 @@ GOAL_CSS = """
 .stat-sub{font-size:10px;color:#666;margin:2px 0 0;}
 .stat-value.green{color:#5cb85c;}
 .stat-value.amber{color:#e0a020;}
+.stat-value.red{color:#d9534f;}
+.taper{margin-top:12px;padding-top:10px;border-top:1px solid #2e2e2e;}
+.taper-title{font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.05em;margin:0 0 6px;}
+.taper .race-body{margin-bottom:2px;}
 
 .gap-labels{display:flex;justify-content:space-between;font-size:10px;color:#555;margin-bottom:3px;}
 .bar-label-row{position:relative;height:30px;font-size:10px;}
@@ -553,10 +557,10 @@ def _race_for_distance(races, dist_m: float, tol: float = 0.02) -> Race | None:
 _RACE_BAR_HALF_WINDOW_S_PER_KM = 60.0   # bar spans target pace ± this many s/km
 
 
-def render_race_card(race: Race, pred_s: float) -> str:
+def render_race_card(race: Race, pred_s: float, readiness_html: str = "") -> str:
     """One race-goal card, generic over single-time targets and pace-wave targets.
     The bar centres on the target pace (50%); the prediction marker sits left (slower)
-    or right (faster) of it."""
+    or right (faster) of it. readiness_html is the hub's taper strip (taper.py)."""
     dist_m = race.distance_m
     meta = " · ".join(x for x in (race.date, race.notes) if x)
     pred_pace_s = pred_s / (dist_m / 1000) if dist_m else 0.0
@@ -635,11 +639,15 @@ def render_race_card(race: Race, pred_s: float) -> str:
         <div class="bar-target" style="left:50%;"></div>
       </div>
     </div>
+{readiness_html}
   </div>"""
 
 
-def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
+def generate_goal_dashboard(rows: list[dict], updated: str,
+                            readiness: dict[str, str] | None = None) -> str:
+    """readiness: {race name: taper strip HTML} from the hub; absent standalone."""
     cfg = load_config()
+    readiness = readiness or {}
 
     # --- Riegel predictions from GA best 10k ---
     best10k_efforts = top3_for_band(rows, "best_10k_s", 10_000, False)
@@ -703,7 +711,8 @@ def generate_goal_dashboard(rows: list[dict], updated: str) -> str:
     # pins that run as a race, and is no longer a goal.
     goal_races = [r for r in cfg.races if not r.activity_id]
     race_cards_html = [
-        render_race_card(r, _predict_race_time(r, t10k_ga, _riegel_a, _riegel_b))
+        render_race_card(r, _predict_race_time(r, t10k_ga, _riegel_a, _riegel_b),
+                         readiness.get(r.name, ""))
         for r in goal_races
     ]
     race_section = ""
@@ -798,8 +807,9 @@ def body_best_efforts(rows: list[dict], updated: str) -> str:
     return html[s:e].strip()
 
 
-def body_goal_dashboard(rows: list[dict], updated: str) -> str:
-    html = generate_goal_dashboard(rows, updated)
+def body_goal_dashboard(rows: list[dict], updated: str,
+                        readiness: dict[str, str] | None = None) -> str:
+    html = generate_goal_dashboard(rows, updated, readiness)
     s = html.index('<body>') + len('<body>')
     e = html.index('</body>')
     return html[s:e].strip()

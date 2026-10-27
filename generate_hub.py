@@ -38,6 +38,7 @@ from generate_analytics import (
 from dedupe import find_duplicates
 from elevation import backfill_elevation
 from localtime import index_zones
+from taper import race_taper_blocks
 from generate_segments import (
     build_segments, body_segments, SEGMENTS_CSS,
     _reverse_geocode, _load_json, _save_json, CACHE_DIR,
@@ -3995,7 +3996,8 @@ def main():
     print("Building dashboard panels…")
     t0 = time.perf_counter()
     html_efforts   = body_best_efforts(rows_primary, updated)
-    html_goals     = body_goal_dashboard(rows_primary, updated)
+    html_goals     = body_goal_dashboard(rows_primary, updated,
+                                         race_taper_blocks(load_config().races, rows_primary))
     html_analytics = body_analytics(rows_primary, updated, runs_primary)
     html_segments  = body_segments(segments, updated)
     if PROFILE:
