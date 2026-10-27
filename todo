@@ -5,7 +5,7 @@
 [x] Better naming
 
 ## Analysis improvements
-[] Race readiness + tapering tracker
-[] Power rankings against age group
-[] Seiler inspired decoupling if HR data exists
-[] Eddington distribution and progression
+[x] Race readiness + tapering tracker
+[x] Power rankings against age group
+[x] Seiler inspired decoupling if HR data exists
+[x] Eddington distribution and progression
